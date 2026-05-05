@@ -268,8 +268,10 @@ async function runSimulation(config, emit = () => {}) {
   };
   sandbox.globalThis = sandbox;
 
+  const coreSource = await fs.promises.readFile(path.join(ROOT, "simulation_core.js"), "utf8");
   const appSource = await fs.promises.readFile(path.join(ROOT, "app.js"), "utf8");
   vm.createContext(sandbox);
+  vm.runInContext(coreSource, sandbox, { filename: "simulation_core.js" });
   vm.runInContext(appSource, sandbox, { filename: "app.js" });
 
   const deadline = Date.now() + 60000;
