@@ -1,0 +1,15 @@
+{
+  "name": "wallet-watch",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "python scripts/serve_with_rpc.py",
+    "postinstall": "playwright install --with-deps chromium"
+  },
+  "dependencies": {
+    "playwright": "^1.57.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

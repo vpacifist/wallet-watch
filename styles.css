@@ -1,0 +1,536 @@
+:root {
+  --bg: #f7f8fb;
+  --panel: #ffffff;
+  --ink: #172033;
+  --muted: #647087;
+  --line: #dce2ea;
+  --accent: #0f8b8d;
+  --accent-2: #f25f5c;
+  --shadow: 0 18px 45px rgba(23, 32, 51, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.shell {
+  width: 100%;
+  max-width: none;
+  height: 100vh;
+  margin: 0;
+  padding: 16px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.topbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 0;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(10px, 1.35vw, 15px);
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+.topbar p,
+.panelHead p {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.status {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.panel {
+  padding: 18px;
+}
+
+.simulatorPanel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chartPanel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panelHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+h2 {
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.filters {
+  display: inline-flex;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f2f5f8;
+}
+
+.filters button {
+  min-width: 54px;
+  border: 0;
+  border-radius: 6px;
+  padding: 9px 12px;
+  color: var(--muted);
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.filters button.active {
+  color: #ffffff;
+  background: var(--ink);
+}
+
+.rangeNavigator {
+  flex: 1 1 360px;
+  min-width: 220px;
+  max-width: 620px;
+  padding: 0 2px;
+}
+
+.rangeTrack {
+  position: relative;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(23, 32, 51, 0.08) 1px, transparent 1px) 0 0 / 10% 100%,
+    linear-gradient(180deg, #f8fafc 0%, #eef3f7 100%);
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.rangeWindow {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  min-width: 28px;
+  border: 1px solid rgba(15, 139, 141, 0.5);
+  border-radius: 6px;
+  background: rgba(15, 139, 141, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.7);
+  cursor: grab;
+  touch-action: none;
+}
+
+.rangeWindow::before,
+.rangeWindow::after {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(15, 139, 141, 0.55);
+}
+
+.rangeWindow::before {
+  left: 8px;
+}
+
+.rangeWindow::after {
+  right: 8px;
+}
+
+.rangeNavigator.disabled .rangeTrack {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.rangeNavigator.disabled .rangeWindow {
+  cursor: default;
+}
+
+.chartWrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%);
+}
+
+.tooltip {
+  position: absolute;
+  pointer-events: none;
+  min-width: 168px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: #ffffff;
+  background: rgba(23, 32, 51, 0.92);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.simTooltip {
+  background: rgba(242, 95, 92, 0.94);
+}
+
+.tableTooltip {
+  background: rgba(15, 139, 141, 0.94);
+}
+
+.simControls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: end;
+}
+
+.simControls .field {
+  flex: 1 1 140px;
+}
+
+.simControls .depositField {
+  flex-basis: 96px;
+}
+
+.simControls .rangePercentField {
+  flex-basis: 86px;
+}
+
+.field {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.field input {
+  width: 100%;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 11px;
+  color: var(--ink);
+  background: #ffffff;
+  font: inherit;
+  font-size: 14px;
+}
+
+.field input.activeTimeInput {
+  border-color: rgba(15, 139, 141, 0.65);
+  box-shadow: 0 0 0 3px rgba(15, 139, 141, 0.12);
+}
+
+.simButtons button {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: #f8fafc;
+  font: inherit;
+  cursor: pointer;
+}
+
+.simButtons button:hover {
+  border-color: rgba(15, 139, 141, 0.45);
+  background: rgba(15, 139, 141, 0.08);
+}
+
+.simButtons {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.playbackButtons {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.simButtons button {
+  width: 42px;
+  font-size: 16px;
+}
+
+.simButtons .startButton {
+  width: 74px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.simButtons .resetButton {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: max-content;
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 0 16px;
+  border-color: var(--line);
+  color: #7f3b3a;
+  background: #f8fafc;
+  font-size: 12px;
+  font-weight: 700;
+  overflow: visible;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.simButtons .resetButton:hover {
+  border-color: rgba(242, 95, 92, 0.22);
+  background: rgba(242, 95, 92, 0.06);
+}
+
+.simButtons button:disabled {
+  cursor: default;
+  opacity: 1;
+  color: var(--ink);
+  -webkit-text-fill-color: var(--ink);
+}
+
+.simButtons .resetButton:disabled {
+  border-color: var(--line);
+  color: #7f3b3a;
+  background: #f8fafc;
+  -webkit-text-fill-color: #7f3b3a;
+}
+
+.simTotals {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  flex: 1 1 260px;
+  gap: 10px;
+}
+
+.simTotals div {
+  min-height: 54px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  background: #fbfcfd;
+}
+
+.simTotals span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.simTotals strong {
+  display: block;
+  margin-top: 5px;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.simNotice {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+  min-height: 40px;
+}
+
+.simNoticeStatus,
+.simNoticeRight,
+.simNoticeDetails,
+.simNoticeEstimate {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.simNoticeRight {
+  display: grid;
+  gap: 2px;
+  grid-template-rows: minmax(18px, auto) minmax(18px, auto);
+}
+
+.simNoticeDetails,
+.simNoticeEstimate {
+  color: var(--ink);
+}
+
+.simTableWrap {
+  margin-top: 18px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.simTable {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  min-width: 1040px;
+  font-size: 13px;
+}
+
+.simTable .timeCol {
+  width: 150px;
+}
+
+.simTable .eventCol {
+  width: 115px;
+}
+
+.simTable .valueCol {
+  width: 128px;
+}
+
+.simTable .priceCol,
+.simTable .tokenCol,
+.simTable .aeroCol,
+.simTable .haircutCol {
+  width: 112px;
+}
+
+.simTable .reliabilityCol {
+  width: 118px;
+}
+
+.simTable th,
+.simTable td {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 9px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.simTable th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--muted);
+  font-weight: 600;
+  background: #f8fafc;
+}
+
+.simTable tbody tr {
+  cursor: default;
+}
+
+.simTable tbody tr:hover,
+.simTable tbody tr.activeRow {
+  background: rgba(15, 139, 141, 0.07);
+}
+
+.simMarker {
+  color: var(--accent-2);
+}
+
+@media (max-width: 980px) {
+  body {
+    height: auto;
+    min-height: 100vh;
+    overflow: auto;
+  }
+
+  .shell {
+    height: auto;
+    min-height: 100vh;
+    grid-template-rows: auto auto auto;
+    padding: 12px;
+    overflow: auto;
+  }
+
+  .topbar,
+  .panelHead,
+  .simControls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .simButtons {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .simTotals {
+    grid-template-columns: 1fr;
+  }
+
+  .filters {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+  }
+
+  .filters button {
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
+  .rangeNavigator {
+    flex-basis: auto;
+    min-width: 0;
+    max-width: none;
+    width: 100%;
+  }
+
+  .chartWrap {
+    height: 260px;
+  }
+}

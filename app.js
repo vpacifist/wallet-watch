@@ -1,0 +1,2377 @@
+﻿const CSV_FILE = "./weth_usdc_1m_2026_feb_mar_apr.csv";
+
+const state = {
+  rows: [],
+  visible: [],
+  range: "all",
+  hoverIndex: -1,
+  zoomStart: 0,
+  zoomEnd: 1,
+  isDragging: false,
+  dragX: 0,
+  dragStart: 0,
+  dragEnd: 1,
+  dragSamples: [],
+  dragMin: 0,
+  dragMax: 1,
+  releaseRows: null,
+  dragMoved: false,
+  suppressNextClick: false,
+  isNavigatorDragging: false,
+  navigatorDragX: 0,
+  navigatorDragStart: 0,
+  activeTimeInput: "start",
+  sim: {
+    startIndex: 0,
+    endIndex: 0,
+    currentIndex: 0,
+    started: false,
+    initializing: false,
+    stopped: false,
+    autoRunning: false,
+    stepInProgress: false,
+    fastRenderEveryMs: 500,
+    lastFastRenderAt: 0,
+    runToken: 0,
+    autoLoopId: 0,
+    stepDurations: [],
+    etaMs: 0,
+    depositUsdc: 10000,
+    rangeWidth: 0.01,
+    tickLower: 0,
+    tickUpper: 0,
+    liquidityRaw: 0n,
+    liquidityHuman: 0,
+    anchorTick: 0,
+    startGridTick: 0,
+    rangeStepTicks: 0,
+    rewardStart: 0n,
+    rewardLast: 0n,
+    aeroUnharvested: 0,
+    aeroBaseUnharvested: 0,
+    aeroHaircutUnharvested: 0,
+    aeroHarvestedUsdc: 0,
+    aeroBaseHarvestedUsdc: 0,
+    aeroHaircutUsdc: 0,
+    rows: [],
+    blockCache: new Map(),
+    aeroPriceCache: new Map(),
+    aeroPriceReliability: 100,
+    aeroPriceAgeSeconds: 0,
+    tableHoverIndex: -1,
+    activeRowIndex: -1,
+  },
+};
+
+const canvas = document.getElementById("priceChart");
+const ctx = canvas.getContext("2d");
+const tooltip = document.getElementById("tooltip");
+const simTooltip = document.getElementById("simTooltip");
+const tableTooltip = document.getElementById("tableTooltip");
+const statusEl = document.getElementById("status");
+const rangeNavigator = document.getElementById("rangeNavigator");
+const rangeTrack = document.getElementById("rangeTrack");
+const rangeWindow = document.getElementById("rangeWindow");
+const simStartInput = document.getElementById("simStartInput");
+const simEndInput = document.getElementById("simEndInput");
+const depositInput = document.getElementById("depositInput");
+const rangePercentInput = document.getElementById("rangePercentInput");
+const runSimulation = document.getElementById("runSimulation");
+const resetSimulationButton = document.getElementById("resetSimulation");
+const stepBack = document.getElementById("stepBack");
+const stepForward = document.getElementById("stepForward");
+const currentPositionValue = document.getElementById("currentPositionValue");
+const currentAeroEarned = document.getElementById("currentAeroEarned");
+const simNotice = document.getElementById("simNotice");
+const simTableWrap = document.getElementById("simTableWrap");
+const simTableBody = document.getElementById("simTableBody");
+const MONTHS_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const AERODROME_TICK_SPACING = 100;
+const PRICE_DECIMAL_FACTOR = 1e12;
+const POINTS_PER_PIXEL = 0.55;
+const DEFAULT_SIM_RANGE_WIDTH = 0.01;
+const REBALANCE_MANUAL_FEE_BPS = 1;
+const REBALANCE_GAS_UNITS = 1450000n;
+const REBALANCE_L1_DATA_FEE_ETH = 0.000012;
+const BASE_RPC_URLS = ["/rpc"];
+const SERVER_SIMULATION_MODE = !new URLSearchParams(window.location.search).has("local-sim");
+let baseRpcIndex = 0;
+const POOL_ADDRESS = "0xb2cc224c1c9fee385f8ad6a55b4d94e92359dc59";
+const AERO_USDC_POOL_ADDRESS = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1";
+const AERO_SLIPSTREAM_QUOTER = "0x254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0";
+const AERO_ADDRESS = "0x940181a94A35A4569E4529A3CDfB74e38FD98631";
+const WETH_ADDRESS = "0x4200000000000000000000000000000000000006";
+const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+const SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67";
+const BASE_BLOCK_ANCHOR = { number: 41557327, timestamp: 1769904001 };
+const BASE_SECONDS_PER_BLOCK = 2;
+const Q96 = 2n ** 96n;
+const Q128 = 2n ** 128n;
+const AERO_DECIMALS = 10n ** 18n;
+const WETH_DECIMALS = 10n ** 18n;
+const USDC_DECIMALS = 10n ** 6n;
+const SELECTORS = {
+  slot0: "0x3850c7bd",
+  rewardGrowthGlobal: "0x57806ada",
+  rewardRate: "0x7b0a47ee",
+  rewardReserve: "0xcab64bcd",
+  lastUpdated: "0xd0b06f5d",
+  stakedLiquidity: "0x3ab04b20",
+  liquidity: "0x1a686502",
+  getRewardGrowthInside: "0xa16368c9",
+  quoteExactInputSingle: "0xf7729d43",
+  token0: "0x0dfe1681",
+  token1: "0xd21220a7",
+};
+let aeroUsdcTokenOrder = null;
+const serverSimulation = {
+  id: null,
+  pollTimer: null,
+  running: false,
+  available: SERVER_SIMULATION_MODE,
+};
+
+function parseCsv(text) {
+  const lines = text.trim().split(/\r?\n/);
+  const headers = lines.shift().split(",");
+  return lines.map((line, index) => {
+    const values = line.split(",");
+    const item = Object.fromEntries(headers.map((header, index) => [header, values[index]]));
+    return {
+      index,
+      time: item.time_open,
+      closeTime: item.time_close,
+      open: Number(item.open),
+      high: Number(item.high),
+      low: Number(item.low),
+      close: Number(item.close),
+      volume: Number(item.volume),
+    };
+  });
+}
+
+function fmtPrice(value) {
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function fmtNumber(value, digits = 6) {
+  return Number(value || 0).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+function fmtUsdc(value) {
+  return `$${Number(value || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function fmtReliability(value) {
+  return `${fmtNumber(value, 2)}%`;
+}
+
+function fmtDeposit(value) {
+  const number = Math.round(Number(value || 0));
+  return number.toString().replace(/\B(?=(\d{3})+(?!\d))/g, "'");
+}
+
+function fmtPercent(value) {
+  return Number(value || 0).toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+
+function parseNumericInput(value) {
+  return Number(String(value).replace(/'/g, "").replace(/\s/g, "").replace(/,/g, "."));
+}
+
+function parseRangePercent(value) {
+  return parseNumericInput(String(value).replace(/%/g, ""));
+}
+
+function fmtTime(value) {
+  const date = new Date(value);
+  const hours = String(date.getUTCHours()).padStart(2, "0");
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${date.getUTCDate()} ${MONTHS_SHORT[date.getUTCMonth()]} ${date.getUTCFullYear()}, ${hours}:${minutes}`;
+}
+
+function fmtInputTime(value) {
+  const date = new Date(value);
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")} ${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`;
+}
+
+function parseInputTime(value) {
+  const trimmed = value.trim();
+  if (!trimmed) return Number.NaN;
+  const isoLike = trimmed.includes("T") ? trimmed : trimmed.replace(" ", "T");
+  const normalized = isoLike.endsWith("Z") || /[+-]\d\d:?\d\d$/.test(isoLike) ? isoLike : `${isoLike}Z`;
+  const timestamp = Date.parse(normalized);
+  return Number.isNaN(timestamp) ? Number.NaN : timestamp;
+}
+
+function fmtAxisTime(value) {
+  const date = new Date(value);
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${day} ${MONTHS_SHORT[date.getUTCMonth()]}`;
+}
+
+function fmtAxisHour(value) {
+  const date = new Date(value);
+  return `${String(date.getUTCHours()).padStart(2, "0")}:00`;
+}
+
+function startOfUtcDay(date) {
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function addUtcDays(timestamp, days) {
+  return timestamp + days * 24 * 60 * 60 * 1000;
+}
+
+function addUtcHours(timestamp, hours) {
+  return timestamp + hours * 60 * 60 * 1000;
+}
+
+function setMetric(id, value) {
+  const element = document.getElementById(id);
+  if (element) element.textContent = value;
+}
+
+function updateMetrics(rows) {
+  if (!rows.length) return;
+  const first = rows[0];
+  const last = rows[rows.length - 1];
+  const bounds = priceBounds(rows);
+  setMetric("rowCount", rows.length.toLocaleString("en-US"));
+  setMetric("firstPrice", fmtPrice(first.close));
+  setMetric("lastPrice", fmtPrice(last.close));
+  setMetric("priceRange", `${fmtPrice(bounds.min)} - ${fmtPrice(bounds.max)}`);
+}
+
+function priceBounds(rows) {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const row of rows) {
+    if (row.low < min) min = row.low;
+    if (row.high > max) max = row.high;
+  }
+  return { min, max };
+}
+
+function chartPriceBounds(rows) {
+  const bounds = priceBounds(rows);
+  if (state.sim.started) {
+    const prices = simRangePrices();
+    bounds.min = Math.min(bounds.min, prices.lower);
+    bounds.max = Math.max(bounds.max, prices.upper);
+  }
+  return bounds;
+}
+
+function tickForPrice(price) {
+  return Math.log(price / PRICE_DECIMAL_FACTOR) / Math.log(1.0001);
+}
+
+function priceForTick(tick) {
+  return Math.pow(1.0001, tick) * PRICE_DECIMAL_FACTOR;
+}
+
+function sqrtPriceX96ForPrice(price) {
+  return BigInt(Math.floor(Math.sqrt(price / PRICE_DECIMAL_FACTOR) * Number(Q96)));
+}
+
+function encodeInt24(value) {
+  const modulo = 1n << 256n;
+  let encoded = BigInt(value);
+  if (encoded < 0n) encoded = modulo + encoded;
+  return encoded.toString(16).padStart(64, "0");
+}
+
+function encodeUint256(value) {
+  return BigInt(value).toString(16).padStart(64, "0");
+}
+
+function encodeAddress(address) {
+  return address.toLowerCase().replace(/^0x/, "").padStart(64, "0");
+}
+
+function toSignedWord(hex) {
+  let value = BigInt(`0x${hex}`);
+  if (value >= (1n << 255n)) value -= 1n << 256n;
+  return value;
+}
+
+function hexToBigInt(hex) {
+  if (!hex || hex === "0x") return 0n;
+  return BigInt(hex);
+}
+
+function wordAt(data, index) {
+  const clean = data.startsWith("0x") ? data.slice(2) : data;
+  return clean.slice(index * 64, index * 64 + 64);
+}
+
+function addressFromWord(data, index = 0) {
+  return `0x${wordAt(data, index).slice(24)}`.toLowerCase();
+}
+
+function blockTag(blockNumber) {
+  return `0x${blockNumber.toString(16)}`;
+}
+
+async function rpcCall(method, params) {
+  let lastError = null;
+  for (let attempt = 0; attempt < BASE_RPC_URLS.length; attempt += 1) {
+    const url = BASE_RPC_URLS[baseRpcIndex % BASE_RPC_URLS.length];
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+      if (!response.ok) throw new Error(`Base RPC HTTP ${response.status}`);
+      const payload = await response.json();
+      if (payload.error) throw new Error(payload.error.message || "Base RPC error");
+      return payload.result;
+    } catch (error) {
+      lastError = error;
+      baseRpcIndex += 1;
+    }
+  }
+  throw lastError || new Error("Base RPC error");
+}
+
+async function rpcBatch(calls) {
+  let lastError = null;
+  for (let attempt = 0; attempt < BASE_RPC_URLS.length; attempt += 1) {
+    const url = BASE_RPC_URLS[baseRpcIndex % BASE_RPC_URLS.length];
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(calls.map((call, index) => ({ jsonrpc: "2.0", id: index + 1, ...call }))),
+      });
+      if (!response.ok) throw new Error(`Base RPC HTTP ${response.status}`);
+      const payload = await response.json();
+      const byId = new Map(payload.map((item) => [item.id, item]));
+      return calls.map((_, index) => {
+        const item = byId.get(index + 1);
+        if (!item || item.error) throw new Error(item?.error?.message || "Base RPC batch error");
+        return item.result;
+      });
+    } catch (error) {
+      lastError = error;
+      baseRpcIndex += 1;
+    }
+  }
+  throw lastError || new Error("Base RPC batch error");
+}
+
+async function getBlock(blockNumber) {
+  const block = await rpcCall("eth_getBlockByNumber", [blockTag(blockNumber), false]);
+  return {
+    number: Number(BigInt(block.number)),
+    timestamp: Number(BigInt(block.timestamp)),
+    baseFeePerGas: block.baseFeePerGas ? BigInt(block.baseFeePerGas) : 0n,
+  };
+}
+
+async function latestBlockNumber() {
+  return Number(BigInt(await rpcCall("eth_blockNumber", [])));
+}
+
+async function findBlockAtOrAfter(timestampSeconds, afterBlock = 1) {
+  const cached = state.sim.blockCache.get(timestampSeconds);
+  if (cached) return cached;
+
+  let estimate = BASE_BLOCK_ANCHOR.number + Math.round((timestampSeconds - BASE_BLOCK_ANCHOR.timestamp) / BASE_SECONDS_PER_BLOCK);
+  estimate = Math.max(1, estimate);
+  let estimatedBlock = await getBlock(estimate);
+  let low = Math.max(1, estimate - 240);
+  let high = estimate + 240;
+  if (estimatedBlock.timestamp < timestampSeconds) {
+    low = estimate + 1;
+    high = estimate + 240;
+    while ((await getBlock(high)).timestamp < timestampSeconds) {
+      low = high + 1;
+      high += 240;
+    }
+  } else {
+    high = estimate;
+    low = Math.max(1, estimate - 240);
+    while (low > 1 && (await getBlock(low)).timestamp >= timestampSeconds) {
+      high = low;
+      low = Math.max(1, low - 240);
+    }
+  }
+  low = Math.max(low, afterBlock);
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    const block = await getBlock(mid);
+    if (block.timestamp < timestampSeconds) low = mid + 1;
+    else high = mid;
+  }
+  const result = await getBlock(low);
+  state.sim.blockCache.set(timestampSeconds, result);
+  return result;
+}
+
+function decodeSlot0(data) {
+  return {
+    sqrtPriceX96: hexToBigInt(`0x${wordAt(data, 0)}`),
+    tick: Number(toSignedWord(wordAt(data, 1))),
+  };
+}
+
+async function readPoolSlot0(poolAddress, blockNumber) {
+  const data = await rpcCall("eth_call", [{ to: poolAddress, data: SELECTORS.slot0 }, blockTag(blockNumber)]);
+  return decodeSlot0(data);
+}
+
+async function readRewardInside(blockNumber, tickLower, tickUpper) {
+  const tag = blockTag(blockNumber);
+  const [slotData, globalData, rateData, reserveData, lastUpdatedData, stakedData, activeLiquidityData] = await rpcBatch([
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.slot0 }, tag] },
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.rewardGrowthGlobal }, tag] },
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.rewardRate }, tag] },
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.rewardReserve }, tag] },
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.lastUpdated }, tag] },
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.stakedLiquidity }, tag] },
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.liquidity }, tag] },
+  ]);
+  const block = await getBlock(blockNumber);
+  const slot = decodeSlot0(slotData);
+  const storedGlobal = hexToBigInt(globalData);
+  const rewardRate = hexToBigInt(rateData);
+  const rewardReserve = hexToBigInt(reserveData);
+  const lastUpdated = hexToBigInt(lastUpdatedData);
+  const stakedLiquidity = hexToBigInt(stakedData);
+  const activeLiquidity = hexToBigInt(activeLiquidityData);
+  const rewardElapsedSeconds = Math.max(0, block.timestamp - Number(lastUpdated));
+  const elapsed = BigInt(rewardElapsedSeconds);
+  const expectedReward = rewardRate * elapsed;
+  let reward = expectedReward;
+  if (reward > rewardReserve) reward = rewardReserve;
+  const calculatedGlobal = stakedLiquidity > 0n ? storedGlobal + reward * Q128 / stakedLiquidity : storedGlobal;
+  const data = `${SELECTORS.getRewardGrowthInside}${encodeInt24(tickLower)}${encodeInt24(tickUpper)}${encodeUint256(calculatedGlobal)}`;
+  const rewardInside = hexToBigInt(await rpcCall("eth_call", [{ to: POOL_ADDRESS, data }, tag]));
+  return {
+    rewardInside,
+    stakedLiquidity,
+    activeLiquidity,
+    tick: slot.tick,
+    sqrtPriceX96: slot.sqrtPriceX96,
+    block,
+    rewardElapsedSeconds,
+    rewardReserveCapped: expectedReward > rewardReserve,
+  };
+}
+
+async function getAeroUsdcTokenOrder(blockNumber) {
+  if (aeroUsdcTokenOrder) return aeroUsdcTokenOrder;
+  const [token0Data, token1Data] = await rpcBatch([
+    { method: "eth_call", params: [{ to: AERO_USDC_POOL_ADDRESS, data: SELECTORS.token0 }, blockTag(blockNumber)] },
+    { method: "eth_call", params: [{ to: AERO_USDC_POOL_ADDRESS, data: SELECTORS.token1 }, blockTag(blockNumber)] },
+  ]);
+  aeroUsdcTokenOrder = {
+    token0: addressFromWord(token0Data),
+    token1: addressFromWord(token1Data),
+  };
+  return aeroUsdcTokenOrder;
+}
+
+function aeroUsdcPriceFromSqrtX96(sqrtPriceX96, tokenOrder) {
+  const ratio = (Number(sqrtPriceX96) / Number(Q96)) ** 2;
+  const aero = AERO_ADDRESS.toLowerCase();
+  const usdc = USDC_ADDRESS.toLowerCase();
+  if (tokenOrder.token0 === aero && tokenOrder.token1 === usdc) return ratio * 1e12;
+  if (tokenOrder.token0 === usdc && tokenOrder.token1 === aero) return 1 / (ratio * 1e-12);
+  throw new Error("AERO/USDC pool token order mismatch");
+}
+
+async function getAeroPrice(blockNumber) {
+  const cached = state.sim.aeroPriceCache.get(blockNumber);
+  if (cached) {
+    state.sim.aeroPriceReliability = cached.reliability;
+    state.sim.aeroPriceAgeSeconds = 0;
+    return cached.price;
+  }
+  try {
+    const [slot, tokenOrder] = await Promise.all([
+      readPoolSlot0(AERO_USDC_POOL_ADDRESS, blockNumber),
+      getAeroUsdcTokenOrder(blockNumber),
+    ]);
+    const price = aeroUsdcPriceFromSqrtX96(slot.sqrtPriceX96, tokenOrder);
+    if (!Number.isFinite(price) || price <= 0) throw new Error("Не удалось получить on-chain цену AERO");
+    const reliability = 96;
+    state.sim.aeroPriceCache.set(blockNumber, { price, reliability });
+    state.sim.aeroPriceReliability = reliability;
+    state.sim.aeroPriceAgeSeconds = 0;
+    return price;
+  } catch (error) {
+    let nearest = null;
+    let nearestBlockDistance = Number.POSITIVE_INFINITY;
+    for (const [cachedBlock, cachedPrice] of state.sim.aeroPriceCache.entries()) {
+      const distance = Math.abs(cachedBlock - blockNumber);
+      if (distance < nearestBlockDistance) {
+        nearest = cachedPrice;
+        nearestBlockDistance = distance;
+      }
+    }
+    if (nearest !== null) {
+      const ageSeconds = nearestBlockDistance * BASE_SECONDS_PER_BLOCK;
+      state.sim.aeroPriceReliability = Math.min(nearest.reliability, aeroPriceReliability(ageSeconds) - 8);
+      state.sim.aeroPriceAgeSeconds = ageSeconds;
+      return nearest.price;
+    }
+    throw error;
+  }
+}
+
+async function findSwapExit(fromBlock, toBlock, tickLower, tickUpper) {
+  if (toBlock < fromBlock) return null;
+  const logs = await rpcCall("eth_getLogs", [{
+    address: POOL_ADDRESS,
+    fromBlock: blockTag(fromBlock),
+    toBlock: blockTag(toBlock),
+    topics: [SWAP_TOPIC],
+  }]);
+  for (const log of logs) {
+    const tick = Number(toSignedWord(wordAt(log.data, 4)));
+    if (tick < tickLower || tick >= tickUpper) {
+      return {
+        blockNumber: Number(BigInt(log.blockNumber)),
+        logIndex: Number(BigInt(log.logIndex)),
+        tick,
+        sqrtPriceX96: hexToBigInt(`0x${wordAt(log.data, 2)}`),
+      };
+    }
+  }
+  return null;
+}
+
+function computePositionPlan(depositUsdc, price, rangeWidth = DEFAULT_SIM_RANGE_WIDTH) {
+  const lowerPrice = price * (1 - rangeWidth);
+  const upperPrice = price * (1 + rangeWidth);
+  const tickLower = Math.floor(tickForPrice(lowerPrice) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
+  const tickUpper = Math.ceil(tickForPrice(upperPrice) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
+  const anchorTick = Math.round(tickForPrice(price) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
+  return computePositionPlanForRange(depositUsdc, price, tickLower, tickUpper, anchorTick);
+}
+
+function computePositionPlanForRange(depositUsdc, price, tickLower, tickUpper, anchorTick) {
+  const sqrtA = Math.sqrt(priceForTick(tickLower));
+  const sqrtB = Math.sqrt(priceForTick(tickUpper));
+  const sqrtP = Math.sqrt(price);
+  const valuePerLiquidity = price * (sqrtB - sqrtP) / (sqrtP * sqrtB) + (sqrtP - sqrtA);
+  const liquidityHuman = depositUsdc / valuePerLiquidity;
+  const weth = liquidityHuman * (sqrtB - sqrtP) / (sqrtP * sqrtB);
+  const usdc = liquidityHuman * (sqrtP - sqrtA);
+  const sqrtPX96 = sqrtPriceX96ForPrice(price);
+  const sqrtAX96 = sqrtPriceX96ForPrice(priceForTick(tickLower));
+  const sqrtBX96 = sqrtPriceX96ForPrice(priceForTick(tickUpper));
+  const amount0 = BigInt(Math.max(0, Math.floor(weth * Number(WETH_DECIMALS))));
+  const amount1 = BigInt(Math.max(0, Math.floor(usdc * Number(USDC_DECIMALS))));
+  const liq0 = amount0 * sqrtPX96 * sqrtBX96 / Q96 / (sqrtBX96 - sqrtPX96);
+  const liq1 = amount1 * Q96 / (sqrtPX96 - sqrtAX96);
+  return {
+    tickLower,
+    tickUpper,
+    anchorTick,
+    liquidityHuman,
+    liquidityRaw: liq0 < liq1 ? liq0 : liq1,
+    weth,
+    usdc,
+    value: weth * price + usdc,
+  };
+}
+
+function amountsForPosition(price) {
+  const { tickLower, tickUpper, liquidityHuman } = state.sim;
+  const lower = priceForTick(tickLower);
+  const upper = priceForTick(tickUpper);
+  const sqrtA = Math.sqrt(lower);
+  const sqrtB = Math.sqrt(upper);
+  const sqrtP = Math.sqrt(price);
+  if (price <= lower) {
+    const weth = liquidityHuman * (sqrtB - sqrtA) / (sqrtA * sqrtB);
+    return { weth, usdc: 0, value: weth * price };
+  }
+  if (price >= upper) {
+    const usdc = liquidityHuman * (sqrtB - sqrtA);
+    return { weth: 0, usdc, value: usdc };
+  }
+  const weth = liquidityHuman * (sqrtB - sqrtP) / (sqrtP * sqrtB);
+  const usdc = liquidityHuman * (sqrtP - sqrtA);
+  return { weth, usdc, value: weth * price + usdc };
+}
+
+function dilutedAeroRaw(rewardState) {
+  if (rewardState.rewardInside <= state.sim.rewardLast || state.sim.liquidityRaw <= 0n) return 0n;
+  const totalLiquidity = rewardState.stakedLiquidity + state.sim.liquidityRaw;
+  if (totalLiquidity <= 0n) return 0n;
+  const growthDelta = rewardState.rewardInside - state.sim.rewardLast;
+  return state.sim.liquidityRaw * growthDelta * rewardState.stakedLiquidity / totalLiquidity / Q128;
+}
+
+function accrueAeroRewards(rewardState) {
+  const raw = dilutedAeroRaw(rewardState);
+  if (raw > 0n) {
+    const baseAero = Number(raw) / Number(AERO_DECIMALS);
+    const haircut = Math.min(0.5, impactShare(rewardState));
+    const conservativeAero = baseAero * (1 - haircut);
+    state.sim.aeroBaseUnharvested += baseAero;
+    state.sim.aeroHaircutUnharvested += baseAero - conservativeAero;
+    state.sim.aeroUnharvested += conservativeAero;
+  }
+  if (rewardState.rewardInside > state.sim.rewardLast) state.sim.rewardLast = rewardState.rewardInside;
+  return state.sim.aeroUnharvested;
+}
+
+function priceFromSqrtX96(sqrtPriceX96) {
+  const sqrt = Number(sqrtPriceX96) / Number(Q96);
+  return sqrt * sqrt * PRICE_DECIMAL_FACTOR;
+}
+
+function rawWeth(amount) {
+  return BigInt(Math.max(0, Math.floor(amount * Number(WETH_DECIMALS))));
+}
+
+function rawUsdc(amount) {
+  return BigInt(Math.max(0, Math.floor(amount * Number(USDC_DECIMALS))));
+}
+
+function rawToWeth(raw) {
+  return Number(raw) / Number(WETH_DECIMALS);
+}
+
+function rawToUsdc(raw) {
+  return Number(raw) / Number(USDC_DECIMALS);
+}
+
+async function quoteAerodromeSwap(tokenIn, tokenOut, amountInRaw, blockNumber) {
+  if (amountInRaw <= 0n) return null;
+  const data = `${SELECTORS.quoteExactInputSingle}${encodeAddress(tokenIn)}${encodeAddress(tokenOut)}${encodeUint256(AERODROME_TICK_SPACING)}${encodeUint256(amountInRaw)}${encodeUint256(0)}`;
+  try {
+    const result = await rpcCall("eth_call", [{ to: AERO_SLIPSTREAM_QUOTER, data }, blockTag(blockNumber)]);
+    return { amountOutRaw: hexToBigInt(`0x${wordAt(result, 0)}`), source: "aerodrome-quoter", reliability: 94 };
+  } catch (error) {
+    return null;
+  }
+}
+
+async function estimateHistoricalSwap(swap, price, blockNumber) {
+  if (swap.amount <= 0) {
+    return { outputAmount: 0, lossUsdc: 0, source: "no-swap", reliability: 100 };
+  }
+  if (swap.direction === "WETH_TO_USDC") {
+    const amountInRaw = rawWeth(swap.amount);
+    const quote = await quoteAerodromeSwap(WETH_ADDRESS, USDC_ADDRESS, amountInRaw, blockNumber);
+    if (quote) {
+      const outputAmount = rawToUsdc(quote.amountOutRaw);
+      return {
+        outputAmount,
+        lossUsdc: Math.max(0, swap.amount * price - outputAmount),
+        source: quote.source,
+        reliability: quote.reliability,
+      };
+    }
+    const outputAmount = swap.amount * price * 0.9995;
+    return { outputAmount, lossUsdc: swap.amount * price - outputAmount, source: "fallback-5bps", reliability: 58 };
+  }
+  const amountInRaw = rawUsdc(swap.amount);
+  const quote = await quoteAerodromeSwap(USDC_ADDRESS, WETH_ADDRESS, amountInRaw, blockNumber);
+  if (quote) {
+    const outputAmount = rawToWeth(quote.amountOutRaw);
+    return {
+      outputAmount,
+      lossUsdc: Math.max(0, swap.amount - outputAmount * price),
+      source: quote.source,
+      reliability: quote.reliability,
+    };
+  }
+  const outputAmount = swap.amount / price * 0.9995;
+  return { outputAmount, lossUsdc: swap.amount - outputAmount * price, source: "fallback-5bps", reliability: 58 };
+}
+
+function estimateRebalanceGasUsdc(block, ethUsdcPrice) {
+  const l2Eth = Number(REBALANCE_GAS_UNITS * block.baseFeePerGas) / 1e18;
+  return (l2Eth + REBALANCE_L1_DATA_FEE_ETH) * ethUsdcPrice;
+}
+
+function clampPercent(value) {
+  return Math.max(0, Math.min(100, Number(value) || 0));
+}
+
+function scoreFromThresholds(value, thresholds) {
+  if (value <= thresholds[0][0]) return thresholds[0][1];
+  for (let index = 1; index < thresholds.length; index += 1) {
+    const [limit, score] = thresholds[index];
+    const [previousLimit, previousScore] = thresholds[index - 1];
+    if (value <= limit) {
+      const ratio = (value - previousLimit) / (limit - previousLimit);
+      return previousScore + (score - previousScore) * ratio;
+    }
+  }
+  return thresholds[thresholds.length - 1][1];
+}
+
+function conservativeReliability(factors) {
+  const usable = factors.filter((factor) => Number.isFinite(factor.score) && factor.weight > 0);
+  if (!usable.length) return { score: 0, parts: [] };
+  const totalWeight = usable.reduce((sum, factor) => sum + factor.weight, 0);
+  const weighted = usable.reduce((sum, factor) => sum + factor.score * factor.weight, 0) / totalWeight;
+  const floor = Math.min(...usable.map((factor) => factor.score));
+  return {
+    score: clampPercent(Math.min(96, weighted, floor + 18)),
+    parts: usable,
+  };
+}
+
+function reliabilityDetailsText(parts) {
+  return parts.map((part) => `${part.label} ${fmtReliability(part.score)}`).join("; ");
+}
+
+function blockTimeReliability(timestampSeconds, block) {
+  const deltaSeconds = Math.abs(block.timestamp - timestampSeconds);
+  return scoreFromThresholds(deltaSeconds, [
+    [2, 98],
+    [12, 95],
+    [60, 84],
+    [180, 68],
+    [600, 45],
+  ]);
+}
+
+function priceAgreementReliability(csvPrice, onChainPrice) {
+  if (!Number.isFinite(csvPrice) || csvPrice <= 0 || !Number.isFinite(onChainPrice) || onChainPrice <= 0) return 0;
+  const errorBps = Math.abs(csvPrice / onChainPrice - 1) * 10000;
+  return scoreFromThresholds(errorBps, [
+    [2, 97],
+    [10, 93],
+    [50, 82],
+    [100, 66],
+    [250, 35],
+  ]);
+}
+
+function onChainPriceReliability() {
+  return 97;
+}
+
+function impactShare(rewardState) {
+  const total = rangeAwareBaseLiquidity(rewardState) + state.sim.liquidityRaw;
+  if (total <= 0n) return 0;
+  return Number(state.sim.liquidityRaw * 1000000n / total) / 1000000;
+}
+
+function isPositionActiveAtTick(rewardState) {
+  return rewardState.tick >= state.sim.tickLower && rewardState.tick < state.sim.tickUpper;
+}
+
+function rangeAwareBaseLiquidity(rewardState) {
+  if (isPositionActiveAtTick(rewardState) && rewardState.activeLiquidity > 0n) return rewardState.activeLiquidity;
+  return rewardState.stakedLiquidity;
+}
+
+function rewardStateReliability(rewardState) {
+  if (rewardState.stakedLiquidity <= 0n) return 0;
+  const freshness = scoreFromThresholds(rewardState.rewardElapsedSeconds, [
+    [60, 96],
+    [300, 91],
+    [1800, 80],
+    [7200, 62],
+    [21600, 40],
+  ]);
+  return rewardState.rewardReserveCapped ? Math.min(freshness, 55) : freshness;
+}
+
+function aeroPriceReliability(ageSeconds) {
+  return scoreFromThresholds(ageSeconds, [
+    [0, 94],
+    [60, 92],
+    [300, 84],
+    [900, 66],
+    [3600, 38],
+  ]);
+}
+
+function gasEstimateReliability(block) {
+  if (!block || block.baseFeePerGas <= 0n) return 62;
+  const l2Eth = Number(REBALANCE_GAS_UNITS * block.baseFeePerGas) / 1e18;
+  const l1Share = REBALANCE_L1_DATA_FEE_ETH / Math.max(REBALANCE_L1_DATA_FEE_ETH + l2Eth, Number.EPSILON);
+  return scoreFromThresholds(l1Share * 100, [
+    [20, 90],
+    [40, 84],
+    [65, 76],
+    [85, 68],
+    [100, 60],
+  ]);
+}
+
+function aeroTotalsUsdc(aeroPrice) {
+  return {
+    conservative: state.sim.aeroHarvestedUsdc + state.sim.aeroUnharvested * aeroPrice,
+    base: state.sim.aeroBaseHarvestedUsdc + state.sim.aeroBaseUnharvested * aeroPrice,
+    haircut: state.sim.aeroHaircutUsdc + state.sim.aeroHaircutUnharvested * aeroPrice,
+  };
+}
+
+function aeroEventUsdc(aeroPrice) {
+  return {
+    conservative: state.sim.aeroUnharvested * aeroPrice,
+    base: state.sim.aeroBaseUnharvested * aeroPrice,
+    haircut: state.sim.aeroHaircutUnharvested * aeroPrice,
+  };
+}
+
+function impactRiskDetails(rewardState, aeroPrice, eventAero) {
+  const share = impactShare(rewardState);
+  const event = eventAero || aeroEventUsdc(aeroPrice);
+  return `impact share ${fmtNumber(share * 100, 2)}%; event AERO base ${fmtUsdc(event.base)}; haircut -${fmtUsdc(event.haircut)}`;
+}
+
+function simulationReliability(row, block, rewardState) {
+  const timestamp = Math.floor(new Date(row.time).getTime() / 1000);
+  const onChainPrice = priceFromSqrtX96(rewardState.sqrtPriceX96);
+  return conservativeReliability([
+    { label: "WETH on-chain price", score: onChainPriceReliability(), weight: 0.30 },
+    { label: "reward state", score: rewardStateReliability(rewardState), weight: 0.27 },
+    { label: "AERO on-chain price", score: state.sim.aeroPriceReliability, weight: 0.20 },
+    { label: "block match", score: blockTimeReliability(timestamp, block), weight: 0.17 },
+    { label: "CSV cross-check", score: priceAgreementReliability(row.close, onChainPrice), weight: 0.06 },
+  ]);
+}
+
+function rebalanceReliability(rewardState, swapReliability, hasSwap, block) {
+  return conservativeReliability([
+    { label: "reward state", score: rewardStateReliability(rewardState), weight: 0.27 },
+    { label: "AERO on-chain price", score: state.sim.aeroPriceReliability, weight: 0.17 },
+    { label: "swap quote", score: hasSwap ? swapReliability : 94, weight: 0.24 },
+    { label: "gas estimate", score: gasEstimateReliability(block), weight: 0.18 },
+    { label: "automation fee", score: 90, weight: 0.14 },
+  ]);
+}
+
+async function buildRebalanceRow(index, exit, block, runToken = null) {
+  const oldTickLower = state.sim.tickLower;
+  const oldTickUpper = state.sim.tickUpper;
+  const oldAnchorTick = state.sim.anchorTick || Math.round((oldTickLower + oldTickUpper) / (2 * AERODROME_TICK_SPACING)) * AERODROME_TICK_SPACING;
+  const lowerDistance = Math.max(AERODROME_TICK_SPACING, oldAnchorTick - oldTickLower);
+  const upperDistance = Math.max(AERODROME_TICK_SPACING, oldTickUpper - oldAnchorTick);
+  const exitPrice = priceFromSqrtX96(exit.sqrtPriceX96);
+  const rewardState = await readRewardInside(block.number, oldTickLower, oldTickUpper);
+  const aeroPrice = await getAeroPrice(block.number);
+  ensureActiveSimulation(runToken);
+  accrueAeroRewards(rewardState);
+  const aeroTotals = aeroTotalsUsdc(aeroPrice);
+  const aeroEvent = aeroEventUsdc(aeroPrice);
+  const harvestedAeroUsdc = aeroTotals.conservative;
+  const oldAmounts = amountsForPosition(exitPrice);
+  const newAnchorTick = Math.floor(exit.tick / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
+  const newTickLower = newAnchorTick - lowerDistance;
+  const newTickUpper = newAnchorTick + upperDistance;
+  const grossCapital = oldAmounts.value;
+  const targetGross = computePositionPlanForRange(grossCapital, exitPrice, newTickLower, newTickUpper, newAnchorTick);
+  const excessWeth = oldAmounts.weth - targetGross.weth;
+  const excessUsdc = oldAmounts.usdc - targetGross.usdc;
+  let swap = { direction: "NONE", amount: 0 };
+  if (excessWeth > 0) swap = { direction: "WETH_TO_USDC", amount: excessWeth };
+  if (excessUsdc > 0) swap = { direction: "USDC_TO_WETH", amount: excessUsdc };
+  const swapQuote = await estimateHistoricalSwap(swap, exitPrice, block.number);
+  ensureActiveSimulation(runToken);
+  const gasUsdc = estimateRebalanceGasUsdc(block, exitPrice);
+  const automationFeeUsdc = grossCapital * REBALANCE_MANUAL_FEE_BPS / 10000;
+  const totalCostUsdc = swapQuote.lossUsdc + gasUsdc + automationFeeUsdc;
+  const netCapital = Math.max(0, grossCapital - totalCostUsdc);
+  const newPlan = computePositionPlanForRange(netCapital, exitPrice, newTickLower, newTickUpper, newAnchorTick);
+  const nextRewardState = await readRewardInside(block.number, newTickLower, newTickUpper);
+  ensureActiveSimulation(runToken);
+  const reliability = rebalanceReliability(rewardState, swapQuote.reliability, swap.amount > 0, block);
+  const impactDetails = impactRiskDetails(rewardState, aeroPrice, aeroEvent);
+  state.sim.tickLower = newTickLower;
+  state.sim.tickUpper = newTickUpper;
+  state.sim.anchorTick = newAnchorTick;
+  state.sim.liquidityHuman = newPlan.liquidityHuman;
+  state.sim.liquidityRaw = newPlan.liquidityRaw;
+  state.sim.rewardStart = nextRewardState.rewardInside;
+  state.sim.rewardLast = nextRewardState.rewardInside;
+  state.sim.aeroUnharvested = 0;
+  state.sim.aeroBaseUnharvested = 0;
+  state.sim.aeroHaircutUnharvested = 0;
+  state.sim.aeroHarvestedUsdc = harvestedAeroUsdc;
+  state.sim.aeroBaseHarvestedUsdc = aeroTotals.base;
+  state.sim.aeroHaircutUsdc = aeroTotals.haircut;
+  return {
+    event: `rebalance -${fmtUsdc(totalCostUsdc)}`,
+    index,
+    blockNumber: block.number,
+    value: newPlan.value,
+    price: exitPrice,
+    weth: newPlan.weth,
+    usdc: newPlan.usdc,
+    aeroUsdc: aeroEvent.conservative,
+    aeroTotalUsdc: harvestedAeroUsdc,
+    aeroBaseUsdc: aeroEvent.base,
+    aeroHaircutUsdc: aeroEvent.haircut,
+    aeroPrice,
+    reliability: reliability.score,
+    reliabilityDetails: reliabilityDetailsText(reliability.parts),
+    impactDetails,
+    stateAfter: snapshotSimState(),
+    rebalance: {
+      oldTickLower,
+      oldTickUpper,
+      newTickLower,
+      newTickUpper,
+      swapDirection: swap.direction,
+      swapSource: swapQuote.source,
+      swapLossUsdc: swapQuote.lossUsdc,
+      gasUsdc,
+      automationFeeUsdc,
+      totalCostUsdc,
+    },
+  };
+}
+
+function snapshotSimState() {
+  return {
+    tickLower: state.sim.tickLower,
+    tickUpper: state.sim.tickUpper,
+    rangeWidth: state.sim.rangeWidth,
+    anchorTick: state.sim.anchorTick,
+    startGridTick: state.sim.startGridTick,
+    rangeStepTicks: state.sim.rangeStepTicks,
+    liquidityRaw: state.sim.liquidityRaw,
+    liquidityHuman: state.sim.liquidityHuman,
+    rewardStart: state.sim.rewardStart,
+    rewardLast: state.sim.rewardLast,
+    aeroUnharvested: state.sim.aeroUnharvested,
+    aeroBaseUnharvested: state.sim.aeroBaseUnharvested,
+    aeroHaircutUnharvested: state.sim.aeroHaircutUnharvested,
+    aeroHarvestedUsdc: state.sim.aeroHarvestedUsdc,
+    aeroBaseHarvestedUsdc: state.sim.aeroBaseHarvestedUsdc,
+    aeroHaircutUsdc: state.sim.aeroHaircutUsdc,
+    aeroPriceReliability: state.sim.aeroPriceReliability,
+    aeroPriceAgeSeconds: state.sim.aeroPriceAgeSeconds,
+  };
+}
+
+function applySimState(snapshot) {
+  if (!snapshot) return;
+  state.sim.tickLower = snapshot.tickLower;
+  state.sim.tickUpper = snapshot.tickUpper;
+  state.sim.rangeWidth = snapshot.rangeWidth || DEFAULT_SIM_RANGE_WIDTH;
+  state.sim.anchorTick = snapshot.anchorTick;
+  state.sim.startGridTick = snapshot.startGridTick || snapshot.tickLower || 0;
+  state.sim.rangeStepTicks = snapshot.rangeStepTicks || 0;
+  state.sim.liquidityRaw = snapshot.liquidityRaw;
+  state.sim.liquidityHuman = snapshot.liquidityHuman;
+  state.sim.rewardStart = snapshot.rewardStart;
+  state.sim.rewardLast = snapshot.rewardLast || snapshot.rewardStart || 0n;
+  state.sim.aeroUnharvested = snapshot.aeroUnharvested || 0;
+  state.sim.aeroBaseUnharvested = snapshot.aeroBaseUnharvested || snapshot.aeroUnharvested || 0;
+  state.sim.aeroHaircutUnharvested = snapshot.aeroHaircutUnharvested || 0;
+  state.sim.aeroHarvestedUsdc = snapshot.aeroHarvestedUsdc;
+  state.sim.aeroBaseHarvestedUsdc = snapshot.aeroBaseHarvestedUsdc || snapshot.aeroHarvestedUsdc || 0;
+  state.sim.aeroHaircutUsdc = snapshot.aeroHaircutUsdc || 0;
+  state.sim.aeroPriceReliability = snapshot.aeroPriceReliability;
+  state.sim.aeroPriceAgeSeconds = snapshot.aeroPriceAgeSeconds || 0;
+}
+
+function simRangePrices() {
+  return {
+    lower: priceForTick(state.sim.tickLower),
+    upper: priceForTick(state.sim.tickUpper),
+  };
+}
+
+function simRangeText() {
+  const prices = simRangePrices();
+  return `Диапазон ${fmtPercent(state.sim.rangeWidth * 100)}%: ${fmtPrice(prices.lower)} — ${fmtPrice(prices.upper)} (ticks ${Math.abs(state.sim.tickLower)} — ${Math.abs(state.sim.tickUpper)})`;
+}
+
+function simulationRangeGridPrices(min, max) {
+  if (!state.sim.started || !state.sim.rangeStepTicks) return [];
+  const start = state.sim.startGridTick || state.sim.tickLower;
+  const step = Math.max(AERODROME_TICK_SPACING, state.sim.rangeStepTicks);
+  const minTick = tickForPrice(min);
+  const maxTick = tickForPrice(max);
+  const firstIndex = Math.floor((minTick - start) / step) - 1;
+  const lastIndex = Math.ceil((maxTick - start) / step) + 1;
+  const boundaries = [];
+  for (let index = firstIndex; index <= lastIndex; index += 1) {
+    const tick = start + index * step;
+    const price = priceForTick(tick);
+    if (price >= min && price <= max) boundaries.push({ tick, price, index });
+  }
+  return boundaries;
+}
+
+function downsample(rows, maxPoints) {
+  if (rows.length <= maxPoints) return rows;
+  const step = (rows.length - 1) / (maxPoints - 1);
+  const result = [];
+  for (let i = 0; i < maxPoints; i += 1) {
+    result.push(rows[Math.round(i * step)]);
+  }
+  return result;
+}
+
+function getRangeRows() {
+  if (state.range === "all") return state.rows;
+  return state.rows.filter((row) => row.time.startsWith(state.range));
+}
+
+function getVisibleRows() {
+  const rows = getRangeRows();
+  if (rows.length <= 1) return rows;
+  const start = Math.floor(state.zoomStart * (rows.length - 1));
+  const end = Math.ceil(state.zoomEnd * (rows.length - 1)) + 1;
+  return rows.slice(start, Math.max(start + 2, end));
+}
+
+function getRenderedRows() {
+  if (state.releaseRows) return state.releaseRows;
+  return downsample(getVisibleRows(), Math.floor(canvas.clientWidth * POINTS_PER_PIXEL));
+}
+
+function buildDragSamples() {
+  const rows = getRangeRows();
+  if (rows.length <= 1 || !state.visible.length) return [];
+
+  const firstVisibleIndex = state.visible[0].index;
+  const lastVisibleIndex = state.visible[state.visible.length - 1].index;
+  const firstRangeIndex = rows[0].index;
+  const rangeSpan = Math.max(1, rows[rows.length - 1].index - firstRangeIndex);
+  const visibleStart = rows.findIndex((row) => row.index >= firstVisibleIndex);
+  const visibleEnd = rows.findIndex((row) => row.index >= lastVisibleIndex);
+  const visibleSpan = Math.max(1, visibleEnd - visibleStart);
+  const pointsPerRow = state.visible.length / visibleSpan;
+  const padSpan = visibleSpan * 6;
+
+  const sampleSegment = (start, end) => {
+    if (end < start) return [];
+    const length = end - start + 1;
+    const count = Math.max(2, Math.ceil(length * pointsPerRow));
+    const step = length <= 1 ? 1 : (length - 1) / (count - 1);
+    const result = [];
+    for (let i = 0; i < count; i += 1) {
+      result.push(rows[Math.round(start + i * step)]);
+    }
+    return result;
+  };
+
+  const left = sampleSegment(Math.max(0, visibleStart - padSpan), visibleStart - 1);
+  const right = sampleSegment(visibleEnd + 1, Math.min(rows.length - 1, visibleEnd + padSpan));
+  const byIndex = new Map();
+  [...left, ...state.visible, ...right].forEach((row) => {
+    byIndex.set(row.index, {
+      row,
+      ratio: (row.index - firstRangeIndex) / rangeSpan,
+    });
+  });
+
+  return [...byIndex.values()].sort((a, b) => a.ratio - b.ratio);
+}
+
+function getVisibleDragRows() {
+  const rows = state.dragSamples
+    .filter((sample) => sample.ratio >= state.zoomStart && sample.ratio <= state.zoomEnd)
+    .map((sample) => sample.row);
+  return rows.length ? rows : state.dragSamples.map((sample) => sample.row);
+}
+
+function zoomAt(ratio, direction) {
+  const rows = getRangeRows();
+  if (rows.length <= 2) return;
+
+  const currentStart = state.zoomStart;
+  const currentEnd = state.zoomEnd;
+  const currentSize = currentEnd - currentStart;
+  const factor = direction < 0 ? 0.75 : 1.35;
+  const minSize = Math.min(1, 120 / rows.length);
+  const nextSize = Math.min(1, Math.max(minSize, currentSize * factor));
+  const anchor = currentStart + ratio * currentSize;
+  let nextStart = anchor - ratio * nextSize;
+  let nextEnd = nextStart + nextSize;
+
+  if (nextStart < 0) {
+    nextStart = 0;
+    nextEnd = nextSize;
+  }
+  if (nextEnd > 1) {
+    nextEnd = 1;
+    nextStart = 1 - nextSize;
+  }
+
+  state.zoomStart = nextStart;
+  state.zoomEnd = nextEnd;
+  state.releaseRows = null;
+}
+
+function panBy(deltaRatio) {
+  const currentSize = state.zoomEnd - state.zoomStart;
+  if (currentSize >= 1) return;
+
+  let nextStart = state.dragStart + deltaRatio;
+  let nextEnd = state.dragEnd + deltaRatio;
+  if (nextStart < 0) {
+    nextStart = 0;
+    nextEnd = currentSize;
+  }
+  if (nextEnd > 1) {
+    nextEnd = 1;
+    nextStart = 1 - currentSize;
+  }
+
+  state.zoomStart = nextStart;
+  state.zoomEnd = nextEnd;
+}
+
+function setZoomWindow(start) {
+  const size = state.zoomEnd - state.zoomStart;
+  if (size >= 1) return;
+  const nextStart = Math.min(Math.max(start, 0), 1 - size);
+  state.zoomStart = nextStart;
+  state.zoomEnd = nextStart + size;
+  state.releaseRows = null;
+  state.hoverIndex = -1;
+  updateMetrics(getVisibleRows());
+  draw();
+}
+
+function updateNavigator() {
+  if (!rangeNavigator || !rangeWindow) return;
+  const rangeRows = getRangeRows();
+  const size = Math.min(1, Math.max(0, state.zoomEnd - state.zoomStart));
+  rangeNavigator.classList.toggle("disabled", rangeRows.length <= 1 || size >= 1);
+  rangeWindow.style.left = `${state.zoomStart * 100}%`;
+  rangeWindow.style.width = `${size * 100}%`;
+  rangeWindow.setAttribute("aria-valuenow", String(Math.round(state.zoomStart * 100)));
+  rangeWindow.setAttribute("aria-valuetext", `${Math.round(state.zoomStart * 100)}-${Math.round(state.zoomEnd * 100)}%`);
+}
+
+function resizeCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  canvas.width = Math.round(rect.width * scale);
+  canvas.height = Math.round(rect.height * scale);
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+}
+
+function draw() {
+  resizeCanvas();
+  const width = canvas.clientWidth;
+  const height = canvas.clientHeight;
+  const pad = { top: 22, right: 72, bottom: 38, left: 72 };
+  ctx.clearRect(0, 0, width, height);
+
+  const visibleRows = getVisibleRows();
+  const isDragRender = state.isDragging && state.dragSamples.length > 1;
+  const rows = isDragRender ? state.dragSamples.map((sample) => sample.row) : getRenderedRows();
+  state.visible = rows;
+  updateNavigator();
+
+  if (!rows.length) return;
+
+  const bounds = chartPriceBounds(isDragRender ? getVisibleDragRows() : rows);
+  const { min, max } = bounds;
+  const span = max - min || 1;
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const firstTime = new Date(visibleRows[0].time).getTime();
+  const lastTime = new Date(visibleRows[visibleRows.length - 1].time).getTime();
+  const rangeRows = getRangeRows();
+  const firstRangeIndex = rangeRows[0]?.index ?? 0;
+  const rangeIndexSpan = Math.max(1, (rangeRows[rangeRows.length - 1]?.index ?? firstRangeIndex) - firstRangeIndex);
+  const xFor = (i) => {
+    const ratioInRange = isDragRender
+      ? state.dragSamples[i].ratio
+      : (rows[i].index - firstRangeIndex) / rangeIndexSpan;
+    const ratio = (ratioInRange - state.zoomStart) / Math.max(0.000001, state.zoomEnd - state.zoomStart);
+    return pad.left + ratio * plotW;
+  };
+  const yFor = (price) => pad.top + (1 - (price - min) / span) * plotH;
+  const xForTime = (timestamp) => pad.left + ((timestamp - firstTime) / Math.max(1, lastTime - firstTime)) * plotW;
+  const visibleDays = (lastTime - firstTime) / (24 * 60 * 60 * 1000);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.left, pad.top, plotW, plotH);
+  ctx.clip();
+  const firstDay = startOfUtcDay(new Date(firstTime));
+  const dayTicks = [];
+  const weekTicks = [];
+  const middayTicks = [];
+  const labeledHourTicks = [];
+  const allHourTicks = [];
+  for (let timestamp = firstDay; timestamp <= lastTime; timestamp = addUtcDays(timestamp, 1)) {
+    const date = new Date(timestamp);
+    const isMonth = date.getUTCDate() === 1;
+    const isWeek = date.getUTCDay() === 1;
+    if (timestamp >= firstTime) {
+      dayTicks.push(timestamp);
+      if (isWeek) weekTicks.push(timestamp);
+      const x = xForTime(timestamp);
+      ctx.strokeStyle = isMonth ? "rgba(23, 32, 51, 0.24)" : isWeek ? "rgba(23, 32, 51, 0.16)" : "rgba(23, 32, 51, 0.1)";
+      ctx.lineWidth = visibleDays < 7 ? (isMonth ? 2.2 : isWeek ? 1.8 : 1.55) : (isMonth ? 1.5 : isWeek ? 1.1 : 0.75);
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, height - pad.bottom);
+      ctx.stroke();
+    }
+
+    if (visibleDays < 1 && timestamp >= firstTime && timestamp <= lastTime) {
+      allHourTicks.push(timestamp);
+    }
+
+    const midday = addUtcHours(timestamp, 12);
+    if (visibleDays >= 3 && visibleDays < 7 && midday >= firstTime && midday <= lastTime) {
+      middayTicks.push(midday);
+      const x = xForTime(midday);
+      ctx.strokeStyle = "rgba(242, 95, 92, 0.18)";
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, height - pad.bottom);
+      ctx.stroke();
+    }
+
+    for (let hour = 1; hour < 24; hour += 1) {
+      const hourTick = addUtcHours(timestamp, hour);
+      if (visibleDays < 3 && hourTick >= firstTime && hourTick <= lastTime) {
+        if (visibleDays < 1) allHourTicks.push(hourTick);
+        if (hour === 6 || hour === 12 || hour === 18) labeledHourTicks.push(hourTick);
+        const x = xForTime(hourTick);
+        ctx.strokeStyle = hour === 6 || hour === 12 || hour === 18 ? "rgba(242, 95, 92, 0.14)" : "rgba(23, 32, 51, 0.07)";
+        ctx.lineWidth = 0.75;
+        ctx.beginPath();
+        ctx.moveTo(x, pad.top);
+        ctx.lineTo(x, height - pad.bottom);
+        ctx.stroke();
+      }
+    }
+  }
+  ctx.restore();
+
+  ctx.fillStyle = "#647087";
+  ctx.font = "12px Inter, system-ui, sans-serif";
+  const boundaries = simulationRangeGridPrices(min, max);
+  const shouldLabelAllPriceLines = boundaries.length > 0 && Math.max(1, boundaries.length - 1) < 10;
+  boundaries.forEach(({ index, price }) => {
+    const y = yFor(price);
+    const isMajor = index % 5 === 0;
+    ctx.strokeStyle = isMajor ? "rgba(15, 139, 141, 0.34)" : "rgba(15, 139, 141, 0.15)";
+    ctx.lineWidth = isMajor ? 1 : 0.75;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(width - pad.right, y);
+    ctx.stroke();
+    if (isMajor || shouldLabelAllPriceLines) {
+      ctx.fillStyle = "#647087";
+      ctx.fillText(fmtPrice(price), width - pad.right + 12, y + 4);
+    }
+  });
+  if (state.sim.started) {
+    const activeBounds = [
+      { label: "lower", tick: state.sim.tickLower, price: priceForTick(state.sim.tickLower), color: "rgba(242, 95, 92, 0.9)" },
+      { label: "upper", tick: state.sim.tickUpper, price: priceForTick(state.sim.tickUpper), color: "rgba(242, 95, 92, 0.9)" },
+    ]
+      .filter(({ price }) => price >= min && price <= max)
+      .map((bound) => ({ ...bound, y: yFor(bound.price) }));
+    const activeBoundsAreTight = activeBounds.length === 2 && Math.abs(activeBounds[0].y - activeBounds[1].y) < 34;
+    activeBounds.forEach(({ label, price, color, y }) => {
+      if (price < min || price > max) return;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(width - pad.right, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const text = `${label} ${fmtPrice(price)}`;
+      const textWidth = ctx.measureText(text).width;
+      const labelX = width - pad.right - textWidth - 8;
+      const preferredLabelY = activeBoundsAreTight && label === "lower" ? y + 16 : y - 6;
+      const labelY = Math.max(pad.top + 13, Math.min(height - pad.bottom - 4, preferredLabelY));
+      ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
+      ctx.fillRect(labelX - 4, labelY - 11, textWidth + 8, 15);
+      ctx.fillStyle = "#f25f5c";
+      ctx.fillText(text, labelX, labelY);
+    });
+  }
+  const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
+  gradient.addColorStop(0, "rgba(15, 139, 141, 0.18)");
+  gradient.addColorStop(1, "rgba(15, 139, 141, 0)");
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.left, pad.top, plotW, plotH);
+  ctx.clip();
+
+  ctx.beginPath();
+  rows.forEach((row, index) => {
+    const x = xFor(index);
+    const y = yFor(row.close);
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.lineTo(xFor(rows.length - 1), height - pad.bottom);
+  ctx.lineTo(xFor(0), height - pad.bottom);
+  ctx.closePath();
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  ctx.beginPath();
+  rows.forEach((row, index) => {
+    const x = xFor(index);
+    const y = yFor(row.close);
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = "#0f8b8d";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+
+  ctx.fillStyle = "#647087";
+  ctx.font = visibleDays < 7 ? "600 12px Inter, system-ui, sans-serif" : "12px Inter, system-ui, sans-serif";
+  const xLabelTicks = visibleDays < 1 ? [] : visibleDays <= 14 ? dayTicks : weekTicks;
+  xLabelTicks.forEach((timestamp) => {
+    const label = fmtAxisTime(timestamp);
+    const x = xForTime(timestamp);
+    ctx.fillText(label, x, height - 14);
+  });
+  ctx.font = "12px Inter, system-ui, sans-serif";
+  if (visibleDays >= 3 && visibleDays < 7) {
+    middayTicks.forEach((timestamp) => {
+      const x = xForTime(timestamp);
+      ctx.fillText(fmtAxisHour(timestamp), x, height - 14);
+    });
+  }
+  if (visibleDays < 1) {
+    allHourTicks.forEach((timestamp) => {
+      const hour = new Date(timestamp).getUTCHours();
+      ctx.font = hour === 6 || hour === 12 || hour === 18 ? "600 12px Inter, system-ui, sans-serif" : "12px Inter, system-ui, sans-serif";
+      const x = xForTime(timestamp);
+      ctx.fillText(fmtAxisHour(timestamp), x, height - 14);
+    });
+  } else if (visibleDays < 3) {
+    labeledHourTicks.forEach((timestamp) => {
+      const x = xForTime(timestamp);
+      ctx.fillText(fmtAxisHour(timestamp), x, height - 14);
+    });
+  }
+  ctx.font = "12px Inter, system-ui, sans-serif";
+
+  const placeTooltip = (element, x, y) => {
+    const tooltipGap = 14;
+    const tooltipMargin = 8;
+    const tooltipWidth = element.offsetWidth;
+    const tooltipHeight = element.offsetHeight;
+    const tooltipLeft = Math.min(Math.max(x - tooltipWidth / 2, tooltipMargin), width - tooltipWidth - tooltipMargin);
+    const hasRoomAbove = y - tooltipHeight - tooltipGap >= tooltipMargin;
+    const tooltipTop = hasRoomAbove ? y - tooltipHeight - tooltipGap : y + tooltipGap;
+    element.style.left = `${tooltipLeft}px`;
+    element.style.top = `${Math.min(tooltipTop, height - tooltipHeight - tooltipMargin)}px`;
+    element.style.transform = "none";
+  };
+
+  const drawTimeMarker = (rowIndex, color, label, element = null) => {
+    const row = state.rows[rowIndex];
+    if (!row) return false;
+    const markerTime = new Date(row.time).getTime();
+    if (markerTime < firstTime || markerTime > lastTime) return false;
+    const x = xForTime(markerTime);
+    const y = yFor(row.close);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = label === "sim" ? 1.4 : 1;
+    ctx.beginPath();
+    ctx.moveTo(x, pad.top);
+    ctx.lineTo(x, height - pad.bottom);
+    ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    if (label) ctx.fillText(label, x + 6, pad.top + 14);
+    if (element) {
+      element.hidden = false;
+      element.innerHTML = `${fmtTime(row.time)}<br><strong>${fmtPrice(row.close)}</strong>`;
+      placeTooltip(element, x, y);
+    }
+    return true;
+  };
+
+  const hasSimMarker = state.sim.started && drawTimeMarker(state.sim.currentIndex, "#f25f5c", "sim", simTooltip);
+  if (!hasSimMarker) simTooltip.hidden = true;
+
+  if (state.sim.tableHoverIndex >= 0) {
+    const hasTableMarker = drawTimeMarker(state.sim.tableHoverIndex, "rgba(15, 139, 141, 0.95)", "", tableTooltip);
+    if (!hasTableMarker) tableTooltip.hidden = true;
+  } else {
+    tableTooltip.hidden = true;
+  }
+
+  if (state.hoverIndex >= 0 && rows[state.hoverIndex]) {
+    const row = rows[state.hoverIndex];
+    const x = xFor(state.hoverIndex);
+    const y = yFor(row.close);
+    ctx.strokeStyle = "#f25f5c";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, pad.top);
+    ctx.lineTo(x, height - pad.bottom);
+    ctx.stroke();
+    ctx.fillStyle = "#f25f5c";
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    tooltip.hidden = false;
+    tooltip.innerHTML = `${fmtTime(row.time)}<br><strong>${fmtPrice(row.close)}</strong>`;
+    placeTooltip(tooltip, x, y);
+  } else {
+    tooltip.hidden = true;
+  }
+}
+
+function updateRange(range) {
+  state.range = range;
+  state.hoverIndex = -1;
+  state.zoomStart = 0;
+  state.zoomEnd = 1;
+  state.releaseRows = null;
+  document.querySelectorAll(".filters button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.range === range);
+  });
+  updateMetrics(getVisibleRows());
+  draw();
+}
+
+function rowIndexForTimestamp(timestamp) {
+  if (!state.rows.length) return 0;
+  let best = 0;
+  let bestDelta = Number.POSITIVE_INFINITY;
+  state.rows.forEach((row, index) => {
+    const delta = Math.abs(new Date(row.time).getTime() - timestamp);
+    if (delta < bestDelta) {
+      best = index;
+      bestDelta = delta;
+    }
+  });
+  return best;
+}
+
+function formatDuration(ms) {
+  if (ms <= 0) return "0 с";
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds} с`;
+  const minutes = Math.floor(seconds / 60);
+  const restSeconds = seconds % 60;
+  if (minutes < 60) return restSeconds ? `${minutes} мин ${restSeconds} с` : `${minutes} мин`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes ? `${hours} ч ${restMinutes} мин` : `${hours} ч`;
+}
+
+function pluralRu(value, one, few, many) {
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+function simulationEstimateText() {
+  const samples = state.sim.stepDurations.slice(-60);
+  if (samples.length < 3) return "ETA считается...";
+  const averageMs = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  const remainingSteps = Math.max(0, state.sim.endIndex - state.sim.currentIndex);
+  const nextEtaMs = averageMs * remainingSteps;
+  state.sim.etaMs = state.sim.etaMs > 0 ? state.sim.etaMs * 0.7 + nextEtaMs * 0.3 : nextEtaMs;
+  return `ETA ${formatDuration(state.sim.etaMs)}`;
+}
+
+function simulationProgressText() {
+  const done = Math.max(0, state.sim.currentIndex - state.sim.startIndex);
+  const total = Math.max(0, state.sim.endIndex - state.sim.startIndex);
+  return `${done} / ${total} минут · ${simulationEstimateText()}`;
+}
+
+function recordSimulationStepDuration(startedAt) {
+  state.sim.stepDurations.push(performance.now() - startedAt);
+  if (state.sim.stepDurations.length > 120) state.sim.stepDurations.shift();
+}
+
+function setSimulationStart(index) {
+  const bounded = Math.min(Math.max(index, 0), Math.max(0, state.rows.length - 1));
+  state.sim.startIndex = bounded;
+  if (!state.sim.started) state.sim.currentIndex = bounded;
+  if (state.rows[bounded]) simStartInput.value = fmtInputTime(state.rows[bounded].time);
+  draw();
+}
+
+function setSimulationEnd(index) {
+  const bounded = Math.min(Math.max(index, 0), Math.max(0, state.rows.length - 1));
+  state.sim.endIndex = bounded;
+  if (state.rows[bounded]) simEndInput.value = fmtInputTime(state.rows[bounded].time);
+  draw();
+}
+
+function setActiveTimeInput(inputName) {
+  state.activeTimeInput = inputName;
+  simStartInput.classList.toggle("activeTimeInput", inputName === "start");
+  simEndInput.classList.toggle("activeTimeInput", inputName === "end");
+}
+
+function setActiveSimulationTime(index) {
+  resetSimulationRows();
+  if (state.activeTimeInput === "end") {
+    setSimulationEnd(index);
+    setSimulationNotice("Конец симуляции выбран по графику. Нажми START.");
+  } else {
+    setSimulationStart(index);
+    setSimulationNotice("Старт симуляции выбран по графику. Нажми START.");
+  }
+}
+
+function nudgeTimeInput(inputName, deltaMinutes) {
+  const input = inputName === "end" ? simEndInput : simStartInput;
+  const timestamp = parseInputTime(input.value);
+  if (Number.isNaN(timestamp)) {
+    setSimulationNotice(`Не могу разобрать ${inputName === "end" ? "дату конца" : "дату старта"}. Используй формат 2026-02-01 00:00.`);
+    return;
+  }
+  const index = rowIndexForTimestamp(timestamp + deltaMinutes * 60 * 1000);
+  resetSimulationRows();
+  if (inputName === "end") setSimulationEnd(index);
+  else setSimulationStart(index);
+}
+
+function zoomToSimulationRange(startIndex, endIndex) {
+  const rangeRows = getRangeRows();
+  if (rangeRows.length <= 1) return;
+  const startPosition = rangeRows.findIndex((row) => row.index === startIndex);
+  const endPosition = rangeRows.findIndex((row) => row.index === endIndex);
+  if (startPosition < 0 || endPosition < 0) {
+    updateRange("all");
+    zoomToSimulationRange(startIndex, endIndex);
+    return;
+  }
+  const rangeSpan = rangeRows.length - 1;
+  const minWindowRows = Math.min(60, rangeRows.length - 1);
+  const paddedStart = Math.max(0, Math.min(startPosition, endPosition));
+  const paddedEnd = Math.min(rangeRows.length - 1, Math.max(startPosition, endPosition));
+  let nextStart = paddedStart / rangeSpan;
+  let nextEnd = paddedEnd / rangeSpan;
+  const minWindowSize = rangeSpan > 0 ? Math.min(1, minWindowRows / rangeSpan) : 1;
+  if (nextEnd - nextStart < minWindowSize) {
+    const center = (nextStart + nextEnd) / 2;
+    nextStart = center - minWindowSize / 2;
+    nextEnd = center + minWindowSize / 2;
+    if (nextStart < 0) {
+      nextEnd -= nextStart;
+      nextStart = 0;
+    }
+    if (nextEnd > 1) {
+      nextStart -= nextEnd - 1;
+      nextEnd = 1;
+    }
+  }
+  state.zoomStart = Math.max(0, nextStart);
+  state.zoomEnd = Math.min(1, nextEnd);
+  state.hoverIndex = -1;
+  state.releaseRows = null;
+  updateMetrics(getVisibleRows());
+}
+
+function updateSimulationControls() {
+  if (SERVER_SIMULATION_MODE) {
+    if (serverSimulation.running) {
+      runSimulation.textContent = "RUNNING";
+      runSimulation.title = "Симуляция считается на сервере";
+      runSimulation.disabled = true;
+    } else {
+      runSimulation.textContent = "START";
+      runSimulation.title = "Запустить серверную симуляцию";
+      runSimulation.disabled = false;
+    }
+    if (resetSimulationButton) resetSimulationButton.disabled = false;
+    stepBack.disabled = true;
+    stepForward.disabled = true;
+    return;
+  }
+  if (state.sim.initializing || state.sim.autoRunning) {
+    runSimulation.textContent = "PAUSE";
+    runSimulation.title = "Пауза симуляции";
+  } else if (!state.sim.started) {
+    runSimulation.textContent = "START";
+    runSimulation.title = "Старт симуляции";
+  } else {
+    runSimulation.textContent = "RESUME";
+    runSimulation.title = "Продолжить симуляцию";
+  }
+  if (resetSimulationButton) resetSimulationButton.disabled = state.sim.rows.length === 0 && !state.sim.started && !state.sim.initializing;
+  stepBack.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.rows.length <= 1;
+  stepForward.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.stepInProgress || state.sim.stopped || !state.sim.started || state.sim.currentIndex >= state.sim.endIndex;
+}
+
+function resetSimulationRows() {
+  state.sim.initializing = false;
+  state.sim.autoRunning = false;
+  state.sim.stepInProgress = false;
+  state.sim.runToken += 1;
+  state.sim.autoLoopId += 1;
+  state.sim.stepDurations = [];
+  state.sim.etaMs = 0;
+  state.sim.rows = [];
+  state.sim.started = false;
+  state.sim.stopped = false;
+  state.sim.rewardStart = 0n;
+  state.sim.startGridTick = 0;
+  state.sim.rangeStepTicks = 0;
+  state.sim.rewardLast = 0n;
+  state.sim.aeroUnharvested = 0;
+  state.sim.aeroBaseUnharvested = 0;
+  state.sim.aeroHaircutUnharvested = 0;
+  state.sim.aeroHarvestedUsdc = 0;
+  state.sim.aeroBaseHarvestedUsdc = 0;
+  state.sim.aeroHaircutUsdc = 0;
+  state.sim.aeroPriceReliability = 100;
+  state.sim.aeroPriceAgeSeconds = 0;
+  state.sim.tableHoverIndex = -1;
+  state.sim.activeRowIndex = -1;
+  simTableBody.innerHTML = "";
+  simTableWrap.hidden = true;
+  currentPositionValue.textContent = "$0.00";
+  currentAeroEarned.textContent = "$0.00";
+  updateSimulationControls();
+  draw();
+}
+
+function simulationRowTitle(row) {
+  const details = [
+    row.reliabilityDetails ? `reliability: ${row.reliabilityDetails}` : "",
+    row.impactDetails || "",
+  ].filter(Boolean).join("; ");
+  if (!row.rebalance) return details;
+  const rb = row.rebalance;
+  return `${details}; swap ${rb.swapDirection} via ${rb.swapSource}; swap loss ${fmtUsdc(rb.swapLossUsdc)}; gas ${fmtUsdc(rb.gasUsdc)}; fee ${fmtUsdc(rb.automationFeeUsdc)}; ticks ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}`;
+}
+
+function renderSimulationTable(scrollToLatest = false) {
+  simTableBody.innerHTML = state.sim.rows.map((row) => `
+    <tr data-index="${row.index}" class="${row.index === state.sim.activeRowIndex ? "activeRow" : ""}" title="${simulationRowTitle(row)}">
+      <td>${fmtInputTime(state.rows[row.index]?.time || "")}</td>
+      <td>${row.event}</td>
+      <td>${fmtUsdc(row.value)}</td>
+      <td>${fmtPrice(row.price)}</td>
+      <td>${fmtNumber(row.weth, 8)}</td>
+      <td>${fmtNumber(row.usdc, 2)}</td>
+      <td>${fmtUsdc(row.aeroUsdc)}</td>
+      <td>-${fmtUsdc(row.aeroHaircutUsdc || 0)}</td>
+      <td>${fmtReliability(row.reliability)}</td>
+    </tr>
+  `).join("");
+  simTableBody.querySelectorAll("tr").forEach((row) => {
+    row.addEventListener("mouseenter", () => {
+      state.sim.tableHoverIndex = Number(row.dataset.index);
+      draw();
+    });
+    row.addEventListener("mouseleave", () => {
+      state.sim.tableHoverIndex = -1;
+      draw();
+    });
+  });
+  simTableWrap.hidden = state.sim.rows.length === 0;
+  const last = state.sim.rows[state.sim.rows.length - 1];
+  if (last) {
+    currentPositionValue.textContent = fmtUsdc(last.value);
+    currentAeroEarned.textContent = fmtUsdc(last.aeroTotalUsdc ?? last.aeroUsdc);
+  }
+  updateSimulationControls();
+  if (scrollToLatest && last) {
+    const lastRow = simTableBody.querySelector(`tr[data-index="${last.index}"]`);
+    if (lastRow) {
+      const wrapRect = simTableWrap.getBoundingClientRect();
+      const rowRect = lastRow.getBoundingClientRect();
+      if (rowRect.bottom > wrapRect.bottom) {
+        simTableWrap.scrollTop += rowRect.bottom - wrapRect.bottom + 8;
+      } else if (rowRect.top < wrapRect.top) {
+        simTableWrap.scrollTop -= wrapRect.top - rowRect.top + 8;
+      }
+    }
+  }
+  draw();
+}
+
+function setSimulationNotice(message) {
+  const notice = typeof message === "string" ? { status: message, details: "" } : message;
+  let statusEl = simNotice.querySelector(".simNoticeStatus");
+  let detailsEl = simNotice.querySelector(".simNoticeDetails");
+  let estimateEl = simNotice.querySelector(".simNoticeEstimate");
+  if (!statusEl || !detailsEl || !estimateEl) {
+    simNotice.replaceChildren();
+    statusEl = document.createElement("div");
+    detailsEl = document.createElement("div");
+    estimateEl = document.createElement("div");
+    const rightEl = document.createElement("div");
+    statusEl.className = "simNoticeStatus";
+    rightEl.className = "simNoticeRight";
+    detailsEl.className = "simNoticeDetails";
+    estimateEl.className = "simNoticeEstimate";
+    rightEl.append(detailsEl, estimateEl);
+    simNotice.append(statusEl, rightEl);
+  }
+  const nextStatus = notice.status || "";
+  const nextDetails = notice.details || "";
+  const nextEstimate = notice.estimate || "";
+  if (statusEl.textContent !== nextStatus) statusEl.textContent = nextStatus;
+  if (detailsEl.textContent !== nextDetails) detailsEl.textContent = nextDetails;
+  if (estimateEl.textContent !== nextEstimate) estimateEl.textContent = nextEstimate;
+}
+
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, {
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    ...options,
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return await response.json();
+}
+
+function isServerSimulationTerminal(status) {
+  return ["completed", "failed", "stopped", "timeout", "error"].includes(status);
+}
+
+function serverSimulationText(simulation) {
+  const progress = simulation?.progress || {};
+  const result = simulation?.result || {};
+  const payload = Object.keys(result).length ? result : progress;
+  const rows = payload.rows || 0;
+  const elapsed = payload.elapsedSeconds ? formatDuration(payload.elapsedSeconds * 1000) : "";
+  const lastRow = payload.lastRow ? payload.lastRow.replace(/\s+/g, " ").trim() : "";
+  return {
+    rows,
+    elapsed,
+    lastRow,
+    currentValue: payload.currentValue || "",
+    currentAero: payload.currentAero || "",
+    notice: payload.notice || simulation?.error || "",
+  };
+}
+
+function renderServerSimulation(simulation) {
+  if (!SERVER_SIMULATION_MODE || !simulation?.id) return;
+  serverSimulation.id = simulation.id;
+  serverSimulation.running = !isServerSimulationTerminal(simulation.status);
+  const info = serverSimulationText(simulation);
+  if (info.currentValue) currentPositionValue.textContent = info.currentValue;
+  if (info.currentAero) currentAeroEarned.textContent = info.currentAero;
+  setSimulationNotice({
+    status: serverSimulation.running ? "Симуляция считается на сервере." : `Серверная симуляция: ${simulation.status}.`,
+    details: [`rows ${info.rows}`, info.elapsed, info.notice].filter(Boolean).join(" · "),
+    estimate: info.lastRow,
+  });
+  updateSimulationControls();
+}
+
+function stopServerSimulationPolling() {
+  if (serverSimulation.pollTimer) clearInterval(serverSimulation.pollTimer);
+  serverSimulation.pollTimer = null;
+}
+
+async function pollServerSimulation(id) {
+  if (!SERVER_SIMULATION_MODE || !id) return;
+  try {
+    const simulation = await fetchJson(`/api/simulations/${id}`);
+    renderServerSimulation(simulation);
+    if (isServerSimulationTerminal(simulation.status)) stopServerSimulationPolling();
+  } catch (error) {
+    serverSimulation.running = false;
+    stopServerSimulationPolling();
+    setSimulationNotice(`Не могу прочитать серверную симуляцию: ${error.message}`);
+    updateSimulationControls();
+  }
+}
+
+function watchServerSimulation(id) {
+  stopServerSimulationPolling();
+  pollServerSimulation(id);
+  serverSimulation.pollTimer = setInterval(() => pollServerSimulation(id), 5000);
+}
+
+async function loadLatestServerSimulation() {
+  if (!SERVER_SIMULATION_MODE) return;
+  try {
+    const simulation = await fetchJson("/api/simulations/latest");
+    if (simulation?.id) {
+      renderServerSimulation(simulation);
+      if (!isServerSimulationTerminal(simulation.status)) watchServerSimulation(simulation.id);
+    } else {
+      updateSimulationControls();
+    }
+  } catch (_) {
+    serverSimulation.available = false;
+    updateSimulationControls();
+  }
+}
+
+async function startServerSimulation() {
+  if (!SERVER_SIMULATION_MODE) return startSimulation();
+  if (!serverSimulation.available) {
+    setSimulationNotice("Серверный API недоступен. Запусти приложение через scripts/serve_with_rpc.py.");
+    return;
+  }
+  const inputTimestamp = parseInputTime(simStartInput.value);
+  const endTimestamp = parseInputTime(simEndInput.value);
+  if (Number.isNaN(inputTimestamp) || Number.isNaN(endTimestamp)) {
+    setSimulationNotice("Не могу разобрать даты. Используй формат 2026-02-01 00:00.");
+    return;
+  }
+  if (endTimestamp <= inputTimestamp) {
+    setSimulationNotice("Дата конца должна быть позже даты старта.");
+    return;
+  }
+  const depositUsdc = parseNumericInput(depositInput.value);
+  const rangePercent = parseRangePercent(rangePercentInput.value);
+  if (!Number.isFinite(depositUsdc) || depositUsdc <= 0) {
+    setSimulationNotice("Сумма депозита должна быть положительным числом.");
+    return;
+  }
+  if (!Number.isFinite(rangePercent) || rangePercent <= 0 || rangePercent >= 100) {
+    setSimulationNotice("Диапазон должен быть положительным числом меньше 100%.");
+    return;
+  }
+  serverSimulation.running = true;
+  updateSimulationControls();
+  setSimulationNotice("Запускаю серверную симуляцию...");
+  try {
+    const simulation = await fetchJson("/api/simulations", {
+      method: "POST",
+      body: JSON.stringify({
+        start: fmtInputTime(inputTimestamp),
+        end: fmtInputTime(endTimestamp),
+        deposit: String(depositUsdc),
+        rangePct: rangePercent,
+      }),
+    });
+    renderServerSimulation(simulation);
+    watchServerSimulation(simulation.id);
+  } catch (error) {
+    serverSimulation.running = false;
+    setSimulationNotice(`Не удалось запустить серверную симуляцию: ${error.message}`);
+    updateSimulationControls();
+  }
+}
+
+function ensureActiveSimulation(runToken, requireStarted = true) {
+  if (runToken !== null && (runToken !== state.sim.runToken || (requireStarted && !state.sim.started))) {
+    throw new Error("Simulation was reset");
+  }
+}
+
+async function buildSimulationRow(index, eventName, blockOverride = null, runToken = null) {
+  const row = state.rows[index];
+  const timestamp = Math.floor(new Date(row.time).getTime() / 1000);
+  const afterBlock = state.sim.rows.length ? state.sim.rows[state.sim.rows.length - 1].blockNumber : 1;
+  const block = blockOverride || await findBlockAtOrAfter(timestamp, afterBlock);
+  const rewardState = await readRewardInside(block.number, state.sim.tickLower, state.sim.tickUpper);
+  const aeroPrice = await getAeroPrice(block.number);
+  ensureActiveSimulation(runToken);
+  const previousAeroTotals = aeroTotalsUsdc(aeroPrice);
+  accrueAeroRewards(rewardState);
+  const aeroTotals = aeroTotalsUsdc(aeroPrice);
+  const aeroEvent = {
+    conservative: aeroTotals.conservative - previousAeroTotals.conservative,
+    base: aeroTotals.base - previousAeroTotals.base,
+    haircut: aeroTotals.haircut - previousAeroTotals.haircut,
+  };
+  const price = priceFromSqrtX96(rewardState.sqrtPriceX96);
+  const amounts = amountsForPosition(price);
+  const reliability = simulationReliability(row, block, rewardState);
+  return {
+    event: eventName,
+    index,
+    blockNumber: block.number,
+    value: amounts.value,
+    price,
+    weth: amounts.weth,
+    usdc: amounts.usdc,
+    aeroUsdc: aeroEvent.conservative,
+    aeroTotalUsdc: aeroTotals.conservative,
+    aeroBaseUsdc: aeroEvent.base,
+    aeroHaircutUsdc: aeroEvent.haircut,
+    aeroPrice,
+    reliability: reliability.score,
+    reliabilityDetails: reliabilityDetailsText(reliability.parts),
+    impactDetails: impactRiskDetails(rewardState, aeroPrice, aeroEvent),
+    stateAfter: snapshotSimState(),
+  };
+}
+
+async function startSimulation() {
+  if (state.sim.initializing) {
+    state.sim.initializing = false;
+    state.sim.autoRunning = false;
+    state.sim.runToken += 1;
+    state.sim.autoLoopId += 1;
+    updateSimulationControls();
+    setSimulationNotice("Старт симуляции отменен. Нажми START, чтобы начать заново.");
+    return;
+  }
+  if (state.sim.started) {
+    if (state.sim.stopped) {
+      state.sim.stopped = false;
+    }
+    state.sim.autoRunning = !state.sim.autoRunning;
+    updateSimulationControls();
+    if (state.sim.autoRunning) {
+      state.sim.autoLoopId += 1;
+      runAutoSimulationLoop(state.sim.runToken, state.sim.autoLoopId);
+    } else {
+      setSimulationNotice({ status: "Пауза.", details: simulationProgressText(), estimate: "" });
+    }
+    return;
+  }
+  if (!state.rows.length) return;
+  resetSimulationRows();
+  const inputTimestamp = parseInputTime(simStartInput.value);
+  if (Number.isNaN(inputTimestamp)) {
+    setSimulationNotice("Не могу разобрать дату старта. Используй формат 2026-02-01 00:00.");
+    return;
+  }
+  const endTimestamp = parseInputTime(simEndInput.value);
+  if (Number.isNaN(endTimestamp)) {
+    setSimulationNotice("Не могу разобрать дату конца. Используй формат 2026-04-30 23:59.");
+    return;
+  }
+  const startIndex = rowIndexForTimestamp(inputTimestamp);
+  const endIndex = rowIndexForTimestamp(endTimestamp);
+  if (endIndex <= startIndex) {
+    setSimulationNotice("Дата конца должна быть позже даты старта.");
+    return;
+  }
+  const startRow = state.rows[startIndex];
+  const depositUsdc = parseNumericInput(depositInput.value);
+  if (!Number.isFinite(depositUsdc) || depositUsdc <= 0) {
+    setSimulationNotice("Сумма депозита должна быть положительным числом.");
+    return;
+  }
+  const rangePercent = parseRangePercent(rangePercentInput.value);
+  if (!Number.isFinite(rangePercent) || rangePercent <= 0 || rangePercent >= 100) {
+    setSimulationNotice("Диапазон должен быть положительным числом меньше 100%.");
+    return;
+  }
+  state.sim.depositUsdc = depositUsdc;
+  state.sim.rangeWidth = rangePercent / 100;
+  depositInput.value = fmtDeposit(depositUsdc);
+  rangePercentInput.value = fmtPercent(rangePercent);
+  state.sim.currentIndex = startIndex;
+  state.sim.startIndex = startIndex;
+  state.sim.endIndex = endIndex;
+  state.sim.stepDurations = [];
+  state.sim.etaMs = 0;
+  simStartInput.value = fmtInputTime(startRow.time);
+  simEndInput.value = fmtInputTime(state.rows[endIndex].time);
+  zoomToSimulationRange(startIndex, endIndex);
+  state.sim.initializing = true;
+  state.sim.autoRunning = true;
+  const runToken = state.sim.runToken;
+  updateSimulationControls();
+  draw();
+
+  setSimulationNotice("Читаю historical state Base RPC и цену AERO...");
+  try {
+    const block = await findBlockAtOrAfter(Math.floor(new Date(startRow.time).getTime() / 1000), 1);
+    ensureActiveSimulation(runToken, false);
+    const slot = await readPoolSlot0(POOL_ADDRESS, block.number);
+    ensureActiveSimulation(runToken, false);
+    const startPrice = priceFromSqrtX96(slot.sqrtPriceX96);
+    const plan = computePositionPlan(depositUsdc, startPrice, state.sim.rangeWidth);
+    state.sim.tickLower = plan.tickLower;
+    state.sim.tickUpper = plan.tickUpper;
+    state.sim.anchorTick = plan.anchorTick;
+    state.sim.startGridTick = plan.tickLower;
+    state.sim.rangeStepTicks = Math.max(
+      AERODROME_TICK_SPACING,
+      Math.round((plan.tickUpper - plan.tickLower) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING,
+    );
+    state.sim.liquidityRaw = plan.liquidityRaw;
+    state.sim.liquidityHuman = plan.liquidityHuman;
+    const rewardState = await readRewardInside(block.number, state.sim.tickLower, state.sim.tickUpper);
+    ensureActiveSimulation(runToken, false);
+    state.sim.rewardStart = rewardState.rewardInside;
+    state.sim.rewardLast = rewardState.rewardInside;
+    state.sim.aeroUnharvested = 0;
+    state.sim.aeroBaseUnharvested = 0;
+    state.sim.aeroHaircutUnharvested = 0;
+    state.sim.started = true;
+    state.sim.initializing = false;
+    state.sim.rows = [await buildSimulationRow(startIndex, "deposit", block, runToken)];
+    ensureActiveSimulation(runToken);
+    setSimulationNotice({ status: "Симуляция запущена.", details: simulationProgressText(), estimate: "" });
+    renderSimulationTable(true);
+    state.sim.autoLoopId += 1;
+    runAutoSimulationLoop(state.sim.runToken, state.sim.autoLoopId);
+  } catch (error) {
+    if (runToken !== state.sim.runToken) return;
+    resetSimulationRows();
+    setSimulationNotice(`Симуляция остановлена: ${error.message}`);
+  }
+}
+async function stepSimulationForward(options = {}) {
+  const shouldRender = options.render !== false;
+  if (!state.sim.started || state.sim.stopped || state.sim.stepInProgress) return false;
+  const nextIndex = state.sim.currentIndex + 1;
+  if (nextIndex > state.sim.endIndex || nextIndex >= state.rows.length) {
+    state.sim.stopped = true;
+    state.sim.autoRunning = false;
+    if (shouldRender) {
+      setSimulationNotice({ status: "Симуляция дошла до даты конца.", details: simulationProgressText(), estimate: "" });
+      updateSimulationControls();
+    }
+    return false;
+  }
+  const runToken = state.sim.runToken;
+  state.sim.stepInProgress = true;
+  if (shouldRender) updateSimulationControls();
+  const stepStartedAt = performance.now();
+  const previous = state.sim.rows[state.sim.rows.length - 1];
+  const nextTimestamp = Math.floor(new Date(state.rows[nextIndex].time).getTime() / 1000);
+  if (shouldRender) setSimulationNotice({ status: "Считаю следующую минуту...", details: simulationProgressText(), estimate: "" });
+  try {
+    const nextBlock = await findBlockAtOrAfter(nextTimestamp, previous.blockNumber);
+    const exit = await findSwapExit(previous.blockNumber, nextBlock.number, state.sim.tickLower, state.sim.tickUpper);
+    if (runToken !== state.sim.runToken || !state.sim.started) return false;
+    state.sim.currentIndex = nextIndex;
+    if (exit) {
+      const rebalanceBlock = await getBlock(exit.blockNumber);
+      if (runToken !== state.sim.runToken || !state.sim.started) return false;
+      const rebalanceRow = await buildRebalanceRow(nextIndex, exit, rebalanceBlock, runToken);
+      if (runToken !== state.sim.runToken || !state.sim.started) return false;
+      state.sim.rows.push(rebalanceRow);
+      state.sim.activeRowIndex = nextIndex;
+      state.sim.stopped = false;
+      if (shouldRender) setSimulationNotice({ status: "Rebalance рассчитан.", details: simulationProgressText(), estimate: "" });
+    } else {
+      const simulationRow = await buildSimulationRow(nextIndex, "price change", nextBlock, runToken);
+      if (runToken !== state.sim.runToken || !state.sim.started) return false;
+      state.sim.rows.push(simulationRow);
+      state.sim.activeRowIndex = nextIndex;
+      recordSimulationStepDuration(stepStartedAt);
+      if (shouldRender) setSimulationNotice({ status: "Минута рассчитана.", details: simulationProgressText(), estimate: "" });
+    }
+    if (exit) {
+      recordSimulationStepDuration(stepStartedAt);
+      if (shouldRender) setSimulationNotice({ status: "Rebalance рассчитан.", details: simulationProgressText(), estimate: "" });
+    }
+    if (shouldRender) renderSimulationTable(true);
+    return true;
+  } catch (error) {
+    if (runToken !== state.sim.runToken || !state.sim.started) return false;
+    state.sim.stopped = true;
+    state.sim.autoRunning = false;
+    setSimulationNotice(`Симуляция остановлена: ${error.message}`);
+    renderSimulationTable();
+    return false;
+  } finally {
+    if (runToken === state.sim.runToken) {
+      state.sim.stepInProgress = false;
+      if (shouldRender) updateSimulationControls();
+    }
+  }
+}
+function stepSimulationBack() {
+  if (!state.sim.started || state.sim.autoRunning || state.sim.stepInProgress || state.sim.rows.length <= 1) return;
+  state.sim.rows.pop();
+  state.sim.currentIndex = state.sim.rows[state.sim.rows.length - 1].index;
+  state.sim.activeRowIndex = state.sim.currentIndex;
+  applySimState(state.sim.rows[state.sim.rows.length - 1].stateAfter);
+  state.sim.stopped = false;
+  setSimulationNotice({ status: "Шаг назад.", details: simulationProgressText(), estimate: "" });
+  renderSimulationTable();
+}
+
+function resetSimulation() {
+  resetSimulationRows();
+  setSimulationNotice("Симуляция сброшена. Нажми START, чтобы начать заново.");
+}
+
+async function runAutoSimulationLoop(runToken, loopId) {
+  state.sim.lastFastRenderAt = performance.now();
+  while (
+    state.sim.autoRunning &&
+    state.sim.started &&
+    !state.sim.stopped &&
+    runToken === state.sim.runToken &&
+    loopId === state.sim.autoLoopId
+  ) {
+    const advanced = await stepSimulationForward({ render: false });
+    if (!advanced) break;
+    const now = performance.now();
+    if (now - state.sim.lastFastRenderAt >= state.sim.fastRenderEveryMs) {
+      state.sim.lastFastRenderAt = now;
+      setSimulationNotice({
+        status: "Симуляция считается...",
+        details: simulationProgressText(),
+        estimate: "",
+      });
+      renderSimulationTable(true);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  if (runToken === state.sim.runToken && loopId === state.sim.autoLoopId) {
+    state.sim.autoRunning = false;
+    if (state.sim.currentIndex >= state.sim.endIndex || state.sim.stopped) {
+      setSimulationNotice({ status: "Симуляция дошла до даты конца.", details: simulationProgressText(), estimate: "" });
+    }
+    renderSimulationTable(true);
+    updateSimulationControls();
+  }
+}
+
+canvas.addEventListener("wheel", (event) => {
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const padLeft = 72;
+  const padRight = 72;
+  const plotW = canvas.clientWidth - padLeft - padRight;
+  const ratio = Math.min(1, Math.max(0, (x - padLeft) / plotW));
+  event.preventDefault();
+  state.hoverIndex = -1;
+  zoomAt(ratio, event.deltaY);
+  state.releaseRows = null;
+  updateMetrics(getVisibleRows());
+  draw();
+}, { passive: false });
+
+canvas.addEventListener("click", (event) => {
+  if (state.suppressNextClick) {
+    state.suppressNextClick = false;
+    return;
+  }
+  if (state.sim.started || state.isDragging || !state.visible.length) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const padLeft = 72;
+  const padRight = 72;
+  const plotW = canvas.clientWidth - padLeft - padRight;
+  const ratio = Math.min(1, Math.max(0, (x - padLeft) / plotW));
+  const visibleRows = getVisibleRows();
+  const index = Math.round(ratio * (visibleRows.length - 1));
+  const row = visibleRows[index];
+  if (row) {
+    setActiveSimulationTime(row.index);
+  }
+});
+
+function updateDrag(event) {
+  event.preventDefault();
+  state.dragMoved = true;
+  const padLeft = 72;
+  const padRight = 72;
+  const plotW = canvas.clientWidth - padLeft - padRight;
+  const deltaRatio = -(event.clientX - state.dragX) / plotW * (state.dragEnd - state.dragStart);
+  panBy(deltaRatio);
+  state.hoverIndex = -1;
+  draw();
+}
+
+canvas.addEventListener("mousemove", (event) => {
+  if (state.isDragging) return;
+  const rows = state.visible;
+  if (!rows.length) return;
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const padLeft = 72;
+  const padRight = 72;
+  const plotW = canvas.clientWidth - padLeft - padRight;
+  const ratio = Math.min(1, Math.max(0, (x - padLeft) / plotW));
+  state.hoverIndex = Math.round(ratio * (rows.length - 1));
+  draw();
+});
+
+canvas.addEventListener("mouseleave", () => {
+  state.hoverIndex = -1;
+  if (!state.isDragging) draw();
+});
+
+canvas.addEventListener("mousedown", (event) => {
+  if (event.button !== 0 || state.zoomEnd - state.zoomStart >= 1) return;
+  event.preventDefault();
+  state.hoverIndex = -1;
+  state.isDragging = true;
+  state.dragX = event.clientX;
+  state.dragMoved = false;
+  state.dragStart = state.zoomStart;
+  state.dragEnd = state.zoomEnd;
+  state.dragSamples = buildDragSamples();
+  state.releaseRows = null;
+  canvas.style.cursor = "grabbing";
+  document.body.style.cursor = "grabbing";
+});
+
+window.addEventListener("mousemove", (event) => {
+  if (!state.isDragging) return;
+  updateDrag(event);
+});
+
+function finishDrag() {
+  if (!state.isDragging) return;
+  const finalRows = getVisibleDragRows();
+  state.isDragging = false;
+  if (state.dragMoved) state.suppressNextClick = true;
+  state.dragSamples = [];
+  state.releaseRows = finalRows;
+  canvas.style.cursor = "";
+  document.body.style.cursor = "";
+  updateMetrics(getVisibleRows());
+  draw();
+}
+
+window.addEventListener("mouseup", finishDrag);
+window.addEventListener("blur", finishDrag);
+
+function ratioOnNavigator(event) {
+  const rect = rangeTrack.getBoundingClientRect();
+  return Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+}
+
+function startNavigatorDrag(event) {
+  const size = state.zoomEnd - state.zoomStart;
+  if (size >= 1) return;
+  event.preventDefault();
+  event.stopPropagation();
+  state.isNavigatorDragging = true;
+  state.navigatorDragX = event.clientX;
+  state.navigatorDragStart = state.zoomStart;
+  rangeWindow.style.cursor = "grabbing";
+  document.body.style.cursor = "grabbing";
+}
+
+function updateNavigatorDrag(event) {
+  if (!state.isNavigatorDragging) return;
+  event.preventDefault();
+  const rect = rangeTrack.getBoundingClientRect();
+  const deltaRatio = (event.clientX - state.navigatorDragX) / Math.max(1, rect.width);
+  setZoomWindow(state.navigatorDragStart + deltaRatio);
+}
+
+function finishNavigatorDrag() {
+  if (!state.isNavigatorDragging) return;
+  state.isNavigatorDragging = false;
+  rangeWindow.style.cursor = "";
+  document.body.style.cursor = "";
+}
+
+rangeTrack.addEventListener("mousedown", (event) => {
+  if (event.target === rangeWindow) return;
+  const size = state.zoomEnd - state.zoomStart;
+  if (size >= 1) return;
+  event.preventDefault();
+  setZoomWindow(ratioOnNavigator(event) - size / 2);
+});
+
+rangeWindow.addEventListener("mousedown", startNavigatorDrag);
+window.addEventListener("mousemove", updateNavigatorDrag);
+window.addEventListener("mouseup", finishNavigatorDrag);
+window.addEventListener("blur", finishNavigatorDrag);
+
+document.querySelectorAll(".filters button").forEach((button) => {
+  button.addEventListener("click", () => updateRange(button.dataset.range));
+});
+
+simStartInput.addEventListener("change", () => {
+  const timestamp = parseInputTime(simStartInput.value);
+  if (Number.isNaN(timestamp)) {
+    setSimulationNotice("Не могу разобрать дату старта. Используй формат 2026-02-01 00:00.");
+    return;
+  }
+  resetSimulationRows();
+  setSimulationStart(rowIndexForTimestamp(timestamp));
+});
+simStartInput.addEventListener("pointerdown", () => setActiveTimeInput("start"));
+simStartInput.addEventListener("click", () => setActiveTimeInput("start"));
+simStartInput.addEventListener("focus", () => setActiveTimeInput("start"));
+simStartInput.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+  event.preventDefault();
+  setActiveTimeInput("start");
+  nudgeTimeInput("start", event.key === "ArrowUp" ? 1 : -1);
+});
+
+simEndInput.addEventListener("change", () => {
+  const timestamp = parseInputTime(simEndInput.value);
+  if (Number.isNaN(timestamp)) {
+    setSimulationNotice("Не могу разобрать дату конца. Используй формат 2026-04-30 23:59.");
+    return;
+  }
+  resetSimulationRows();
+  setSimulationEnd(rowIndexForTimestamp(timestamp));
+});
+simEndInput.addEventListener("pointerdown", () => setActiveTimeInput("end"));
+simEndInput.addEventListener("click", () => setActiveTimeInput("end"));
+simEndInput.addEventListener("focus", () => setActiveTimeInput("end"));
+simEndInput.addEventListener("keydown", (event) => {
+  if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+  event.preventDefault();
+  setActiveTimeInput("end");
+  nudgeTimeInput("end", event.key === "ArrowUp" ? 1 : -1);
+});
+
+depositInput.addEventListener("change", () => {
+  const depositUsdc = parseNumericInput(depositInput.value);
+  if (Number.isFinite(depositUsdc) && depositUsdc > 0) depositInput.value = fmtDeposit(depositUsdc);
+  resetSimulationRows();
+});
+rangePercentInput.addEventListener("change", () => {
+  const rangePercent = parseRangePercent(rangePercentInput.value);
+  if (Number.isFinite(rangePercent) && rangePercent > 0 && rangePercent < 100) {
+    rangePercentInput.value = fmtPercent(rangePercent);
+  }
+  resetSimulationRows();
+});
+runSimulation.addEventListener("click", startServerSimulation);
+if (resetSimulationButton) resetSimulationButton.addEventListener("click", resetSimulation);
+stepForward.addEventListener("click", () => {
+  stepSimulationForward();
+});
+stepBack.addEventListener("click", stepSimulationBack);
+
+simTableBody.addEventListener("mousemove", (event) => {
+  const row = event.target.closest("tr[data-index]");
+  if (!row) return;
+  const nextIndex = Number(row.dataset.index);
+  if (state.sim.tableHoverIndex !== nextIndex) {
+    state.sim.tableHoverIndex = nextIndex;
+    draw();
+  }
+});
+
+simTableBody.addEventListener("mouseleave", () => {
+  state.sim.tableHoverIndex = -1;
+  draw();
+});
+
+window.addEventListener("resize", draw);
+
+fetch(CSV_FILE)
+  .then((response) => {
+    if (!response.ok) throw new Error(`CSV load failed: ${response.status}`);
+    return response.text();
+  })
+  .then((text) => {
+    state.rows = parseCsv(text);
+    statusEl.textContent = "CSV загружен";
+    setSimulationStart(0);
+    setSimulationEnd(state.rows.length - 1);
+    resetSimulationRows();
+    setActiveTimeInput("start");
+    updateRange("all");
+    loadLatestServerSimulation();
+  })
+  .catch((error) => {
+    statusEl.textContent = "Ошибка загрузки CSV";
+    console.error(error);
+  });
+
+
+
