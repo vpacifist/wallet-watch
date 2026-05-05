@@ -3,6 +3,7 @@
 const state = {
   rows: [],
   visible: [],
+  dataQuality: null,
   range: "all",
   hoverIndex: -1,
   zoomStart: 0,
@@ -591,7 +592,7 @@ function simulationReliability(row, block, rewardState) {
     { label: "reward state", score: rewardStateReliability(rewardState), weight: 0.27 },
     { label: "AERO on-chain price", score: state.sim.aeroPriceReliability, weight: 0.20 },
     { label: "block match", score: blockTimeReliability(timestamp, block), weight: 0.17 },
-    { label: "CSV cross-check", score: priceAgreementReliability(row.close, onChainPrice), weight: 0.06 },
+    { label: "CSV cross-check", score: priceAgreementReliability(row.open, onChainPrice), weight: 0.06 },
   ]);
 }
 
@@ -1202,18 +1203,77 @@ function updateRange(range) {
   draw();
 }
 
-function rowIndexForTimestamp(timestamp) {
+function rowTimestampMs(row) {
+  return new Date(row.time).getTime();
+}
+
+function rowIndexForTimestamp(timestamp, mode = "nearest") {
   if (!state.rows.length) return 0;
-  let best = 0;
-  let bestDelta = Number.POSITIVE_INFINITY;
-  state.rows.forEach((row, index) => {
-    const delta = Math.abs(new Date(row.time).getTime() - timestamp);
-    if (delta < bestDelta) {
-      best = index;
-      bestDelta = delta;
+  const lastIndex = state.rows.length - 1;
+  if (timestamp <= rowTimestampMs(state.rows[0])) return 0;
+  if (timestamp >= rowTimestampMs(state.rows[lastIndex])) return lastIndex;
+
+  let low = 0;
+  let high = lastIndex;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (rowTimestampMs(state.rows[mid]) < timestamp) low = mid + 1;
+    else high = mid;
+  }
+
+  const afterIndex = low;
+  const beforeIndex = Math.max(0, afterIndex - 1);
+  if (mode === "atOrAfter") return afterIndex;
+  if (mode === "atOrBefore") return rowTimestampMs(state.rows[afterIndex]) > timestamp ? beforeIndex : afterIndex;
+
+  const beforeDelta = Math.abs(rowTimestampMs(state.rows[beforeIndex]) - timestamp);
+  const afterDelta = Math.abs(rowTimestampMs(state.rows[afterIndex]) - timestamp);
+  return afterDelta < beforeDelta ? afterIndex : beforeIndex;
+}
+
+function analyzeDataQuality(rows) {
+  if (!rows.length) {
+    return { rowCount: 0, gapCount: 0, missingMinutes: 0, maxGapMinutes: 0, firstTime: "", lastTime: "" };
+  }
+  let gapCount = 0;
+  let missingMinutes = 0;
+  let maxGapMinutes = 0;
+  let previous = rowTimestampMs(rows[0]);
+  for (let index = 1; index < rows.length; index += 1) {
+    const current = rowTimestampMs(rows[index]);
+    const gapMinutes = Math.round((current - previous) / (60 * 1000));
+    if (gapMinutes > 1) {
+      gapCount += 1;
+      missingMinutes += gapMinutes - 1;
+      if (gapMinutes > maxGapMinutes) maxGapMinutes = gapMinutes;
     }
-  });
-  return best;
+    previous = current;
+  }
+  return {
+    rowCount: rows.length,
+    gapCount,
+    missingMinutes,
+    maxGapMinutes,
+    firstTime: rows[0].time,
+    lastTime: rows[rows.length - 1].time,
+  };
+}
+
+function dataQualityStatus(quality) {
+  if (!quality || !quality.rowCount) return "CSV загружен";
+  if (!quality.gapCount) return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, без пропусков`;
+  return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, пропущено ${quality.missingMinutes.toLocaleString("en-US")} мин`;
+}
+
+function dataQualityTitle(quality) {
+  if (!quality || !quality.rowCount) return "";
+  if (!quality.gapCount) return "Поминутная сетка без обнаруженных разрывов.";
+  return [
+    `Найдено ${quality.gapCount.toLocaleString("en-US")} разрывов в CSV.`,
+    `Всего пропущено ${quality.missingMinutes.toLocaleString("en-US")} минут.`,
+    `Максимальный разрыв: ${quality.maxGapMinutes} мин.`,
+    "Для точности симуляция выбирает старт не раньше введенного времени, а конец не позже введенного времени.",
+  ].join(" ");
 }
 
 function formatDuration(ms) {
@@ -1249,7 +1309,12 @@ function simulationEstimateText() {
 function simulationProgressText() {
   const done = Math.max(0, state.sim.currentIndex - state.sim.startIndex);
   const total = Math.max(0, state.sim.endIndex - state.sim.startIndex);
-  return `${done} / ${total} минут · ${simulationEstimateText()}`;
+  const startTime = state.rows[state.sim.startIndex] ? rowTimestampMs(state.rows[state.sim.startIndex]) : 0;
+  const currentTime = state.rows[state.sim.currentIndex] ? rowTimestampMs(state.rows[state.sim.currentIndex]) : startTime;
+  const endTime = state.rows[state.sim.endIndex] ? rowTimestampMs(state.rows[state.sim.endIndex]) : currentTime;
+  const doneMinutes = Math.max(0, Math.round((currentTime - startTime) / (60 * 1000)));
+  const totalMinutes = Math.max(0, Math.round((endTime - startTime) / (60 * 1000)));
+  return `${done} / ${total} свечей (${doneMinutes} / ${totalMinutes} мин) · ${simulationEstimateText()}`;
 }
 
 function recordSimulationStepDuration(startedAt) {
@@ -1296,7 +1361,7 @@ function nudgeTimeInput(inputName, deltaMinutes) {
     setSimulationNotice(`Не могу разобрать ${inputName === "end" ? "дату конца" : "дату старта"}. Используй формат 2026-02-01 00:00.`);
     return;
   }
-  const index = rowIndexForTimestamp(timestamp + deltaMinutes * 60 * 1000);
+  const index = rowIndexForTimestamp(timestamp + deltaMinutes * 60 * 1000, inputName === "end" ? "atOrBefore" : "atOrAfter");
   resetSimulationRows();
   if (inputName === "end") setSimulationEnd(index);
   else setSimulationStart(index);
@@ -1484,6 +1549,21 @@ function setSimulationNotice(message) {
   if (detailsEl.textContent !== nextDetails) detailsEl.textContent = nextDetails;
   if (estimateEl.textContent !== nextEstimate) estimateEl.textContent = nextEstimate;
 }
+
+const simulationEngine = WalletWatchSimulationEngine.create({
+  state,
+  performance,
+  findBlockAtOrAfter,
+  findSwapExit,
+  getBlock,
+  buildRebalanceRow,
+  buildSimulationRow,
+  recordSimulationStepDuration,
+  simulationProgressText,
+  setSimulationNotice,
+  renderSimulationTable,
+  updateSimulationControls,
+});
 
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
@@ -1700,8 +1780,8 @@ async function startSimulation() {
     setSimulationNotice("Не могу разобрать дату конца. Используй формат 2026-04-30 23:59.");
     return;
   }
-  const startIndex = rowIndexForTimestamp(inputTimestamp);
-  const endIndex = rowIndexForTimestamp(endTimestamp);
+  const startIndex = rowIndexForTimestamp(inputTimestamp, "atOrAfter");
+  const endIndex = rowIndexForTimestamp(endTimestamp, "atOrBefore");
   if (endIndex <= startIndex) {
     setSimulationNotice("Дата конца должна быть позже даты старта.");
     return;
@@ -1775,66 +1855,7 @@ async function startSimulation() {
   }
 }
 async function stepSimulationForward(options = {}) {
-  const shouldRender = options.render !== false;
-  if (!state.sim.started || state.sim.stopped || state.sim.stepInProgress) return false;
-  const nextIndex = state.sim.currentIndex + 1;
-  if (nextIndex > state.sim.endIndex || nextIndex >= state.rows.length) {
-    state.sim.stopped = true;
-    state.sim.autoRunning = false;
-    if (shouldRender) {
-      setSimulationNotice({ status: "Симуляция дошла до даты конца.", details: simulationProgressText(), estimate: "" });
-      updateSimulationControls();
-    }
-    return false;
-  }
-  const runToken = state.sim.runToken;
-  state.sim.stepInProgress = true;
-  if (shouldRender) updateSimulationControls();
-  const stepStartedAt = performance.now();
-  const previous = state.sim.rows[state.sim.rows.length - 1];
-  const nextTimestamp = Math.floor(new Date(state.rows[nextIndex].time).getTime() / 1000);
-  if (shouldRender) setSimulationNotice({ status: "Считаю следующую минуту...", details: simulationProgressText(), estimate: "" });
-  try {
-    const nextBlock = await findBlockAtOrAfter(nextTimestamp, previous.blockNumber);
-    const exit = await findSwapExit(previous.blockNumber, nextBlock.number, state.sim.tickLower, state.sim.tickUpper);
-    if (runToken !== state.sim.runToken || !state.sim.started) return false;
-    state.sim.currentIndex = nextIndex;
-    if (exit) {
-      const rebalanceBlock = await getBlock(exit.blockNumber);
-      if (runToken !== state.sim.runToken || !state.sim.started) return false;
-      const rebalanceRow = await buildRebalanceRow(nextIndex, exit, rebalanceBlock, runToken);
-      if (runToken !== state.sim.runToken || !state.sim.started) return false;
-      state.sim.rows.push(rebalanceRow);
-      state.sim.activeRowIndex = nextIndex;
-      state.sim.stopped = false;
-      if (shouldRender) setSimulationNotice({ status: "Rebalance рассчитан.", details: simulationProgressText(), estimate: "" });
-    } else {
-      const simulationRow = await buildSimulationRow(nextIndex, "price change", nextBlock, runToken);
-      if (runToken !== state.sim.runToken || !state.sim.started) return false;
-      state.sim.rows.push(simulationRow);
-      state.sim.activeRowIndex = nextIndex;
-      recordSimulationStepDuration(stepStartedAt);
-      if (shouldRender) setSimulationNotice({ status: "Минута рассчитана.", details: simulationProgressText(), estimate: "" });
-    }
-    if (exit) {
-      recordSimulationStepDuration(stepStartedAt);
-      if (shouldRender) setSimulationNotice({ status: "Rebalance рассчитан.", details: simulationProgressText(), estimate: "" });
-    }
-    if (shouldRender) renderSimulationTable(true);
-    return true;
-  } catch (error) {
-    if (runToken !== state.sim.runToken || !state.sim.started) return false;
-    state.sim.stopped = true;
-    state.sim.autoRunning = false;
-    setSimulationNotice(`Симуляция остановлена: ${error.message}`);
-    renderSimulationTable();
-    return false;
-  } finally {
-    if (runToken === state.sim.runToken) {
-      state.sim.stepInProgress = false;
-      if (shouldRender) updateSimulationControls();
-    }
-  }
+  return await simulationEngine.stepForward(options);
 }
 function stepSimulationBack() {
   if (!state.sim.started || state.sim.autoRunning || state.sim.stepInProgress || state.sim.rows.length <= 1) return;
@@ -1853,36 +1874,7 @@ function resetSimulation() {
 }
 
 async function runAutoSimulationLoop(runToken, loopId) {
-  state.sim.lastFastRenderAt = performance.now();
-  while (
-    state.sim.autoRunning &&
-    state.sim.started &&
-    !state.sim.stopped &&
-    runToken === state.sim.runToken &&
-    loopId === state.sim.autoLoopId
-  ) {
-    const advanced = await stepSimulationForward({ render: false });
-    if (!advanced) break;
-    const now = performance.now();
-    if (now - state.sim.lastFastRenderAt >= state.sim.fastRenderEveryMs) {
-      state.sim.lastFastRenderAt = now;
-      setSimulationNotice({
-        status: "Симуляция считается...",
-        details: simulationProgressText(),
-        estimate: "",
-      });
-      renderSimulationTable(true);
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-  }
-  if (runToken === state.sim.runToken && loopId === state.sim.autoLoopId) {
-    state.sim.autoRunning = false;
-    if (state.sim.currentIndex >= state.sim.endIndex || state.sim.stopped) {
-      setSimulationNotice({ status: "Симуляция дошла до даты конца.", details: simulationProgressText(), estimate: "" });
-    }
-    renderSimulationTable(true);
-    updateSimulationControls();
-  }
+  return await simulationEngine.runAutoLoop(runToken, loopId);
 }
 
 canvas.addEventListener("wheel", (event) => {
@@ -2043,7 +2035,7 @@ simStartInput.addEventListener("change", () => {
     return;
   }
   resetSimulationRows();
-  setSimulationStart(rowIndexForTimestamp(timestamp));
+  setSimulationStart(rowIndexForTimestamp(timestamp, "atOrAfter"));
 });
 simStartInput.addEventListener("pointerdown", () => setActiveTimeInput("start"));
 simStartInput.addEventListener("click", () => setActiveTimeInput("start"));
@@ -2062,7 +2054,7 @@ simEndInput.addEventListener("change", () => {
     return;
   }
   resetSimulationRows();
-  setSimulationEnd(rowIndexForTimestamp(timestamp));
+  setSimulationEnd(rowIndexForTimestamp(timestamp, "atOrBefore"));
 });
 simEndInput.addEventListener("pointerdown", () => setActiveTimeInput("end"));
 simEndInput.addEventListener("click", () => setActiveTimeInput("end"));
@@ -2117,7 +2109,9 @@ fetch(CSV_FILE)
   })
   .then((text) => {
     state.rows = parseCsv(text);
-    statusEl.textContent = "CSV загружен";
+    state.dataQuality = analyzeDataQuality(state.rows);
+    statusEl.textContent = dataQualityStatus(state.dataQuality);
+    statusEl.title = dataQualityTitle(state.dataQuality);
     setSimulationStart(0);
     setSimulationEnd(state.rows.length - 1);
     resetSimulationRows();

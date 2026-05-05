@@ -269,16 +269,18 @@ async function runSimulation(config, emit = () => {}) {
   sandbox.globalThis = sandbox;
 
   const coreSource = await fs.promises.readFile(path.join(ROOT, "simulation_core.js"), "utf8");
+  const engineSource = await fs.promises.readFile(path.join(ROOT, "simulation_engine.js"), "utf8");
   const appSource = await fs.promises.readFile(path.join(ROOT, "app.js"), "utf8");
   vm.createContext(sandbox);
   vm.runInContext(coreSource, sandbox, { filename: "simulation_core.js" });
+  vm.runInContext(engineSource, sandbox, { filename: "simulation_engine.js" });
   vm.runInContext(appSource, sandbox, { filename: "app.js" });
 
   const deadline = Date.now() + 60000;
-  while (Date.now() < deadline && document.getElementById("status").textContent !== "CSV загружен") {
+  while (Date.now() < deadline && !document.getElementById("status").textContent.startsWith("CSV загружен")) {
     await sleep(50);
   }
-  if (document.getElementById("status").textContent !== "CSV загружен") {
+  if (!document.getElementById("status").textContent.startsWith("CSV загружен")) {
     throw new Error("CSV did not load before timeout");
   }
 

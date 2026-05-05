@@ -9,7 +9,7 @@ async function runCase(testCase) {
     start: testCase.start,
     end: testCase.end,
     deposit: "10000",
-    rangePct: 1,
+    rangePct: testCase.rangePct ?? 1,
     timeoutSeconds: 300,
     progressEverySeconds: 2,
   }, (event) => events.push(event));
@@ -22,6 +22,9 @@ async function runCase(testCase) {
   assert.equal(final.currentValue, testCase.currentValue, `${testCase.name} current value`);
   assert.equal(final.currentAero, testCase.currentAero, `${testCase.name} current AERO`);
   assert.equal(final.lastRow, testCase.lastRow, `${testCase.name} last row`);
+  if (testCase.hasRebalance) {
+    assert.ok(events.some((event) => String(event.lastRow || "").includes("rebalance")), `${testCase.name} should include a rebalance row`);
+  }
 }
 
 async function main() {
@@ -43,6 +46,18 @@ async function main() {
     currentValue: "$10,005.23",
     currentAero: "$1.28",
     lastRow: "2026-02-01 00:05\tprice change\t$10,005.23\t$2,452.20\t2.34785504\t4,247.82\t$0.30\t-$0.00\t96.00%",
+  });
+
+  await runCase({
+    name: "narrow-range-rebalance",
+    start: "2026-02-01 00:00",
+    end: "2026-02-01 00:20",
+    rangePct: 0.1,
+    rows: 21,
+    currentValue: "$9,998.08",
+    currentAero: "$9.52",
+    lastRow: "2026-02-01 00:20\tprice change\t$9,998.08\t$2,473.29\t1.76061013\t5,643.58\t$0.59\t-$0.01\t96.00%",
+    hasRebalance: true,
   });
 }
 
