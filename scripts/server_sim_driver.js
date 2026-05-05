@@ -62,10 +62,28 @@ function isTransientRpcStop(state) {
       return status.includes("CSV") && start.length >= 16 && end.length >= 16;
     }, { timeout: 60000 });
 
-    await page.locator("#simStartInput").fill(config.start);
-    await page.locator("#simEndInput").fill(config.end);
-    await page.locator("#depositInput").fill(String(config.deposit || "10000"));
-    await page.locator("#rangePercentInput").fill(String(config.rangePct || 1));
+    await page.evaluate((nextConfig) => {
+      const values = {
+        simStartInput: nextConfig.start,
+        simEndInput: nextConfig.end,
+        depositInput: String(nextConfig.deposit || "10000"),
+        rangePercentInput: String(nextConfig.rangePct || 1),
+      };
+      for (const [id, value] of Object.entries(values)) {
+        const input = document.getElementById(id);
+        if (!input) throw new Error(`Missing input #${id}`);
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }, config);
+    const appliedInputs = await page.evaluate(() => ({
+      start: document.getElementById("simStartInput")?.value || "",
+      end: document.getElementById("simEndInput")?.value || "",
+      deposit: document.getElementById("depositInput")?.value || "",
+      rangePct: document.getElementById("rangePercentInput")?.value || "",
+    }));
+    emit({ type: "inputs", id: config.id, ...appliedInputs });
     await page.locator("#runSimulation").click();
 
     let lastProgressAt = 0;
