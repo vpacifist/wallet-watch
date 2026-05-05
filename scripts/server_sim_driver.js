@@ -56,10 +56,9 @@ function isTransientRpcStop(state) {
   try {
     await page.goto(config.url, { waitUntil: "load", timeout: 30000 });
     await page.waitForFunction(() => {
-      const status = document.getElementById("status")?.textContent || "";
       const start = document.getElementById("simStartInput")?.value || "";
       const end = document.getElementById("simEndInput")?.value || "";
-      return status.includes("CSV") && start.length >= 16 && end.length >= 16;
+      return typeof state !== "undefined" && state.rows?.length > 0 && start.length >= 16 && end.length >= 16;
     }, { timeout: 60000 });
 
     await page.evaluate((nextConfig) => {
