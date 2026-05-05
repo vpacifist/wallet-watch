@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "start": "python scripts/serve_with_rpc.py",
+    "start": "python3 scripts/serve_with_rpc.py",
     "postinstall": "playwright install --with-deps chromium"
   },
   "dependencies": {
