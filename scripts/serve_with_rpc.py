@@ -20,6 +20,7 @@ DEFAULT_RPC_URLS = ["https://base.drpc.org", "https://base.gateway.tenderly.co",
 RPC_URLS = [url.strip() for url in os.environ.get("BASE_RPC_URLS", "").split(",") if url.strip()] or DEFAULT_RPC_URLS
 DATA_PATH = Path(os.environ.get("MARKET_DATA_PATH", ROOT / "output" / "market_data.sqlite"))
 SIM_DATA_PATH = Path(os.environ.get("SIM_DATA_PATH", ROOT / "output" / "simulations.sqlite"))
+SIM_WORKER_PATH = Path(os.environ.get("SIM_WORKER_PATH", ROOT / "scripts" / "node_sim_worker.js"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8003"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", f"http://127.0.0.1:{PORT}")
@@ -296,7 +297,7 @@ def start_simulation_job(params):
     env = os.environ.copy()
     env["SERVER_SIM_CONFIG"] = json.dumps(config, ensure_ascii=False)
     process = subprocess.Popen(
-        ["node", str(ROOT / "scripts" / "server_sim_driver.js")],
+        ["node", str(SIM_WORKER_PATH)],
         cwd=ROOT,
         env=env,
         stdout=subprocess.PIPE,
