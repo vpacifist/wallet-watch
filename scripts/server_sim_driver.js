@@ -84,7 +84,15 @@ function isTransientRpcStop(state) {
       rangePct: document.getElementById("rangePercentInput")?.value || "",
     }));
     emit({ type: "inputs", id: config.id, ...appliedInputs });
-    await page.locator("#runSimulation").click();
+    await page.evaluate(async () => {
+      if (typeof startSimulation !== "function") throw new Error("startSimulation is not available");
+      await startSimulation();
+    });
+    const startedState = await readState(page);
+    emit({ type: "started", id: config.id, ...startedState });
+    if (startedState.button === "START" && startedState.rowCount === 0) {
+      throw new Error(`Simulation did not start: ${startedState.notice}`);
+    }
 
     let lastProgressAt = 0;
     let retryAttempts = 0;
