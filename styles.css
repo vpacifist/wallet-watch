@@ -13,10 +13,14 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
-  height: 100vh;
-  overflow: hidden;
+  min-height: 100vh;
+  overflow-y: auto;
   background: var(--bg);
   color: var(--ink);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -25,12 +29,116 @@ body {
 .shell {
   width: 100%;
   max-width: none;
-  height: 100vh;
+  min-height: 100vh;
   margin: 0;
   padding: 16px;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  align-content: start;
   gap: 12px;
+}
+
+.projectTabs {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: end;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 2px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  overflow-x: auto;
+}
+
+.projectTab,
+.projectResultTab {
+  flex: 0 0 auto;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  color: var(--muted);
+  background: #eef3f7;
+  font: inherit;
+  font-size: 13px;
+}
+
+.projectTab {
+  padding: 0 14px;
+  cursor: pointer;
+}
+
+.projectTab.active,
+.projectResultTab.active {
+  color: var(--ink);
+  background: #ffffff;
+}
+
+.resultTabs {
+  display: flex;
+  align-items: end;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.projectResultTab {
+  display: inline-flex;
+  align-items: center;
+  max-width: 280px;
+  overflow: hidden;
+}
+
+.projectTabLabel,
+.projectTabClose {
+  height: 100%;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.projectTabLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 8px 0 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projectTabClose {
+  flex: 0 0 34px;
+  width: 34px;
+  padding: 0;
+  color: var(--muted);
+  border-left: 1px solid transparent;
+  border-radius: 0 7px 0 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1;
+  opacity: 0;
+}
+
+.projectResultTab:hover .projectTabClose,
+.projectTabClose:focus {
+  border-left-color: var(--line);
+  opacity: 1;
+}
+
+.projectTabClose:hover,
+.projectTabClose:focus {
+  color: var(--ink);
+  background: rgba(242, 95, 92, 0.09);
+}
+
+.projectTab:hover,
+.projectResultTab:hover {
+  border-color: rgba(15, 139, 141, 0.35);
 }
 
 .topbar {
@@ -196,8 +304,8 @@ h2 {
 .chartWrap {
   position: relative;
   flex: 1 1 auto;
-  min-height: 0;
-  height: auto;
+  min-height: 260px;
+  height: clamp(300px, 34vh, 380px);
 }
 
 canvas {
@@ -320,10 +428,10 @@ canvas {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: max-content;
+  width: 56px;
   min-width: 0;
   flex: 0 0 auto;
-  padding: 0 16px;
+  padding: 0 12px;
   border-color: var(--line);
   color: #7f3b3a;
   background: #f8fafc;
@@ -366,6 +474,9 @@ canvas {
   border-radius: 8px;
   padding: 9px 11px;
   background: #fbfcfd;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
 
 .simTotals span {
@@ -377,7 +488,6 @@ canvas {
 
 .simTotals strong {
   display: block;
-  margin-top: 5px;
   font-size: 15px;
   line-height: 1.2;
 }
@@ -392,6 +502,10 @@ canvas {
   font-size: 13px;
   line-height: 1.35;
   min-height: 40px;
+}
+
+.simNotice:empty {
+  display: none;
 }
 
 .simNoticeStatus,
@@ -422,6 +536,10 @@ canvas {
   background: #fbfcfd;
 }
 
+.historyPanel .serverJobs {
+  margin-top: 0;
+}
+
 .serverJobsHead {
   display: flex;
   align-items: center;
@@ -437,6 +555,54 @@ canvas {
   line-height: 1.2;
 }
 
+.serverJobsTools {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.refreshDoneCheck {
+  width: 18px;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 700;
+  text-align: center;
+  opacity: 0;
+  transform-origin: center;
+}
+
+.refreshDoneCheck.show {
+  animation: refreshDoneFade 1s ease-out forwards;
+}
+
+.refreshDoneCheck.loading {
+  opacity: 1;
+  font-size: 0;
+  animation: none;
+}
+
+.refreshDoneCheck.loading::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(15, 139, 141, 0.22);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: refreshSpin 0.75s linear infinite;
+}
+
+@keyframes refreshDoneFade {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-2px) scale(0.9);
+  }
+}
+
 .serverJobsHead button,
 .serverJobActions button {
   height: 30px;
@@ -450,6 +616,23 @@ canvas {
   cursor: pointer;
 }
 
+#refreshServerJobs {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 98px;
+}
+
+@keyframes refreshSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+#refreshServerJobs:disabled {
+  cursor: default;
+}
+
 .serverJobsList {
   display: grid;
 }
@@ -461,6 +644,15 @@ canvas {
   align-items: center;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    opacity 1s ease,
+    transform 1s ease,
+    max-height 1s ease,
+    padding 1s ease;
+  overflow: hidden;
 }
 
 .serverJob:last-child {
@@ -469,6 +661,28 @@ canvas {
 
 .serverJob.active {
   background: rgba(15, 139, 141, 0.07);
+}
+
+.serverJob:hover {
+  background: rgba(15, 139, 141, 0.07);
+}
+
+.serverJob:not([data-id]) {
+  cursor: default;
+}
+
+.serverJob:not([data-id]):hover {
+  background: transparent;
+}
+
+.serverJob.deleting {
+  max-height: 0 !important;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom-color: transparent;
+  opacity: 0;
+  transform: translateX(18px);
+  pointer-events: none;
 }
 
 .serverJobMain {
@@ -501,6 +715,69 @@ canvas {
 
 .serverJobActions button.danger {
   color: #7f3b3a;
+}
+
+.simulationResultPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.resultHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.resultHeader p {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.resultSummary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.resultMetric {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fbfcfd;
+}
+
+.resultMetric span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.resultMetric strong {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resultLastRow,
+.resultEmpty {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.resultTableWrap {
+  overflow: auto;
 }
 
 .simTableWrap {
@@ -599,6 +876,19 @@ canvas {
   }
 
   .simTotals {
+    grid-template-columns: 1fr;
+  }
+
+  .projectTabs {
+    align-items: stretch;
+  }
+
+  .projectTab,
+  .projectResultTab {
+    height: 38px;
+  }
+
+  .resultSummary {
     grid-template-columns: 1fr;
   }
 
