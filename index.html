@@ -17,7 +17,13 @@
         <div class="status" id="status">Загрузка CSV...</div>
       </header>
 
-      <section class="panel chartPanel">
+      <nav class="projectTabs" aria-label="Project tabs">
+        <button class="projectTab active" id="appTabNew" type="button" data-tab="new">New simulation</button>
+        <button class="projectTab" id="appTabHistory" type="button" data-tab="history">Past simulations</button>
+        <div class="resultTabs" id="resultTabs" aria-label="Opened simulation results"></div>
+      </nav>
+
+      <section class="panel chartPanel appView" id="chartView" data-view="new">
         <div class="panelHead">
           <div class="filters" aria-label="Фильтр периода">
             <button class="active" data-range="all">Все</button>
@@ -39,7 +45,7 @@
         </div>
       </section>
 
-      <section class="panel simulatorPanel" aria-label="Симулятор позиции">
+      <section class="panel simulatorPanel appView" id="newSimulationView" data-view="new" aria-label="Симулятор позиции">
         <div class="simControls">
           <label class="field">
             <span>Начало симуляции</span>
@@ -76,14 +82,7 @@
             </div>
           </div>
         </div>
-        <div class="simNotice" id="simNotice">Щелкни по графику, чтобы выбрать минуту старта, затем нажми START.</div>
-        <div class="serverJobs" id="serverJobs" hidden>
-          <div class="serverJobsHead">
-            <h2>Server jobs</h2>
-            <button id="refreshServerJobs" type="button">Refresh</button>
-          </div>
-          <div class="serverJobsList" id="serverJobsList"></div>
-        </div>
+        <div class="simNotice" id="simNotice"></div>
         <div class="simTableWrap" id="simTableWrap" hidden>
           <table class="simTable">
             <colgroup>
@@ -113,6 +112,60 @@
             <tbody id="simTableBody"></tbody>
           </table>
         </div>
+      </section>
+
+      <section class="panel historyPanel appView" id="historyView" hidden>
+        <div class="serverJobs" id="serverJobs">
+          <div class="serverJobsHead">
+            <h2>Server jobs</h2>
+            <div class="serverJobsTools">
+              <span class="refreshDoneCheck" id="refreshDoneCheck" aria-hidden="true">✓</span>
+              <button id="refreshServerJobs" type="button">Refresh</button>
+            </div>
+          </div>
+          <div class="serverJobsList" id="serverJobsList"></div>
+        </div>
+      </section>
+
+      <section class="panel simulationResultPanel appView" id="simulationResultView" hidden>
+        <div class="resultHeader">
+          <div>
+            <h2 id="resultTitle">Simulation result</h2>
+            <p id="resultSubtitle"></p>
+          </div>
+        </div>
+        <div class="resultSummary" id="resultSummary"></div>
+        <div class="resultLastRow" id="resultLastRow"></div>
+        <div class="resultTableWrap" id="resultTableWrap" hidden>
+          <table class="simTable">
+            <colgroup>
+              <col class="timeCol" />
+              <col class="eventCol" />
+              <col class="valueCol" />
+              <col class="priceCol" />
+              <col class="tokenCol" />
+              <col class="tokenCol" />
+              <col class="aeroCol" />
+              <col class="haircutCol" />
+              <col class="reliabilityCol" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th>Дата, время</th>
+                <th>Событие</th>
+                <th>Стоимость, USDC</th>
+                <th>Цена WETH</th>
+                <th>WETH</th>
+                <th>USDC</th>
+                <th>AERO, USDC</th>
+                <th>AERO haircut</th>
+                <th>Достоверность</th>
+              </tr>
+            </thead>
+            <tbody id="resultTableBody"></tbody>
+          </table>
+        </div>
+        <div class="resultEmpty" id="resultEmpty" hidden></div>
       </section>
     </main>
 

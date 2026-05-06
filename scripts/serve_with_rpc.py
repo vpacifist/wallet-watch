@@ -199,7 +199,7 @@ def get_latest_simulation():
 
 
 def list_simulations(limit=20):
-    limit = max(1, min(int(limit or 20), 100))
+    limit = max(1, min(int(limit or 20), 1000))
     with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
         rows = db.execute(
             """

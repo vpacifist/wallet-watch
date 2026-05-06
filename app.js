@@ -89,6 +89,21 @@ const simTableBody = document.getElementById("simTableBody");
 const serverJobs = document.getElementById("serverJobs");
 const serverJobsList = document.getElementById("serverJobsList");
 const refreshServerJobs = document.getElementById("refreshServerJobs");
+const refreshDoneCheck = document.getElementById("refreshDoneCheck");
+const appTabNew = document.getElementById("appTabNew");
+const appTabHistory = document.getElementById("appTabHistory");
+const resultTabs = document.getElementById("resultTabs");
+const chartView = document.getElementById("chartView");
+const newSimulationView = document.getElementById("newSimulationView");
+const historyView = document.getElementById("historyView");
+const simulationResultView = document.getElementById("simulationResultView");
+const resultTitle = document.getElementById("resultTitle");
+const resultSubtitle = document.getElementById("resultSubtitle");
+const resultSummary = document.getElementById("resultSummary");
+const resultLastRow = document.getElementById("resultLastRow");
+const resultTableWrap = document.getElementById("resultTableWrap");
+const resultTableBody = document.getElementById("resultTableBody");
+const resultEmpty = document.getElementById("resultEmpty");
 const MONTHS_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
 const AERODROME_TICK_SPACING = 100;
 const PRICE_DECIMAL_FACTOR = 1e12;
@@ -132,8 +147,13 @@ const serverSimulation = {
   id: null,
   pollTimer: null,
   running: false,
+  paused: false,
   available: SERVER_SIMULATION_MODE,
   jobs: [],
+};
+const appTabs = {
+  active: "new",
+  results: new Map(),
 };
 
 const {
@@ -1114,10 +1134,10 @@ function setActiveSimulationTime(index) {
   resetSimulationRows();
   if (state.activeTimeInput === "end") {
     setSimulationEnd(index);
-    setSimulationNotice("Конец симуляции выбран по графику. Нажми START.");
+    setSimulationNotice("Конец симуляции выбран по графику.");
   } else {
     setSimulationStart(index);
-    setSimulationNotice("Старт симуляции выбран по графику. Нажми START.");
+    setSimulationNotice("Старт симуляции выбран по графику.");
   }
 }
 
@@ -1173,16 +1193,21 @@ function zoomToSimulationRange(startIndex, endIndex) {
 
 function updateSimulationControls() {
   if (SERVER_SIMULATION_MODE) {
-    if (serverSimulation.running) {
-      runSimulation.textContent = "RUNNING";
-      runSimulation.title = "Симуляция считается на сервере";
-      runSimulation.disabled = true;
+    if (serverSimulation.running && !serverSimulation.paused) {
+      runSimulation.textContent = "PAUSE";
+      runSimulation.title = "Пауза серверной симуляции";
+      runSimulation.disabled = false;
     } else {
       runSimulation.textContent = "START";
-      runSimulation.title = "Запустить серверную симуляцию";
+      runSimulation.title = serverSimulation.paused ? "Продолжить серверную симуляцию" : "Запустить серверную симуляцию";
       runSimulation.disabled = false;
     }
-    if (resetSimulationButton) resetSimulationButton.disabled = false;
+    if (resetSimulationButton) {
+      const hasActiveServerSimulation = Boolean(serverSimulation.id && (serverSimulation.running || serverSimulation.paused));
+      resetSimulationButton.textContent = hasActiveServerSimulation ? "STOP" : "RESET";
+      resetSimulationButton.title = hasActiveServerSimulation ? "Остановить серверную симуляцию" : "Reset simulation";
+      resetSimulationButton.disabled = false;
+    }
     stepBack.disabled = true;
     stepForward.disabled = true;
     return;
@@ -1194,10 +1219,14 @@ function updateSimulationControls() {
     runSimulation.textContent = "START";
     runSimulation.title = "Старт симуляции";
   } else {
-    runSimulation.textContent = "RESUME";
+    runSimulation.textContent = "START";
     runSimulation.title = "Продолжить симуляцию";
   }
-  if (resetSimulationButton) resetSimulationButton.disabled = state.sim.rows.length === 0 && !state.sim.started && !state.sim.initializing;
+  if (resetSimulationButton) {
+    resetSimulationButton.textContent = state.sim.started || state.sim.initializing || state.sim.autoRunning ? "STOP" : "RESET";
+    resetSimulationButton.title = state.sim.started || state.sim.initializing || state.sim.autoRunning ? "Остановить симуляцию" : "Reset simulation";
+    resetSimulationButton.disabled = state.sim.rows.length === 0 && !state.sim.started && !state.sim.initializing;
+  }
   stepBack.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.rows.length <= 1;
   stepForward.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.stepInProgress || state.sim.stopped || !state.sim.started || state.sim.currentIndex >= state.sim.endIndex;
 }
@@ -1371,13 +1400,14 @@ function serverSimulationText(simulation) {
   const rows = payload.rows || 0;
   const elapsed = payload.elapsedSeconds ? formatDuration(payload.elapsedSeconds * 1000) : "";
   const lastRow = payload.lastRow ? payload.lastRow.replace(/\s+/g, " ").trim() : "";
+  const notice = (payload.notice || simulation?.error || "").replace(/до даты конца/g, "до конца");
   return {
     rows,
     elapsed,
     lastRow,
     currentValue: payload.currentValue || "",
     currentAero: payload.currentAero || "",
-    notice: payload.notice || simulation?.error || "",
+    notice,
   };
 }
 
@@ -1399,6 +1429,160 @@ function serverJobMeta(simulation) {
   ].filter(Boolean).join(" · ");
 }
 
+function resultTabId(id) {
+  return `result:${id}`;
+}
+
+function resultIdFromTab(tabId) {
+  return tabId && tabId.startsWith("result:") ? tabId.slice("result:".length) : "";
+}
+
+function serverJobTabLabel(simulation) {
+  const params = simulation?.params || {};
+  const end = params.end ? String(params.end).slice(5) : "";
+  const start = params.start ? String(params.start).slice(5) : "";
+  const range = params.rangePct ? `${params.rangePct}%` : "";
+  return [end || start || "Simulation", range].filter(Boolean).join(" - ");
+}
+
+function renderProjectTabs() {
+  if (appTabNew) appTabNew.classList.toggle("active", appTabs.active === "new");
+  if (appTabHistory) appTabHistory.classList.toggle("active", appTabs.active === "history");
+  if (!resultTabs) return;
+  resultTabs.replaceChildren();
+  for (const [id, simulation] of appTabs.results) {
+    const tab = document.createElement("div");
+    tab.className = `projectResultTab${appTabs.active === resultTabId(id) ? " active" : ""}`;
+    tab.dataset.resultId = id;
+    tab.title = serverJobLabel(simulation) || id;
+
+    const label = document.createElement("button");
+    label.type = "button";
+    label.className = "projectTabLabel";
+    label.dataset.tabAction = "activate";
+    label.textContent = serverJobTabLabel(simulation);
+
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "projectTabClose";
+    close.dataset.tabAction = "close";
+    close.setAttribute("aria-label", "Close simulation result");
+    close.textContent = "\u00d7";
+
+    tab.append(label, close);
+    resultTabs.append(tab);
+  }
+}
+
+function setAppTab(tabId) {
+  appTabs.active = tabId;
+  const resultId = resultIdFromTab(tabId);
+  if (chartView) chartView.hidden = tabId !== "new";
+  if (newSimulationView) newSimulationView.hidden = tabId !== "new";
+  if (historyView) historyView.hidden = tabId !== "history";
+  if (simulationResultView) simulationResultView.hidden = !resultId;
+  renderProjectTabs();
+  if (resultId) renderSimulationResultView(appTabs.results.get(resultId));
+  if (tabId === "history") loadServerJobs();
+  if (tabId === "new") requestAnimationFrame(draw);
+  window.scrollTo(0, 0);
+}
+
+function createResultMetric(label, value) {
+  const metric = document.createElement("div");
+  metric.className = "resultMetric";
+  const labelEl = document.createElement("span");
+  labelEl.textContent = label;
+  const valueEl = document.createElement("strong");
+  valueEl.textContent = value || "-";
+  metric.append(labelEl, valueEl);
+  return metric;
+}
+
+function renderResultTableRows(tableRows = []) {
+  if (!resultTableBody || !resultTableWrap || !resultEmpty) return;
+  resultTableBody.replaceChildren();
+  if (!tableRows.length) {
+    resultTableWrap.hidden = true;
+    resultEmpty.hidden = false;
+    resultEmpty.textContent = "Detailed rows are not stored for this simulation.";
+    return;
+  }
+  for (const rowText of tableRows) {
+    const tr = document.createElement("tr");
+    String(rowText).split("\t").forEach((cellText) => {
+      const td = document.createElement("td");
+      td.textContent = cellText.trim();
+      tr.append(td);
+    });
+    resultTableBody.append(tr);
+  }
+  resultEmpty.hidden = true;
+  resultTableWrap.hidden = false;
+}
+
+function renderSimulationResultView(simulation) {
+  if (!simulation) {
+    if (resultTitle) resultTitle.textContent = "Simulation result";
+    if (resultSubtitle) resultSubtitle.textContent = "Simulation is no longer available.";
+    if (resultSummary) resultSummary.replaceChildren();
+    if (resultLastRow) resultLastRow.textContent = "";
+    renderResultTableRows([]);
+    return;
+  }
+  const info = serverSimulationText(simulation);
+  const created = simulation.created_at ? new Date(simulation.created_at * 1000).toLocaleString() : "";
+  const finished = simulation.finished_at ? new Date(simulation.finished_at * 1000).toLocaleString() : "";
+  if (resultTitle) resultTitle.textContent = serverJobLabel(simulation) || simulation.id;
+  if (resultSubtitle) {
+    resultSubtitle.textContent = [
+      `status: ${simulation.status || "unknown"}`,
+      created ? `created: ${created}` : "",
+      finished ? `finished: ${finished}` : "",
+      `id: ${simulation.id}`,
+    ].filter(Boolean).join(" · ");
+  }
+  if (resultSummary) {
+    resultSummary.replaceChildren(
+      createResultMetric("Status", simulation.status || "unknown"),
+      createResultMetric("Rows", info.rows ? String(info.rows) : ""),
+      createResultMetric("Position value", info.currentValue),
+      createResultMetric("AERO earned", info.currentAero),
+      createResultMetric("Elapsed", info.elapsed),
+    );
+  }
+  if (resultLastRow) {
+    resultLastRow.textContent = info.notice;
+  }
+  renderResultTableRows(simulation?.result?.tableRows || []);
+}
+
+function openSimulationResultTab(simulation) {
+  if (!simulation?.id) return;
+  appTabs.results.set(simulation.id, simulation);
+  setAppTab(resultTabId(simulation.id));
+}
+
+function syncOpenedSimulation(simulation) {
+  if (!simulation?.id || !appTabs.results.has(simulation.id)) return;
+  appTabs.results.set(simulation.id, simulation);
+  renderProjectTabs();
+  if (appTabs.active === resultTabId(simulation.id)) renderSimulationResultView(simulation);
+}
+
+function closeSimulationResultTab(id) {
+  if (!id) return;
+  const wasActive = appTabs.active === resultTabId(id);
+  appTabs.results.delete(id);
+  if (wasActive) {
+    const ids = Array.from(appTabs.results.keys());
+    const fallbackId = ids[ids.length - 1];
+    setAppTab(fallbackId ? resultTabId(fallbackId) : "history");
+  } else {
+    renderProjectTabs();
+  }
+}
+
 function renderServerJobsList(items = serverSimulation.jobs) {
   if (!SERVER_SIMULATION_MODE || !serverJobs || !serverJobsList) return;
   serverJobs.hidden = false;
@@ -1412,8 +1596,9 @@ function renderServerJobsList(items = serverSimulation.jobs) {
   }
   for (const simulation of items) {
     const row = document.createElement("div");
-    row.className = `serverJob${simulation.id === serverSimulation.id ? " active" : ""}`;
+    row.className = "serverJob";
     row.dataset.id = simulation.id;
+    row.title = "Open simulation result";
 
     const main = document.createElement("div");
     main.className = "serverJobMain";
@@ -1427,11 +1612,6 @@ function renderServerJobsList(items = serverSimulation.jobs) {
 
     const actions = document.createElement("div");
     actions.className = "serverJobActions";
-    const openButton = document.createElement("button");
-    openButton.type = "button";
-    openButton.dataset.action = "open";
-    openButton.textContent = "OPEN";
-    actions.append(openButton);
     if (!isServerSimulationTerminal(simulation.status)) {
       const cancelButton = document.createElement("button");
       cancelButton.type = "button";
@@ -1452,6 +1632,30 @@ function renderServerJobsList(items = serverSimulation.jobs) {
   }
 }
 
+function setServerJobsRefreshLoading(isLoading) {
+  if (!refreshServerJobs) return;
+  refreshServerJobs.disabled = isLoading;
+  refreshServerJobs.classList.toggle("loading", isLoading);
+  if (refreshDoneCheck) refreshDoneCheck.classList.toggle("loading", isLoading);
+  refreshServerJobs.setAttribute("aria-busy", isLoading ? "true" : "false");
+  refreshServerJobs.textContent = isLoading ? "Loading" : "Refresh";
+}
+
+function showServerJobsRefreshDone() {
+  if (!refreshDoneCheck) return;
+  refreshDoneCheck.classList.remove("show");
+  void refreshDoneCheck.offsetWidth;
+  refreshDoneCheck.classList.add("show");
+}
+
+function animateServerJobDelete(row) {
+  if (!row) return Promise.resolve();
+  row.style.maxHeight = `${row.offsetHeight}px`;
+  row.getBoundingClientRect();
+  row.classList.add("deleting");
+  return new Promise((resolve) => setTimeout(resolve, 1000));
+}
+
 function renderServerResultTable(simulation) {
   const tableRows = simulation?.result?.tableRows || [];
   if (!SERVER_SIMULATION_MODE || !simTableBody || !simTableWrap || !tableRows.length) return;
@@ -1469,15 +1673,27 @@ function renderServerResultTable(simulation) {
   simTableWrap.hidden = false;
 }
 
-async function loadServerJobs() {
+async function loadServerJobs(options = {}) {
   if (!SERVER_SIMULATION_MODE || !serverJobsList) return;
+  const showFeedback = Boolean(options.feedback);
+  const feedbackStartedAt = showFeedback ? performance.now() : 0;
+  let loaded = false;
+  if (showFeedback) setServerJobsRefreshLoading(true);
   try {
-    const payload = await fetchJson("/api/simulations?limit=20");
+    const payload = await fetchJson("/api/simulations?limit=1000");
     serverSimulation.jobs = payload.items || [];
     renderServerJobsList(serverSimulation.jobs);
+    loaded = true;
   } catch (_) {
     serverSimulation.available = false;
     renderServerJobsList([]);
+  } finally {
+    if (showFeedback) {
+      const remainingMs = Math.max(0, 500 - (performance.now() - feedbackStartedAt));
+      if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));
+      setServerJobsRefreshLoading(false);
+      if (loaded) showServerJobsRefreshDone();
+    }
   }
 }
 
@@ -1485,18 +1701,20 @@ function renderServerSimulation(simulation) {
   if (!SERVER_SIMULATION_MODE || !simulation?.id) return;
   serverSimulation.id = simulation.id;
   serverSimulation.running = !isServerSimulationTerminal(simulation.status);
+  if (!serverSimulation.running) serverSimulation.paused = false;
   const info = serverSimulationText(simulation);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
   if (info.currentAero) currentAeroEarned.textContent = info.currentAero;
   setSimulationNotice({
     status: serverSimulation.running ? "Симуляция считается на сервере." : `Серверная симуляция: ${simulation.status}.`,
-    details: [`rows ${info.rows}`, info.elapsed, info.notice].filter(Boolean).join(" · "),
-    estimate: info.lastRow,
+    details: [`rows ${info.rows}`, info.elapsed, info.notice].filter(Boolean).join(" — "),
+    estimate: "",
   });
   const index = serverSimulation.jobs.findIndex((item) => item.id === simulation.id);
   if (index >= 0) serverSimulation.jobs[index] = simulation;
   else serverSimulation.jobs.unshift(simulation);
   renderServerJobsList(serverSimulation.jobs);
+  syncOpenedSimulation(simulation);
   renderServerResultTable(simulation);
   updateSimulationControls();
 }
@@ -1525,22 +1743,33 @@ async function pollServerSimulation(id) {
 
 function watchServerSimulation(id) {
   stopServerSimulationPolling();
+  serverSimulation.paused = false;
   pollServerSimulation(id);
   serverSimulation.pollTimer = setInterval(() => pollServerSimulation(id), 5000);
 }
 
-async function loadLatestServerSimulation() {
+function pauseServerSimulation() {
+  if (!SERVER_SIMULATION_MODE || !serverSimulation.id || !serverSimulation.running) return;
+  stopServerSimulationPolling();
+  serverSimulation.running = false;
+  serverSimulation.paused = true;
+  setSimulationNotice({ status: "Пауза.", details: "Серверная симуляция поставлена на паузу.", estimate: "" });
+  updateSimulationControls();
+}
+
+function resumeServerSimulation() {
+  if (!SERVER_SIMULATION_MODE || !serverSimulation.id || !serverSimulation.paused) return;
+  serverSimulation.running = true;
+  serverSimulation.paused = false;
+  updateSimulationControls();
+  watchServerSimulation(serverSimulation.id);
+}
+
+async function loadInitialServerSimulations() {
   if (!SERVER_SIMULATION_MODE) return;
-  if (serverJobs) serverJobs.hidden = false;
-  loadServerJobs();
   try {
-    const simulation = await fetchJson("/api/simulations/latest");
-    if (simulation?.id) {
-      renderServerSimulation(simulation);
-      if (!isServerSimulationTerminal(simulation.status)) watchServerSimulation(simulation.id);
-    } else {
-      updateSimulationControls();
-    }
+    await loadServerJobs();
+    updateSimulationControls();
   } catch (_) {
     serverSimulation.available = false;
     updateSimulationControls();
@@ -1550,36 +1779,61 @@ async function loadLatestServerSimulation() {
 async function openServerSimulation(id) {
   if (!SERVER_SIMULATION_MODE || !id) return;
   const simulation = await fetchJson(`/api/simulations/${id}`);
-  renderServerSimulation(simulation);
-  if (!isServerSimulationTerminal(simulation.status)) watchServerSimulation(id);
-  else stopServerSimulationPolling();
+  openSimulationResultTab(simulation);
 }
 
 async function cancelServerSimulation(id) {
   if (!SERVER_SIMULATION_MODE || !id) return;
   const simulation = await fetchJson(`/api/simulations/${id}/cancel`, { method: "POST" });
-  renderServerSimulation(simulation);
-  stopServerSimulationPolling();
-  loadServerJobs();
+  if (serverSimulation.id === id) {
+    renderServerSimulation(simulation);
+    stopServerSimulationPolling();
+  } else {
+    syncOpenedSimulation(simulation);
+  }
+  serverSimulation.paused = false;
+  await loadServerJobs();
 }
 
-async function deleteServerSimulation(id) {
+async function deleteServerSimulation(id, row = null) {
   if (!SERVER_SIMULATION_MODE || !id) return;
-  await fetchJson(`/api/simulations/${id}`, { method: "DELETE" });
-  if (serverSimulation.id === id) {
-    serverSimulation.id = null;
-    serverSimulation.running = false;
-    stopServerSimulationPolling();
-    setSimulationNotice("Server simulation deleted.");
-    currentPositionValue.textContent = "$0.00";
-    currentAeroEarned.textContent = "$0.00";
-    updateSimulationControls();
+  const deleteAnimation = animateServerJobDelete(row);
+  try {
+    await fetchJson(`/api/simulations/${id}`, { method: "DELETE" });
+    serverSimulation.jobs = serverSimulation.jobs.filter((item) => item.id !== id);
+    closeSimulationResultTab(id);
+    if (serverSimulation.id === id) {
+      serverSimulation.id = null;
+      serverSimulation.running = false;
+      serverSimulation.paused = false;
+      stopServerSimulationPolling();
+      setSimulationNotice("Server simulation deleted.");
+      currentPositionValue.textContent = "$0.00";
+      currentAeroEarned.textContent = "$0.00";
+      updateSimulationControls();
+    }
+    await deleteAnimation;
+    if (row?.isConnected) row.remove();
+    if (!serverSimulation.jobs.length) renderServerJobsList([]);
+  } catch (error) {
+    if (row) {
+      row.classList.remove("deleting");
+      row.style.maxHeight = "";
+    }
+    throw error;
   }
-  await loadServerJobs();
 }
 
 async function startServerSimulation() {
   if (!SERVER_SIMULATION_MODE) return startSimulation();
+  if (serverSimulation.running && !serverSimulation.paused) {
+    pauseServerSimulation();
+    return;
+  }
+  if (serverSimulation.paused) {
+    resumeServerSimulation();
+    return;
+  }
   if (!serverSimulation.available) {
     setSimulationNotice("Серверный API недоступен. Запусти приложение через scripts/serve_with_rpc.py.");
     return;
@@ -1605,6 +1859,7 @@ async function startServerSimulation() {
     return;
   }
   serverSimulation.running = true;
+  serverSimulation.paused = false;
   updateSimulationControls();
   setSimulationNotice("Запускаю серверную симуляцию...");
   try {
@@ -1622,6 +1877,7 @@ async function startServerSimulation() {
     loadServerJobs();
   } catch (error) {
     serverSimulation.running = false;
+    serverSimulation.paused = false;
     setSimulationNotice(`Не удалось запустить серверную симуляцию: ${error.message}`);
     updateSimulationControls();
   }
@@ -1764,6 +2020,16 @@ function stepSimulationBack() {
 function resetSimulation() {
   resetSimulationRows();
   setSimulationNotice("Симуляция сброшена. Нажми START, чтобы начать заново.");
+}
+
+function resetOrStopSimulation() {
+  if (SERVER_SIMULATION_MODE && serverSimulation.id && (serverSimulation.running || serverSimulation.paused)) {
+    cancelServerSimulation(serverSimulation.id).catch((error) => {
+      setSimulationNotice(`Не удалось остановить серверную симуляцию: ${error.message}`);
+    });
+    return;
+  }
+  resetSimulation();
 }
 
 async function runAutoSimulationLoop(runToken, loopId) {
@@ -1921,6 +2187,18 @@ document.querySelectorAll(".filters button").forEach((button) => {
   button.addEventListener("click", () => updateRange(button.dataset.range));
 });
 
+if (appTabNew) appTabNew.addEventListener("click", () => setAppTab("new"));
+if (appTabHistory) appTabHistory.addEventListener("click", () => setAppTab("history"));
+if (resultTabs) {
+  resultTabs.addEventListener("click", (event) => {
+    const tab = event.target.closest(".projectResultTab");
+    if (!tab?.dataset?.resultId) return;
+    const action = event.target.closest("button")?.dataset?.tabAction;
+    if (action === "close") closeSimulationResultTab(tab.dataset.resultId);
+    else setAppTab(resultTabId(tab.dataset.resultId));
+  });
+}
+
 simStartInput.addEventListener("change", () => {
   const timestamp = parseInputTime(simStartInput.value);
   if (Number.isNaN(timestamp)) {
@@ -1972,19 +2250,21 @@ rangePercentInput.addEventListener("change", () => {
   resetSimulationRows();
 });
 runSimulation.addEventListener("click", startServerSimulation);
-if (resetSimulationButton) resetSimulationButton.addEventListener("click", resetSimulation);
-if (refreshServerJobs) refreshServerJobs.addEventListener("click", loadServerJobs);
+if (resetSimulationButton) resetSimulationButton.addEventListener("click", resetOrStopSimulation);
+if (refreshServerJobs) refreshServerJobs.addEventListener("click", () => loadServerJobs({ feedback: true }));
 if (serverJobsList) {
   serverJobsList.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-action]");
-    if (!button) return;
-    const row = button.closest(".serverJob");
+    const row = event.target.closest(".serverJob");
     const id = row?.dataset?.id;
     if (!id) return;
+    if (!button) {
+      openServerSimulation(id);
+      return;
+    }
     const action = button.dataset.action;
-    if (action === "open") openServerSimulation(id);
     if (action === "cancel") cancelServerSimulation(id);
-    if (action === "delete") deleteServerSimulation(id);
+    if (action === "delete") deleteServerSimulation(id, row).catch((error) => console.error(error));
   });
 }
 stepForward.addEventListener("click", () => {
@@ -2024,7 +2304,7 @@ fetch(CSV_FILE)
     resetSimulationRows();
     setActiveTimeInput("start");
     updateRange("all");
-    loadLatestServerSimulation();
+    loadInitialServerSimulations();
   })
   .catch((error) => {
     statusEl.textContent = "Ошибка загрузки CSV";
