@@ -45,5 +45,18 @@ jobs:
             scripts/warm_sim_cache.py \
             scripts/export_dexpaprika_ohlcv.py
 
+      - name: Start local RPC server
+        run: |
+          python scripts/serve_with_rpc.py > server.log 2>&1 &
+          echo $! > server.pid
+          for i in {1..40}; do
+            if curl --silent --fail http://127.0.0.1:8003/index.html > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat server.log
+          exit 1
+
       - name: Run regression tests
         run: npm test
