@@ -84,14 +84,12 @@ function includesAny(text, needles) {
 function isCompletedNotice(notice) {
   return includesAny(notice, [
     "Симуляция дошла до даты конца",
-    "РЎРёРјСѓР»СЏС†РёСЏ РґРѕС€Р»Р° РґРѕ РґР°С‚С‹ РєРѕРЅС†Р°",
   ]);
 }
 
 function isStoppedNotice(notice) {
   return includesAny(notice, [
     "Симуляция остановлена",
-    "РЎРёРјСѓР»СЏС†РёСЏ РѕСЃС‚Р°РЅРѕРІР»РµРЅР°",
   ]);
 }
 
@@ -158,7 +156,7 @@ async function readState(page) {
           lastRow: state.lastRow,
         }));
       }
-      if (state.notice.includes("Симуляция дошла до даты конца")) {
+      if (isCompletedNotice(state.notice)) {
         console.log(JSON.stringify({
           type: "result",
           status: "completed",
@@ -200,7 +198,7 @@ async function readState(page) {
           continue;
         }
       }
-      if (state.notice.includes("Симуляция остановлена")) {
+      if (isStoppedNotice(state.notice)) {
         console.log(JSON.stringify({
           type: "result",
           status: "stopped",

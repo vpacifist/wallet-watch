@@ -729,14 +729,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         payload = json.loads(body)
         result = post_rpc_batch(payload) if isinstance(payload, list) else post_rpc(payload)
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(json.dumps(result).encode("utf-8"))
 
     def send_json(self, status, payload):
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
@@ -760,13 +760,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 timestamp = int(params.get("timestamp", [""])[0])
                 price = get_aero_price(timestamp)
                 self.send_response(200)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(json.dumps(price).encode("utf-8"))
             except Exception as exc:
                 self.send_response(502)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(exc)}).encode("utf-8"))
             return
