@@ -163,6 +163,7 @@ const {
   aeroPriceReliability,
   aeroUsdcPriceFromSqrtX96,
   blockTag,
+  buildCompleteMinuteRows,
   blockTimeReliability,
   clampPercent,
   computePositionPlan,
@@ -2295,8 +2296,10 @@ fetch(CSV_FILE)
     return response.text();
   })
   .then((text) => {
-    state.rows = parseCsv(text);
-    state.dataQuality = analyzeDataQuality(state.rows);
+    const csvRows = parseCsv(text);
+    state.dataQuality = analyzeDataQuality(csvRows);
+    state.rows = buildCompleteMinuteRows(csvRows);
+    state.dataQuality.minuteRowCount = state.rows.length;
     statusEl.textContent = dataQualityStatus(state.dataQuality);
     statusEl.title = dataQualityTitle(state.dataQuality);
     setSimulationStart(0);
