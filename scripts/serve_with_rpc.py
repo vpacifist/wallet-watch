@@ -185,6 +185,22 @@ def get_latest_simulation():
     return simulation_row_to_dict(row)
 
 
+def list_simulations(limit=20):
+    limit = max(1, min(int(limit or 20), 100))
+    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+        rows = db.execute(
+            """
+            SELECT id, status, params_json, progress_json, result_json, error, pid,
+                   created_at, updated_at, finished_at
+            FROM simulations
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [simulation_row_to_dict(row) for row in rows]
+
+
 def update_simulation(simulation_id, **fields):
     if not fields:
         return
@@ -213,6 +229,12 @@ def insert_simulation(simulation_id, params):
             """,
             (simulation_id, "queued", json.dumps(params, ensure_ascii=False), timestamp, timestamp),
         )
+
+
+def delete_simulation(simulation_id):
+    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+        cursor = db.execute("DELETE FROM simulations WHERE id = ?", (simulation_id,))
+        return cursor.rowcount > 0
 
 
 def normalize_simulation_params(payload):
@@ -312,6 +334,27 @@ def start_simulation_job(params):
     threading.Thread(target=stream_simulation_stdout, args=(simulation_id, process.stdout), daemon=True).start()
     threading.Thread(target=stream_simulation_stderr, args=(simulation_id, process.stderr), daemon=True).start()
     threading.Thread(target=wait_for_simulation, args=(simulation_id, process), daemon=True).start()
+    return get_simulation(simulation_id)
+
+
+def cancel_simulation_job(simulation_id):
+    simulation = get_simulation(simulation_id)
+    if not simulation:
+        return None
+    if simulation["status"] not in {"queued", "running"}:
+        return simulation
+
+    with SIM_LOCK:
+        process = RUNNING_SIMULATIONS.get(simulation_id)
+    if process and process.poll() is None:
+        process.terminate()
+
+    update_simulation(
+        simulation_id,
+        status="cancelled",
+        error="cancelled by user",
+        finished_at=now_int(),
+    )
     return get_simulation(simulation_id)
 
 
@@ -720,6 +763,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json(400, {"error": str(exc)})
             return
 
+        if parsed.path.startswith("/api/simulations/") and parsed.path.endswith("/cancel"):
+            simulation_id = parsed.path.split("/")[-2]
+            result = cancel_simulation_job(simulation_id)
+            if not result:
+                self.send_json(404, {"error": "simulation not found"})
+            else:
+                self.send_json(200, result)
+            return
+
         if self.path != "/rpc":
             self.send_error(404)
             return
@@ -743,6 +795,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/health":
+            self.send_json(200, {"ok": True, "status": "healthy", "time": now_int()})
+            return
+        if parsed.path == "/api/simulations":
+            params = urllib.parse.parse_qs(parsed.query)
+            limit = params.get("limit", ["20"])[0]
+            self.send_json(200, {"items": list_simulations(limit)})
+            return
         if parsed.path == "/api/simulations/latest":
             self.send_json(200, get_latest_simulation() or {})
             return
@@ -771,6 +831,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(json.dumps({"error": str(exc)}).encode("utf-8"))
             return
         super().do_GET()
+
+    def do_DELETE(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path.startswith("/api/simulations/"):
+            simulation_id = parsed.path.rsplit("/", 1)[-1]
+            cancel_simulation_job(simulation_id)
+            if delete_simulation(simulation_id):
+                self.send_json(200, {"ok": True, "id": simulation_id})
+            else:
+                self.send_json(404, {"error": "simulation not found"})
+            return
+        self.send_error(404)
 
 
 def get_aero_price(timestamp):

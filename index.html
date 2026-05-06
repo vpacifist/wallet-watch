@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>WETH/USDC Aerodrome Prices</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -76,6 +77,13 @@
           </div>
         </div>
         <div class="simNotice" id="simNotice">Щелкни по графику, чтобы выбрать минуту старта, затем нажми START.</div>
+        <div class="serverJobs" id="serverJobs" hidden>
+          <div class="serverJobsHead">
+            <h2>Server jobs</h2>
+            <button id="refreshServerJobs" type="button">Refresh</button>
+          </div>
+          <div class="serverJobsList" id="serverJobsList"></div>
+        </div>
         <div class="simTableWrap" id="simTableWrap" hidden>
           <table class="simTable">
             <colgroup>

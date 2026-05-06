@@ -414,6 +414,95 @@ canvas {
   color: var(--ink);
 }
 
+.serverJobs {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fbfcfd;
+}
+
+.serverJobsHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #f8fafc;
+}
+
+.serverJobsHead h2 {
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.serverJobsHead button,
+.serverJobActions button {
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 10px;
+  color: var(--ink);
+  background: #ffffff;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.serverJobsList {
+  display: grid;
+}
+
+.serverJob {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.serverJob:last-child {
+  border-bottom: 0;
+}
+
+.serverJob.active {
+  background: rgba(15, 139, 141, 0.07);
+}
+
+.serverJobMain {
+  min-width: 0;
+}
+
+.serverJobTitle,
+.serverJobMeta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serverJobTitle {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.serverJobMeta {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.serverJobActions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.serverJobActions button.danger {
+  color: #7f3b3a;
+}
+
 .simTableWrap {
   margin-top: 18px;
   flex: 1 1 auto;
@@ -511,6 +600,14 @@ canvas {
 
   .simTotals {
     grid-template-columns: 1fr;
+  }
+
+  .serverJob {
+    grid-template-columns: 1fr;
+  }
+
+  .serverJobActions {
+    justify-content: flex-start;
   }
 
   .filters {
