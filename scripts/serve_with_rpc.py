@@ -135,7 +135,17 @@ def now_int():
     return int(time.time())
 
 
-def simulation_row_to_dict(row):
+def compact_simulation_payload(payload):
+    if not isinstance(payload, dict):
+        return payload
+    compact = dict(payload)
+    if "tableRows" in compact:
+        compact["tableRowCount"] = len(compact.get("tableRows") or [])
+        compact.pop("tableRows", None)
+    return compact
+
+
+def simulation_row_to_dict(row, compact=False):
     if not row:
         return None
     columns = [
@@ -152,7 +162,10 @@ def simulation_row_to_dict(row):
     ]
     item = dict(zip(columns, row))
     for key in ("params_json", "progress_json", "result_json"):
-        item[key.replace("_json", "")] = json.loads(item[key]) if item.get(key) else None
+        payload = json.loads(item[key]) if item.get(key) else None
+        if compact and key in {"progress_json", "result_json"}:
+            payload = compact_simulation_payload(payload)
+        item[key.replace("_json", "")] = payload
         item.pop(key, None)
     return item
 
@@ -182,7 +195,7 @@ def get_latest_simulation():
             LIMIT 1
             """
         ).fetchone()
-    return simulation_row_to_dict(row)
+    return simulation_row_to_dict(row, compact=True)
 
 
 def list_simulations(limit=20):
@@ -198,7 +211,7 @@ def list_simulations(limit=20):
             """,
             (limit,),
         ).fetchall()
-    return [simulation_row_to_dict(row) for row in rows]
+    return [simulation_row_to_dict(row, compact=True) for row in rows]
 
 
 def update_simulation(simulation_id, **fields):
