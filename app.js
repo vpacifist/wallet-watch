@@ -569,84 +569,7 @@ function rebalanceReliability(rewardState, swapReliability, hasSwap, block) {
 }
 
 async function buildRebalanceRow(index, exit, block, runToken = null) {
-  const oldTickLower = state.sim.tickLower;
-  const oldTickUpper = state.sim.tickUpper;
-  const oldAnchorTick = state.sim.anchorTick || Math.round((oldTickLower + oldTickUpper) / (2 * AERODROME_TICK_SPACING)) * AERODROME_TICK_SPACING;
-  const lowerDistance = Math.max(AERODROME_TICK_SPACING, oldAnchorTick - oldTickLower);
-  const upperDistance = Math.max(AERODROME_TICK_SPACING, oldTickUpper - oldAnchorTick);
-  const exitPrice = priceFromSqrtX96(exit.sqrtPriceX96);
-  const rewardState = await readRewardInside(block.number, oldTickLower, oldTickUpper);
-  const aeroPrice = await getAeroPrice(block.number);
-  ensureActiveSimulation(runToken);
-  accrueAeroRewards(rewardState);
-  const aeroTotals = aeroTotalsUsdc(aeroPrice);
-  const aeroEvent = aeroEventUsdc(aeroPrice);
-  const harvestedAeroUsdc = aeroTotals.conservative;
-  const oldAmounts = amountsForPosition(exitPrice);
-  const newAnchorTick = Math.floor(exit.tick / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
-  const newTickLower = newAnchorTick - lowerDistance;
-  const newTickUpper = newAnchorTick + upperDistance;
-  const grossCapital = oldAmounts.value;
-  const targetGross = computePositionPlanForRange(grossCapital, exitPrice, newTickLower, newTickUpper, newAnchorTick);
-  const excessWeth = oldAmounts.weth - targetGross.weth;
-  const excessUsdc = oldAmounts.usdc - targetGross.usdc;
-  let swap = { direction: "NONE", amount: 0 };
-  if (excessWeth > 0) swap = { direction: "WETH_TO_USDC", amount: excessWeth };
-  if (excessUsdc > 0) swap = { direction: "USDC_TO_WETH", amount: excessUsdc };
-  const swapQuote = await estimateHistoricalSwap(swap, exitPrice, block.number);
-  ensureActiveSimulation(runToken);
-  const gasUsdc = estimateRebalanceGasUsdc(block, exitPrice);
-  const automationFeeUsdc = grossCapital * REBALANCE_MANUAL_FEE_BPS / 10000;
-  const totalCostUsdc = swapQuote.lossUsdc + gasUsdc + automationFeeUsdc;
-  const netCapital = Math.max(0, grossCapital - totalCostUsdc);
-  const newPlan = computePositionPlanForRange(netCapital, exitPrice, newTickLower, newTickUpper, newAnchorTick);
-  const nextRewardState = await readRewardInside(block.number, newTickLower, newTickUpper);
-  ensureActiveSimulation(runToken);
-  const reliability = rebalanceReliability(rewardState, swapQuote.reliability, swap.amount > 0, block);
-  const impactDetails = impactRiskDetails(rewardState, aeroPrice, aeroEvent);
-  state.sim.tickLower = newTickLower;
-  state.sim.tickUpper = newTickUpper;
-  state.sim.anchorTick = newAnchorTick;
-  state.sim.liquidityHuman = newPlan.liquidityHuman;
-  state.sim.liquidityRaw = newPlan.liquidityRaw;
-  state.sim.rewardStart = nextRewardState.rewardInside;
-  state.sim.rewardLast = nextRewardState.rewardInside;
-  state.sim.aeroUnharvested = 0;
-  state.sim.aeroBaseUnharvested = 0;
-  state.sim.aeroHaircutUnharvested = 0;
-  state.sim.aeroHarvestedUsdc = harvestedAeroUsdc;
-  state.sim.aeroBaseHarvestedUsdc = aeroTotals.base;
-  state.sim.aeroHaircutUsdc = aeroTotals.haircut;
-  return {
-    event: `rebalance -${fmtUsdc(totalCostUsdc)}`,
-    index,
-    blockNumber: block.number,
-    value: newPlan.value,
-    price: exitPrice,
-    weth: newPlan.weth,
-    usdc: newPlan.usdc,
-    aeroUsdc: aeroEvent.conservative,
-    aeroTotalUsdc: harvestedAeroUsdc,
-    aeroBaseUsdc: aeroEvent.base,
-    aeroHaircutUsdc: aeroEvent.haircut,
-    aeroPrice,
-    reliability: reliability.score,
-    reliabilityDetails: reliabilityDetailsText(reliability.parts),
-    impactDetails,
-    stateAfter: snapshotSimState(),
-    rebalance: {
-      oldTickLower,
-      oldTickUpper,
-      newTickLower,
-      newTickUpper,
-      swapDirection: swap.direction,
-      swapSource: swapQuote.source,
-      swapLossUsdc: swapQuote.lossUsdc,
-      gasUsdc,
-      automationFeeUsdc,
-      totalCostUsdc,
-    },
-  };
+  return await simulationEngine.buildRebalanceRow(index, exit, block, runToken);
 }
 
 function snapshotSimState() {
@@ -1481,16 +1404,22 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   findBlockAtOrAfter,
   findSwapExit,
   getBlock,
-  buildRebalanceRow,
   readRewardInside,
   getAeroPrice,
   ensureActiveSimulation,
   priceForTick,
   priceFromSqrtX96,
+  computePositionPlanForRange,
+  estimateHistoricalSwap,
+  estimateRebalanceGasUsdc,
+  rebalanceReliability,
+  fmtUsdc,
   simulationReliability,
   impactRiskDetails,
   reliabilityDetailsText,
   impactShare,
+  AERODROME_TICK_SPACING,
+  REBALANCE_MANUAL_FEE_BPS,
   Q128,
   AERO_DECIMALS,
   recordSimulationStepDuration,
