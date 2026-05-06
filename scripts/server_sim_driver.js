@@ -23,7 +23,7 @@ function emit(payload) {
 }
 
 function isCompleted(state) {
-  return state.notice.includes("Симуляция дошла до даты конца");
+  return state.notice.includes("Симуляция дошла до конца") || state.notice.includes("Симуляция дошла до даты конца");
 }
 
 function isStopped(state) {

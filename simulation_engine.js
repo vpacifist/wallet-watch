@@ -330,7 +330,7 @@
         state.sim.stopped = true;
         state.sim.autoRunning = false;
         if (shouldRender) {
-          setSimulationNotice({ status: "Симуляция дошла до даты конца.", details: simulationProgressText(), estimate: "" });
+          setSimulationNotice({ status: "Симуляция дошла до конца.", details: simulationProgressText(), estimate: "" });
           updateSimulationControls();
         }
         return false;
@@ -415,7 +415,7 @@
       if (runToken === state.sim.runToken && loopId === state.sim.autoLoopId) {
         state.sim.autoRunning = false;
         if (state.sim.currentIndex >= state.sim.endIndex || state.sim.stopped) {
-          setSimulationNotice({ status: "Симуляция дошла до даты конца.", details: simulationProgressText(), estimate: "" });
+          setSimulationNotice({ status: "Симуляция дошла до конца.", details: simulationProgressText(), estimate: "" });
         }
         renderSimulationTable(true);
         updateSimulationControls();

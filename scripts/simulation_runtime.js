@@ -179,7 +179,7 @@ function makeDocument() {
   elements.get("runSimulation").textContent = "START";
   elements.get("currentPositionValue").textContent = "$0.00";
   elements.get("currentAeroEarned").textContent = "$0.00";
-  elements.get("simNotice").textContent = "Щелкни по графику, чтобы выбрать минуту старта, затем нажми START.";
+  elements.get("simNotice").textContent = "";
 
   const filterButtons = ["all", "2026-02", "2026-03", "2026-04"].map((range) => {
     const button = new FakeElement("", "button");
@@ -327,7 +327,7 @@ async function runSimulation(config, emit = () => {}) {
         currentAero: state.currentAero,
       });
     }
-    if (state.notice.includes("Симуляция дошла до даты конца")) {
+    if (state.notice.includes("Симуляция дошла до конца") || state.notice.includes("Симуляция дошла до даты конца")) {
       emit({
         type: "result",
         id: config.id,
