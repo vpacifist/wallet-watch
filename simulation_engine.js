@@ -5,6 +5,7 @@
       performance,
       findBlockAtOrAfter,
       findSwapExit,
+      estimateLpFees,
       getBlock,
       readRewardInside,
       getAeroPrice,
@@ -52,6 +53,9 @@
         aeroHarvestedUsdc: state.sim.aeroHarvestedUsdc,
         aeroBaseHarvestedUsdc: state.sim.aeroBaseHarvestedUsdc,
         aeroHaircutUsdc: state.sim.aeroHaircutUsdc,
+        lpFeesWeth: state.sim.lpFeesWeth,
+        lpFeesUsdc: state.sim.lpFeesUsdc,
+        lpFeesUsdcValue: state.sim.lpFeesUsdcValue,
         aeroPriceReliability: state.sim.aeroPriceReliability,
         aeroPriceAgeSeconds: state.sim.aeroPriceAgeSeconds,
       };
@@ -75,6 +79,9 @@
       state.sim.aeroHarvestedUsdc = snapshot.aeroHarvestedUsdc;
       state.sim.aeroBaseHarvestedUsdc = snapshot.aeroBaseHarvestedUsdc || snapshot.aeroHarvestedUsdc || 0;
       state.sim.aeroHaircutUsdc = snapshot.aeroHaircutUsdc || 0;
+      state.sim.lpFeesWeth = snapshot.lpFeesWeth || 0;
+      state.sim.lpFeesUsdc = snapshot.lpFeesUsdc || 0;
+      state.sim.lpFeesUsdcValue = snapshot.lpFeesUsdcValue || 0;
       state.sim.aeroPriceReliability = snapshot.aeroPriceReliability;
       state.sim.aeroPriceAgeSeconds = snapshot.aeroPriceAgeSeconds || 0;
     }
@@ -152,6 +159,21 @@
       };
     }
 
+    function lpFeeTotals(price) {
+      return {
+        weth: state.sim.lpFeesWeth,
+        usdc: state.sim.lpFeesUsdc,
+        usdcValue: state.sim.lpFeesWeth * price + state.sim.lpFeesUsdc,
+      };
+    }
+
+    function accrueLpFees(fees, price) {
+      state.sim.lpFeesWeth += fees.weth || 0;
+      state.sim.lpFeesUsdc += fees.usdc || 0;
+      state.sim.lpFeesUsdcValue = state.sim.lpFeesWeth * price + state.sim.lpFeesUsdc;
+      return lpFeeTotals(price);
+    }
+
     function onChainPriceReliability() {
       return 97;
     }
@@ -205,27 +227,54 @@
     async function buildSimulationRow(index, eventName, blockOverride = null, runToken = null) {
       const row = state.rows[index];
       const timestamp = Math.floor(new Date(row.time).getTime() / 1000);
-      const afterBlock = state.sim.rows.length ? state.sim.rows[state.sim.rows.length - 1].blockNumber : 1;
+      const previousRow = state.sim.rows.length ? state.sim.rows[state.sim.rows.length - 1] : null;
+      const afterBlock = previousRow ? previousRow.blockNumber : 1;
       const block = blockOverride || await findBlockAtOrAfter(timestamp, afterBlock);
       const rewardState = await readRewardInside(block.number, state.sim.tickLower, state.sim.tickUpper);
       const aeroPrice = await getAeroPrice(block.number);
       ensureActiveSimulation(runToken);
+      const previousAeroAmounts = {
+        conservative: state.sim.aeroUnharvested,
+        base: state.sim.aeroBaseUnharvested,
+        haircut: state.sim.aeroHaircutUnharvested,
+      };
       const previousAeroTotals = aeroTotalsUsdc(aeroPrice);
       accrueAeroRewards(rewardState);
       const aeroTotals = aeroTotalsUsdc(aeroPrice);
+      const aeroAmounts = {
+        conservative: state.sim.aeroUnharvested - previousAeroAmounts.conservative,
+        base: state.sim.aeroBaseUnharvested - previousAeroAmounts.base,
+        haircut: state.sim.aeroHaircutUnharvested - previousAeroAmounts.haircut,
+        totalConservative: state.sim.aeroUnharvested,
+        totalBase: state.sim.aeroBaseUnharvested,
+        totalHaircut: state.sim.aeroHaircutUnharvested,
+      };
       const aeroEvent = {
         conservative: aeroTotals.conservative - previousAeroTotals.conservative,
         base: aeroTotals.base - previousAeroTotals.base,
         haircut: aeroTotals.haircut - previousAeroTotals.haircut,
       };
       const price = priceFromSqrtX96(rewardState.sqrtPriceX96);
+      const previousFeeTotals = lpFeeTotals(price);
+      const lpFeeEstimate = previousRow
+        ? await estimateLpFees(previousRow.blockNumber + 1, block.number, rewardState, price)
+        : { weth: 0, usdc: 0, usdcValue: 0, source: "initial-row", reliability: 100, swapCount: 0 };
+      ensureActiveSimulation(runToken);
+      const lpFeeTotalsAfter = accrueLpFees(lpFeeEstimate, price);
+      const lpFeeEvent = {
+        weth: lpFeeTotalsAfter.weth - previousFeeTotals.weth,
+        usdc: lpFeeTotalsAfter.usdc - previousFeeTotals.usdc,
+        usdcValue: lpFeeTotalsAfter.usdcValue - previousFeeTotals.usdcValue,
+      };
       const amounts = amountsForPosition(price);
       const reliability = simulationReliability(row, block, rewardState);
       return {
         event: eventName,
         index,
         blockNumber: block.number,
+        tick: rewardState.tick,
         value: amounts.value,
+        valueWithLpFees: amounts.value + lpFeeTotalsAfter.usdcValue,
         price,
         weth: amounts.weth,
         usdc: amounts.usdc,
@@ -233,7 +282,18 @@
         aeroTotalUsdc: aeroTotals.conservative,
         aeroBaseUsdc: aeroEvent.base,
         aeroHaircutUsdc: aeroEvent.haircut,
+        aeroAmount: aeroAmounts.conservative,
+        aeroTotalAmount: aeroAmounts.totalConservative,
+        aeroBaseAmount: aeroAmounts.base,
+        aeroHaircutAmount: aeroAmounts.haircut,
         aeroPrice,
+        lpFeesWeth: lpFeeEvent.weth,
+        lpFeesUsdc: lpFeeEvent.usdc,
+        lpFeesUsdcValue: lpFeeEvent.usdcValue,
+        lpFeesTotalUsdc: lpFeeTotalsAfter.usdcValue,
+        lpFeesSource: lpFeeEstimate.source,
+        lpFeesReliability: lpFeeEstimate.reliability,
+        lpFeesSwapCount: lpFeeEstimate.swapCount,
         reliability: reliability.score,
         reliabilityDetails: reliabilityDetailsText(reliability.parts),
         impactDetails: impactRiskDetails(rewardState, aeroPrice, aeroEvent),
@@ -242,6 +302,7 @@
     }
 
     async function buildRebalanceRow(index, exit, block, runToken = null) {
+      const previousRow = state.sim.rows.length ? state.sim.rows[state.sim.rows.length - 1] : null;
       const oldTickLower = state.sim.tickLower;
       const oldTickUpper = state.sim.tickUpper;
       const oldAnchorTick = state.sim.anchorTick || Math.round((oldTickLower + oldTickUpper) / (2 * AERODROME_TICK_SPACING)) * AERODROME_TICK_SPACING;
@@ -251,11 +312,35 @@
       const rewardState = await readRewardInside(block.number, oldTickLower, oldTickUpper);
       const aeroPrice = await getAeroPrice(block.number);
       ensureActiveSimulation(runToken);
+      const previousAeroAmounts = {
+        conservative: state.sim.aeroUnharvested,
+        base: state.sim.aeroBaseUnharvested,
+        haircut: state.sim.aeroHaircutUnharvested,
+      };
       accrueAeroRewards(rewardState);
       const aeroTotals = aeroTotalsUsdc(aeroPrice);
+      const aeroAmounts = {
+        conservative: state.sim.aeroUnharvested - previousAeroAmounts.conservative,
+        base: state.sim.aeroBaseUnharvested - previousAeroAmounts.base,
+        haircut: state.sim.aeroHaircutUnharvested - previousAeroAmounts.haircut,
+        totalConservative: state.sim.aeroUnharvested,
+        totalBase: state.sim.aeroBaseUnharvested,
+        totalHaircut: state.sim.aeroHaircutUnharvested,
+      };
       const aeroEvent = aeroEventUsdc(aeroPrice);
       const harvestedAeroUsdc = aeroTotals.conservative;
       const oldAmounts = amountsForPosition(exitPrice);
+      const previousFeeTotals = lpFeeTotals(exitPrice);
+      const lpFeeEstimate = previousRow
+        ? await estimateLpFees(previousRow.blockNumber + 1, block.number, rewardState, exitPrice)
+        : { weth: 0, usdc: 0, usdcValue: 0, source: "initial-row", reliability: 100, swapCount: 0 };
+      ensureActiveSimulation(runToken);
+      const lpFeeTotalsAfter = accrueLpFees(lpFeeEstimate, exitPrice);
+      const lpFeeEvent = {
+        weth: lpFeeTotalsAfter.weth - previousFeeTotals.weth,
+        usdc: lpFeeTotalsAfter.usdc - previousFeeTotals.usdc,
+        usdcValue: lpFeeTotalsAfter.usdcValue - previousFeeTotals.usdcValue,
+      };
       const newAnchorTick = Math.floor(exit.tick / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
       const newTickLower = newAnchorTick - lowerDistance;
       const newTickUpper = newAnchorTick + upperDistance;
@@ -290,11 +375,14 @@
       state.sim.aeroHarvestedUsdc = harvestedAeroUsdc;
       state.sim.aeroBaseHarvestedUsdc = aeroTotals.base;
       state.sim.aeroHaircutUsdc = aeroTotals.haircut;
+      state.sim.lpFeesUsdcValue = lpFeeTotalsAfter.usdcValue;
       return {
         event: `rebalance -${fmtUsdc(totalCostUsdc)}`,
         index,
         blockNumber: block.number,
+        tick: exit.tick,
         value: newPlan.value,
+        valueWithLpFees: newPlan.value + lpFeeTotalsAfter.usdcValue,
         price: exitPrice,
         weth: newPlan.weth,
         usdc: newPlan.usdc,
@@ -302,7 +390,18 @@
         aeroTotalUsdc: harvestedAeroUsdc,
         aeroBaseUsdc: aeroEvent.base,
         aeroHaircutUsdc: aeroEvent.haircut,
+        aeroAmount: aeroAmounts.conservative,
+        aeroTotalAmount: aeroAmounts.totalConservative,
+        aeroBaseAmount: aeroAmounts.base,
+        aeroHaircutAmount: aeroAmounts.haircut,
         aeroPrice,
+        lpFeesWeth: lpFeeEvent.weth,
+        lpFeesUsdc: lpFeeEvent.usdc,
+        lpFeesUsdcValue: lpFeeEvent.usdcValue,
+        lpFeesTotalUsdc: lpFeeTotalsAfter.usdcValue,
+        lpFeesSource: lpFeeEstimate.source,
+        lpFeesReliability: lpFeeEstimate.reliability,
+        lpFeesSwapCount: lpFeeEstimate.swapCount,
         reliability: reliability.score,
         reliabilityDetails: reliabilityDetailsText(reliability.parts),
         impactDetails,
@@ -318,6 +417,8 @@
           gasUsdc,
           automationFeeUsdc,
           totalCostUsdc,
+          quoteOutputAmount: swapQuote.outputAmount,
+          quoteReliability: swapQuote.reliability,
         },
       };
     }

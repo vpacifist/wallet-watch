@@ -31,6 +31,46 @@
       });
     }
 
+    function isoMinute(timestamp) {
+      return new Date(timestamp).toISOString().replace(".000Z", "Z");
+    }
+
+    function buildCompleteMinuteRows(csvRows) {
+      const complete = [];
+      let previous = null;
+      for (const csvRow of csvRows) {
+        const currentTime = new Date(csvRow.time).getTime();
+        if (previous) {
+          const previousTime = new Date(previous.time).getTime();
+          for (let timestamp = previousTime + 60 * 1000; timestamp < currentTime; timestamp += 60 * 1000) {
+            const fallbackPrice = Number.isFinite(previous.close) && previous.close > 0 ? previous.close : previous.open;
+            complete.push({
+              index: complete.length,
+              csvIndex: null,
+              time: isoMinute(timestamp),
+              closeTime: isoMinute(timestamp + 60 * 1000),
+              open: fallbackPrice,
+              high: fallbackPrice,
+              low: fallbackPrice,
+              close: fallbackPrice,
+              volume: 0,
+              missingCandle: true,
+              qualityFlags: ["missing-candle"],
+            });
+          }
+        }
+        complete.push({
+          ...csvRow,
+          index: complete.length,
+          csvIndex: csvRow.index,
+          missingCandle: false,
+          qualityFlags: [],
+        });
+        previous = csvRow;
+      }
+      return complete;
+    }
+
     function fmtPrice(value) {
       return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }
@@ -317,6 +357,7 @@
 
     return {
       parseCsv,
+      buildCompleteMinuteRows,
       fmtPrice,
       fmtNumber,
       fmtUsdc,
