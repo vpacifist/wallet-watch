@@ -271,6 +271,7 @@ async function runSimulation(config, emit = () => {}) {
     Error,
     RegExp,
     JSON,
+    SERVER_SIM_CONFIG_CLIENT: config,
     window: {
       location: { search: "?local-sim=1" },
       devicePixelRatio: 1,
@@ -318,6 +319,7 @@ async function runSimulation(config, emit = () => {}) {
   emit({ type: "started", id: config.id, ...readUi(document) });
 
   let lastProgressAt = 0;
+  let lastEmittedRawCount = 0;
   const timeoutMs = (config.timeoutSeconds || 21600) * 1000;
   while (Date.now() - startedAt < timeoutMs) {
     await sleep(1000);
@@ -325,6 +327,9 @@ async function runSimulation(config, emit = () => {}) {
     const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
     if (elapsedSeconds - lastProgressAt >= (config.progressEverySeconds || 10)) {
       lastProgressAt = elapsedSeconds;
+      const rawRows = readRawRows(sandbox);
+      const newRawRows = rawRows.slice(lastEmittedRawCount);
+      lastEmittedRawCount = rawRows.length;
       emit({
         type: "progress",
         id: config.id,
@@ -335,6 +340,8 @@ async function runSimulation(config, emit = () => {}) {
         lastRow: state.lastRow,
         currentValue: state.currentValue,
         currentAero: state.currentAero,
+        latestRawRow: rawRows.at(-1) || null,
+        newRawRows,
       });
     }
     if (state.notice.includes("Симуляция дошла до конца") || state.notice.includes("Симуляция дошла до даты конца")) {

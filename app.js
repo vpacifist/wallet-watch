@@ -54,6 +54,9 @@ const state = {
     aeroHarvestedUsdc: 0,
     aeroBaseHarvestedUsdc: 0,
     aeroHaircutUsdc: 0,
+    lpFeesWeth: 0,
+    lpFeesUsdc: 0,
+    lpFeesUsdcValue: 0,
     rows: [],
     blockCache: new Map(),
     aeroPriceCache: new Map(),
@@ -109,9 +112,12 @@ const AERODROME_TICK_SPACING = 100;
 const PRICE_DECIMAL_FACTOR = 1e12;
 const POINTS_PER_PIXEL = 0.55;
 const DEFAULT_SIM_RANGE_WIDTH = 0.01;
-const REBALANCE_MANUAL_FEE_BPS = 1;
-const REBALANCE_GAS_UNITS = 1450000n;
-const REBALANCE_L1_DATA_FEE_ETH = 0.000012;
+const RUNTIME_CONFIG = globalThis.SERVER_SIM_CONFIG_CLIENT || {};
+const LP_FEE_RATE = Number(RUNTIME_CONFIG.lpFeeRate ?? 0.0005);
+const REBALANCE_MANUAL_FEE_BPS = Number(RUNTIME_CONFIG.rebalanceManualFeeBps ?? 1);
+const REBALANCE_GAS_UNITS = BigInt(RUNTIME_CONFIG.rebalanceGasUnits ?? 1450000);
+const REBALANCE_L1_DATA_FEE_ETH = Number(RUNTIME_CONFIG.rebalanceL1DataFeeEth ?? 0.000012);
+const REBALANCE_FALLBACK_SLIPPAGE_BPS = Number(RUNTIME_CONFIG.rebalanceFallbackSlippageBps ?? 5);
 const BASE_RPC_URLS = ["/rpc"];
 const SERVER_SIMULATION_MODE = !new URLSearchParams(window.location.search).has("local-sim");
 let baseRpcIndex = 0;
@@ -150,6 +156,7 @@ const serverSimulation = {
   paused: false,
   available: SERVER_SIMULATION_MODE,
   jobs: [],
+  rawRows: [],
 };
 const appTabs = {
   active: "new",
@@ -463,6 +470,52 @@ async function findSwapExit(fromBlock, toBlock, tickLower, tickUpper) {
   return null;
 }
 
+function decodeSwapLog(log) {
+  return {
+    blockNumber: Number(BigInt(log.blockNumber)),
+    logIndex: Number(BigInt(log.logIndex)),
+    amount0: toSignedWord(wordAt(log.data, 0)),
+    amount1: toSignedWord(wordAt(log.data, 1)),
+    sqrtPriceX96: hexToBigInt(`0x${wordAt(log.data, 2)}`),
+    liquidity: hexToBigInt(`0x${wordAt(log.data, 3)}`),
+    tick: Number(toSignedWord(wordAt(log.data, 4))),
+  };
+}
+
+async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
+  if (toBlock < fromBlock || state.sim.liquidityRaw <= 0n) {
+    return { weth: 0, usdc: 0, usdcValue: 0, source: "no-block-range", reliability: 100, swapCount: 0 };
+  }
+  const logs = await rpcCall("eth_getLogs", [{
+    address: POOL_ADDRESS,
+    fromBlock: blockTag(fromBlock),
+    toBlock: blockTag(toBlock),
+    topics: [SWAP_TOPIC],
+  }]);
+  let weth = 0;
+  let usdc = 0;
+  let swapCount = 0;
+  for (const log of logs) {
+    const swap = decodeSwapLog(log);
+    if (swap.tick < state.sim.tickLower || swap.tick >= state.sim.tickUpper) continue;
+    const activeLiquidity = swap.liquidity > 0n ? swap.liquidity : rewardState.activeLiquidity;
+    const totalLiquidity = activeLiquidity + state.sim.liquidityRaw;
+    if (totalLiquidity <= 0n) continue;
+    const share = Number(state.sim.liquidityRaw * 1000000n / totalLiquidity) / 1000000;
+    if (swap.amount0 > 0n) weth += rawToWeth(swap.amount0) * LP_FEE_RATE * share;
+    if (swap.amount1 > 0n) usdc += rawToUsdc(swap.amount1) * LP_FEE_RATE * share;
+    swapCount += 1;
+  }
+  return {
+    weth,
+    usdc,
+    usdcValue: weth * price + usdc,
+    source: "estimated-from-swap-logs",
+    reliability: swapCount ? 68 : 92,
+    swapCount,
+  };
+}
+
 async function quoteAerodromeSwap(tokenIn, tokenOut, amountInRaw, blockNumber) {
   if (amountInRaw <= 0n) return null;
   const data = `${SELECTORS.quoteExactInputSingle}${encodeAddress(tokenIn)}${encodeAddress(tokenOut)}${encodeUint256(AERODROME_TICK_SPACING)}${encodeUint256(amountInRaw)}${encodeUint256(0)}`;
@@ -490,7 +543,7 @@ async function estimateHistoricalSwap(swap, price, blockNumber) {
         reliability: quote.reliability,
       };
     }
-    const outputAmount = swap.amount * price * 0.9995;
+    const outputAmount = swap.amount * price * (1 - REBALANCE_FALLBACK_SLIPPAGE_BPS / 10000);
     return { outputAmount, lossUsdc: swap.amount * price - outputAmount, source: "fallback-5bps", reliability: 58 };
   }
   const amountInRaw = rawUsdc(swap.amount);
@@ -504,7 +557,7 @@ async function estimateHistoricalSwap(swap, price, blockNumber) {
       reliability: quote.reliability,
     };
   }
-  const outputAmount = swap.amount / price * 0.9995;
+  const outputAmount = swap.amount / price * (1 - REBALANCE_FALLBACK_SLIPPAGE_BPS / 10000);
   return { outputAmount, lossUsdc: swap.amount - outputAmount * price, source: "fallback-5bps", reliability: 58 };
 }
 
@@ -1049,8 +1102,11 @@ function analyzeDataQuality(rows) {
 
 function dataQualityStatus(quality) {
   if (!quality || !quality.rowCount) return "CSV загружен";
-  if (!quality.gapCount) return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, без пропусков`;
-  return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, пропущено ${quality.missingMinutes.toLocaleString("en-US")} мин`;
+  const grid = quality.minuteRowCount && quality.minuteRowCount !== quality.rowCount
+    ? ` · сетка ${quality.minuteRowCount.toLocaleString("en-US")} мин`
+    : "";
+  if (!quality.gapCount) return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, без пропусков${grid}`;
+  return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, пропущено ${quality.missingMinutes.toLocaleString("en-US")} мин${grid}`;
 }
 
 function dataQualityTitle(quality) {
@@ -1060,7 +1116,7 @@ function dataQualityTitle(quality) {
     `Найдено ${quality.gapCount.toLocaleString("en-US")} разрывов в CSV.`,
     `Всего пропущено ${quality.missingMinutes.toLocaleString("en-US")} минут.`,
     `Максимальный разрыв: ${quality.maxGapMinutes} мин.`,
-    "Для точности симуляция выбирает старт не раньше введенного времени, а конец не позже введенного времени.",
+    "Симуляция идет по полной минутной сетке; пропущенные свечи помечаются quality flag и считаются по on-chain state.",
   ].join(" ");
 }
 
@@ -1253,6 +1309,9 @@ function resetSimulationRows() {
   state.sim.aeroHarvestedUsdc = 0;
   state.sim.aeroBaseHarvestedUsdc = 0;
   state.sim.aeroHaircutUsdc = 0;
+  state.sim.lpFeesWeth = 0;
+  state.sim.lpFeesUsdc = 0;
+  state.sim.lpFeesUsdcValue = 0;
   state.sim.aeroPriceReliability = 100;
   state.sim.aeroPriceAgeSeconds = 0;
   state.sim.tableHoverIndex = -1;
@@ -1302,12 +1361,24 @@ function simulationRowToRaw(row) {
     qualityFlags: [...(marketRow.qualityFlags || [])],
     price: compactNumber(row.price, 6),
     value: compactNumber(row.value, 6),
+    valueWithLpFees: compactNumber(row.valueWithLpFees ?? row.value, 6),
     weth: compactNumber(row.weth, 10),
     usdc: compactNumber(row.usdc, 6),
+    lpFeesWeth: compactNumber(row.lpFeesWeth, 10),
+    lpFeesUsdc: compactNumber(row.lpFeesUsdc, 6),
+    lpFeesUsdcValue: compactNumber(row.lpFeesUsdcValue, 6),
+    lpFeesTotalUsdc: compactNumber(row.lpFeesTotalUsdc, 6),
+    lpFeesSource: row.lpFeesSource || "",
+    lpFeesReliability: compactNumber(row.lpFeesReliability, 4),
+    lpFeesSwapCount: row.lpFeesSwapCount || 0,
     aeroUsdc: compactNumber(row.aeroUsdc, 6),
     aeroTotalUsdc: compactNumber(row.aeroTotalUsdc, 6),
     aeroBaseUsdc: compactNumber(row.aeroBaseUsdc, 6),
     aeroHaircutUsdc: compactNumber(row.aeroHaircutUsdc, 6),
+    aeroAmount: compactNumber(row.aeroAmount, 10),
+    aeroTotalAmount: compactNumber(row.aeroTotalAmount, 10),
+    aeroBaseAmount: compactNumber(row.aeroBaseAmount, 10),
+    aeroHaircutAmount: compactNumber(row.aeroHaircutAmount, 10),
     aeroPrice: compactNumber(row.aeroPrice, 8),
     reliability: compactNumber(row.reliability, 4),
   };
@@ -1323,6 +1394,8 @@ function simulationRowToRaw(row) {
       gasUsdc: compactNumber(row.rebalance.gasUsdc, 6),
       automationFeeUsdc: compactNumber(row.rebalance.automationFeeUsdc, 6),
       totalCostUsdc: compactNumber(row.rebalance.totalCostUsdc, 6),
+      quoteOutputAmount: compactNumber(row.rebalance.quoteOutputAmount, 10),
+      quoteReliability: compactNumber(row.rebalance.quoteReliability, 4),
     };
   }
   return raw;
@@ -1340,13 +1413,13 @@ function simulationRawRowToCells(row) {
   if (!row || typeof row !== "object") return [];
   return [
     row.time ? fmtInputTime(row.time) : "",
-    row.missingCandle ? `${row.event} ? missing candle` : row.event,
+    row.missingCandle ? `${row.event} · missing candle` : row.event,
     fmtUsdc(row.value),
     fmtPrice(row.price),
     fmtNumber(row.weth, 8),
     fmtNumber(row.usdc, 2),
     fmtUsdc(row.aeroUsdc),
-    `-${fmtUsdc(row.aeroHaircutUsdc || 0)}`,
+    fmtUsdc(row.lpFeesUsdcValue || 0),
     fmtReliability(row.reliability),
   ];
 }
@@ -1361,7 +1434,7 @@ function renderSimulationTable(scrollToLatest = false) {
       <td>${fmtNumber(row.weth, 8)}</td>
       <td>${fmtNumber(row.usdc, 2)}</td>
       <td>${fmtUsdc(row.aeroUsdc)}</td>
-      <td>-${fmtUsdc(row.aeroHaircutUsdc || 0)}</td>
+      <td>${fmtUsdc(row.lpFeesUsdcValue || 0)}</td>
       <td>${fmtReliability(row.reliability)}</td>
     </tr>
   `).join("");
@@ -1428,6 +1501,7 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   performance,
   findBlockAtOrAfter,
   findSwapExit,
+  estimateLpFees,
   getBlock,
   readRewardInside,
   getAeroPrice,
@@ -1458,10 +1532,19 @@ const simulationEngine = WalletWatchSimulationEngine.create({
 });
 
 async function fetchJson(url, options = {}) {
+  const adminToken = typeof localStorage !== "undefined" ? localStorage.getItem("walletWatchAdminToken") : "";
+  const adminHeaders = adminToken ? { "X-Admin-API-Token": adminToken } : {};
   const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: { "Content-Type": "application/json", ...adminHeaders, ...(options.headers || {}) },
     ...options,
   });
+  if (response.status === 401 && typeof prompt === "function" && typeof localStorage !== "undefined") {
+    const token = prompt("Введите ADMIN_API_TOKEN для серверной операции");
+    if (token) {
+      localStorage.setItem("walletWatchAdminToken", token);
+      return await fetchJson(url, options);
+    }
+  }
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return await response.json();
 }
@@ -1486,6 +1569,32 @@ function serverSimulationText(simulation) {
     currentAero: payload.currentAero || "",
     notice,
   };
+}
+
+function applyServerRawProgress(simulation) {
+  if (!SERVER_SIMULATION_MODE) return;
+  const progress = simulation?.progress || {};
+  const resultRows = simulation?.result?.rawRows;
+  if (Array.isArray(resultRows)) {
+    serverSimulation.rawRows = resultRows;
+  } else if (Array.isArray(progress.newRawRows) && progress.newRawRows.length) {
+    const byKey = new Map(serverSimulation.rawRows.map((row) => [`${row.index}:${row.blockNumber}:${row.event}`, row]));
+    progress.newRawRows.forEach((row) => byKey.set(`${row.index}:${row.blockNumber}:${row.event}`, row));
+    serverSimulation.rawRows = Array.from(byKey.values()).sort((a, b) => (a.index || 0) - (b.index || 0));
+  }
+  const latest = (Array.isArray(resultRows) && resultRows.at(-1)) || progress.latestRawRow || serverSimulation.rawRows.at(-1);
+  if (!latest) return;
+  state.sim.started = true;
+  state.sim.currentIndex = latest.index;
+  state.sim.activeRowIndex = latest.index;
+  state.sim.tickLower = latest.tickLower;
+  state.sim.tickUpper = latest.tickUpper;
+  state.sim.startGridTick = state.sim.startGridTick || latest.tickLower;
+  state.sim.rangeStepTicks = Math.max(
+    AERODROME_TICK_SPACING,
+    Math.round(Math.abs((latest.tickUpper || 0) - (latest.tickLower || 0)) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING,
+  );
+  draw();
 }
 
 function serverJobLabel(simulation) {
@@ -1737,7 +1846,7 @@ function animateServerJobDelete(row) {
 }
 
 function renderServerResultTable(simulation) {
-  const tableRows = simulation?.result?.rawRows || simulation?.result?.tableRows || [];
+  const tableRows = simulation?.result?.rawRows || simulation?.result?.tableRows || serverSimulation.rawRows || [];
   if (!SERVER_SIMULATION_MODE || !simTableBody || !simTableWrap || !tableRows.length) return;
   simTableBody.replaceChildren();
   tableRows.forEach((rowItem, index) => {
@@ -1785,6 +1894,7 @@ function renderServerSimulation(simulation) {
   serverSimulation.id = simulation.id;
   serverSimulation.running = !isServerSimulationTerminal(simulation.status);
   if (!serverSimulation.running) serverSimulation.paused = false;
+  applyServerRawProgress(simulation);
   const info = serverSimulationText(simulation);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
   if (info.currentAero) currentAeroEarned.textContent = info.currentAero;
@@ -1844,6 +1954,7 @@ function resumeServerSimulation() {
   if (!SERVER_SIMULATION_MODE || !serverSimulation.id || !serverSimulation.paused) return;
   serverSimulation.running = true;
   serverSimulation.paused = false;
+  serverSimulation.rawRows = [];
   updateSimulationControls();
   watchServerSimulation(serverSimulation.id);
 }
@@ -1889,6 +2000,7 @@ async function deleteServerSimulation(id, row = null) {
       serverSimulation.id = null;
       serverSimulation.running = false;
       serverSimulation.paused = false;
+      serverSimulation.rawRows = [];
       stopServerSimulationPolling();
       setSimulationNotice("Server simulation deleted.");
       currentPositionValue.textContent = "$0.00";
@@ -2102,6 +2214,7 @@ function stepSimulationBack() {
 
 function resetSimulation() {
   resetSimulationRows();
+  serverSimulation.rawRows = [];
   setSimulationNotice("Симуляция сброшена. Нажми START, чтобы начать заново.");
 }
 
@@ -2398,5 +2511,4 @@ fetch(CSV_FILE)
 
 globalThis.getSimulationRawRows = getSimulationRawRows;
 globalThis.getSimulationDataQuality = getSimulationDataQuality;
-
-
+globalThis.buildCompleteMinuteRows = buildCompleteMinuteRows;

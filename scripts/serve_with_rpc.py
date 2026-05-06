@@ -27,6 +27,7 @@ PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", f"http://127.0.0.1:{PORT}")
 MAX_UPSTREAM_BATCH_SIZE = int(os.environ.get("MAX_UPSTREAM_BATCH_SIZE", "3"))
 MAX_EXACT_RESULT_BYTES = int(os.environ.get("MAX_EXACT_RESULT_BYTES", str(512 * 1024)))
 DEBUG_RPC_ERRORS = os.environ.get("DEBUG_RPC_ERRORS", "").lower() in {"1", "true", "yes", "on"}
+ADMIN_API_TOKEN = os.environ.get("ADMIN_API_TOKEN", "").strip()
 
 AERO_USDC_POOL = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1"
 AERO_PRICE_CACHE = {}
@@ -270,6 +271,11 @@ def normalize_simulation_params(payload):
         "rangePct": range_pct,
         "timeoutSeconds": timeout_seconds,
         "progressEverySeconds": int(payload.get("progressEverySeconds", 10)),
+        "rebalanceManualFeeBps": float(payload.get("rebalanceManualFeeBps", os.environ.get("REBALANCE_MANUAL_FEE_BPS", "1"))),
+        "rebalanceGasUnits": int(payload.get("rebalanceGasUnits", os.environ.get("REBALANCE_GAS_UNITS", "1450000"))),
+        "rebalanceL1DataFeeEth": float(payload.get("rebalanceL1DataFeeEth", os.environ.get("REBALANCE_L1_DATA_FEE_ETH", "0.000012"))),
+        "rebalanceFallbackSlippageBps": float(payload.get("rebalanceFallbackSlippageBps", os.environ.get("REBALANCE_FALLBACK_SLIPPAGE_BPS", "5"))),
+        "lpFeeRate": float(payload.get("lpFeeRate", os.environ.get("LP_FEE_RATE", "0.0005"))),
     }
 
 
@@ -768,6 +774,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/simulations":
+            if not self.require_admin_token():
+                return
             try:
                 length = int(self.headers.get("content-length", "0"))
                 body = self.rfile.read(length)
@@ -780,6 +788,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
 
         if parsed.path.startswith("/api/simulations/") and parsed.path.endswith("/cancel"):
+            if not self.require_admin_token():
+                return
             simulation_id = parsed.path.split("/")[-2]
             result = cancel_simulation_job(simulation_id)
             if not result:
@@ -809,6 +819,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
 
+    def require_admin_token(self):
+        if not ADMIN_API_TOKEN:
+            return True
+        header_token = self.headers.get("X-Admin-API-Token", "").strip()
+        auth = self.headers.get("Authorization", "").strip()
+        bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        if header_token == ADMIN_API_TOKEN or bearer == ADMIN_API_TOKEN:
+            return True
+        self.send_json(401, {"error": "admin token required"})
+        return False
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/health":
@@ -823,6 +844,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(200, get_latest_simulation() or {})
             return
         if parsed.path.startswith("/api/simulations/"):
+            if not self.require_admin_token():
+                return
             simulation_id = parsed.path.rsplit("/", 1)[-1]
             simulation = get_simulation(simulation_id)
             if not simulation:
