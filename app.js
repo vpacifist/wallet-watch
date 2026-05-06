@@ -86,6 +86,9 @@ const currentAeroEarned = document.getElementById("currentAeroEarned");
 const simNotice = document.getElementById("simNotice");
 const simTableWrap = document.getElementById("simTableWrap");
 const simTableBody = document.getElementById("simTableBody");
+const serverJobs = document.getElementById("serverJobs");
+const serverJobsList = document.getElementById("serverJobsList");
+const refreshServerJobs = document.getElementById("refreshServerJobs");
 const MONTHS_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
 const AERODROME_TICK_SPACING = 100;
 const PRICE_DECIMAL_FACTOR = 1e12;
@@ -130,6 +133,7 @@ const serverSimulation = {
   pollTimer: null,
   running: false,
   available: SERVER_SIMULATION_MODE,
+  jobs: [],
 };
 
 const {
@@ -1357,7 +1361,7 @@ async function fetchJson(url, options = {}) {
 }
 
 function isServerSimulationTerminal(status) {
-  return ["completed", "failed", "stopped", "timeout", "error"].includes(status);
+  return ["completed", "failed", "stopped", "timeout", "error", "cancelled"].includes(status);
 }
 
 function serverSimulationText(simulation) {
@@ -1377,6 +1381,89 @@ function serverSimulationText(simulation) {
   };
 }
 
+function serverJobLabel(simulation) {
+  const params = simulation?.params || {};
+  const range = params.rangePct ? `${params.rangePct}%` : "";
+  return [params.start, params.end, range].filter(Boolean).join(" -> ");
+}
+
+function serverJobMeta(simulation) {
+  const info = serverSimulationText(simulation);
+  const created = simulation?.created_at ? new Date(simulation.created_at * 1000).toLocaleString() : "";
+  return [
+    simulation?.status || "unknown",
+    info.rows ? `${info.rows} rows` : "",
+    info.currentValue || "",
+    info.currentAero ? `AERO ${info.currentAero}` : "",
+    created,
+  ].filter(Boolean).join(" · ");
+}
+
+function renderServerJobsList(items = serverSimulation.jobs) {
+  if (!SERVER_SIMULATION_MODE || !serverJobs || !serverJobsList) return;
+  serverJobs.hidden = false;
+  serverJobsList.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "serverJob";
+    empty.textContent = "No server jobs yet.";
+    serverJobsList.append(empty);
+    return;
+  }
+  for (const simulation of items) {
+    const row = document.createElement("div");
+    row.className = `serverJob${simulation.id === serverSimulation.id ? " active" : ""}`;
+    row.dataset.id = simulation.id;
+
+    const main = document.createElement("div");
+    main.className = "serverJobMain";
+    const title = document.createElement("div");
+    title.className = "serverJobTitle";
+    title.textContent = serverJobLabel(simulation) || simulation.id;
+    const meta = document.createElement("div");
+    meta.className = "serverJobMeta";
+    meta.textContent = serverJobMeta(simulation);
+    main.append(title, meta);
+
+    const actions = document.createElement("div");
+    actions.className = "serverJobActions";
+    const openButton = document.createElement("button");
+    openButton.type = "button";
+    openButton.dataset.action = "open";
+    openButton.textContent = "OPEN";
+    actions.append(openButton);
+    if (!isServerSimulationTerminal(simulation.status)) {
+      const cancelButton = document.createElement("button");
+      cancelButton.type = "button";
+      cancelButton.dataset.action = "cancel";
+      cancelButton.className = "danger";
+      cancelButton.textContent = "CANCEL";
+      actions.append(cancelButton);
+    }
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.dataset.action = "delete";
+    deleteButton.className = "danger";
+    deleteButton.textContent = "DELETE";
+    actions.append(deleteButton);
+
+    row.append(main, actions);
+    serverJobsList.append(row);
+  }
+}
+
+async function loadServerJobs() {
+  if (!SERVER_SIMULATION_MODE || !serverJobsList) return;
+  try {
+    const payload = await fetchJson("/api/simulations?limit=20");
+    serverSimulation.jobs = payload.items || [];
+    renderServerJobsList(serverSimulation.jobs);
+  } catch (_) {
+    serverSimulation.available = false;
+    renderServerJobsList([]);
+  }
+}
+
 function renderServerSimulation(simulation) {
   if (!SERVER_SIMULATION_MODE || !simulation?.id) return;
   serverSimulation.id = simulation.id;
@@ -1389,6 +1476,10 @@ function renderServerSimulation(simulation) {
     details: [`rows ${info.rows}`, info.elapsed, info.notice].filter(Boolean).join(" · "),
     estimate: info.lastRow,
   });
+  const index = serverSimulation.jobs.findIndex((item) => item.id === simulation.id);
+  if (index >= 0) serverSimulation.jobs[index] = simulation;
+  else serverSimulation.jobs.unshift(simulation);
+  renderServerJobsList(serverSimulation.jobs);
   updateSimulationControls();
 }
 
@@ -1402,7 +1493,10 @@ async function pollServerSimulation(id) {
   try {
     const simulation = await fetchJson(`/api/simulations/${id}`);
     renderServerSimulation(simulation);
-    if (isServerSimulationTerminal(simulation.status)) stopServerSimulationPolling();
+    if (isServerSimulationTerminal(simulation.status)) {
+      stopServerSimulationPolling();
+      loadServerJobs();
+    }
   } catch (error) {
     serverSimulation.running = false;
     stopServerSimulationPolling();
@@ -1419,6 +1513,8 @@ function watchServerSimulation(id) {
 
 async function loadLatestServerSimulation() {
   if (!SERVER_SIMULATION_MODE) return;
+  if (serverJobs) serverJobs.hidden = false;
+  loadServerJobs();
   try {
     const simulation = await fetchJson("/api/simulations/latest");
     if (simulation?.id) {
@@ -1431,6 +1527,37 @@ async function loadLatestServerSimulation() {
     serverSimulation.available = false;
     updateSimulationControls();
   }
+}
+
+async function openServerSimulation(id) {
+  if (!SERVER_SIMULATION_MODE || !id) return;
+  const simulation = await fetchJson(`/api/simulations/${id}`);
+  renderServerSimulation(simulation);
+  if (!isServerSimulationTerminal(simulation.status)) watchServerSimulation(id);
+  else stopServerSimulationPolling();
+}
+
+async function cancelServerSimulation(id) {
+  if (!SERVER_SIMULATION_MODE || !id) return;
+  const simulation = await fetchJson(`/api/simulations/${id}/cancel`, { method: "POST" });
+  renderServerSimulation(simulation);
+  stopServerSimulationPolling();
+  loadServerJobs();
+}
+
+async function deleteServerSimulation(id) {
+  if (!SERVER_SIMULATION_MODE || !id) return;
+  await fetchJson(`/api/simulations/${id}`, { method: "DELETE" });
+  if (serverSimulation.id === id) {
+    serverSimulation.id = null;
+    serverSimulation.running = false;
+    stopServerSimulationPolling();
+    setSimulationNotice("Server simulation deleted.");
+    currentPositionValue.textContent = "$0.00";
+    currentAeroEarned.textContent = "$0.00";
+    updateSimulationControls();
+  }
+  await loadServerJobs();
 }
 
 async function startServerSimulation() {
@@ -1474,6 +1601,7 @@ async function startServerSimulation() {
     });
     renderServerSimulation(simulation);
     watchServerSimulation(simulation.id);
+    loadServerJobs();
   } catch (error) {
     serverSimulation.running = false;
     setSimulationNotice(`Не удалось запустить серверную симуляцию: ${error.message}`);
@@ -1827,6 +1955,20 @@ rangePercentInput.addEventListener("change", () => {
 });
 runSimulation.addEventListener("click", startServerSimulation);
 if (resetSimulationButton) resetSimulationButton.addEventListener("click", resetSimulation);
+if (refreshServerJobs) refreshServerJobs.addEventListener("click", loadServerJobs);
+if (serverJobsList) {
+  serverJobsList.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-action]");
+    if (!button) return;
+    const row = button.closest(".serverJob");
+    const id = row?.dataset?.id;
+    if (!id) return;
+    const action = button.dataset.action;
+    if (action === "open") openServerSimulation(id);
+    if (action === "cancel") cancelServerSimulation(id);
+    if (action === "delete") deleteServerSimulation(id);
+  });
+}
 stepForward.addEventListener("click", () => {
   stepSimulationForward();
 });

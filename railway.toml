@@ -3,5 +3,7 @@ builder = "NIXPACKS"
 
 [deploy]
 startCommand = "python3 scripts/serve_with_rpc.py"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
