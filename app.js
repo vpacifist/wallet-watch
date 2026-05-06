@@ -438,18 +438,6 @@ async function findSwapExit(fromBlock, toBlock, tickLower, tickUpper) {
   return null;
 }
 
-function amountsForPosition(price) {
-  return simulationEngine.amountsForPosition(price);
-}
-
-function dilutedAeroRaw(rewardState) {
-  return simulationEngine.dilutedAeroRaw(rewardState);
-}
-
-function accrueAeroRewards(rewardState) {
-  return simulationEngine.accrueAeroRewards(rewardState);
-}
-
 async function quoteAerodromeSwap(tokenIn, tokenOut, amountInRaw, blockNumber) {
   if (amountInRaw <= 0n) return null;
   const data = `${SELECTORS.quoteExactInputSingle}${encodeAddress(tokenIn)}${encodeAddress(tokenOut)}${encodeUint256(AERODROME_TICK_SPACING)}${encodeUint256(amountInRaw)}${encodeUint256(0)}`;
@@ -493,79 +481,6 @@ async function estimateHistoricalSwap(swap, price, blockNumber) {
   }
   const outputAmount = swap.amount / price * 0.9995;
   return { outputAmount, lossUsdc: swap.amount - outputAmount * price, source: "fallback-5bps", reliability: 58 };
-}
-
-function estimateRebalanceGasUsdc(block, ethUsdcPrice) {
-  const l2Eth = Number(REBALANCE_GAS_UNITS * block.baseFeePerGas) / 1e18;
-  return (l2Eth + REBALANCE_L1_DATA_FEE_ETH) * ethUsdcPrice;
-}
-
-function onChainPriceReliability() {
-  return 97;
-}
-
-function impactShare(rewardState) {
-  const total = rangeAwareBaseLiquidity(rewardState) + state.sim.liquidityRaw;
-  if (total <= 0n) return 0;
-  return Number(state.sim.liquidityRaw * 1000000n / total) / 1000000;
-}
-
-function isPositionActiveAtTick(rewardState) {
-  return rewardState.tick >= state.sim.tickLower && rewardState.tick < state.sim.tickUpper;
-}
-
-function rangeAwareBaseLiquidity(rewardState) {
-  if (isPositionActiveAtTick(rewardState) && rewardState.activeLiquidity > 0n) return rewardState.activeLiquidity;
-  return rewardState.stakedLiquidity;
-}
-
-function gasEstimateReliability(block) {
-  if (!block || block.baseFeePerGas <= 0n) return 62;
-  const l2Eth = Number(REBALANCE_GAS_UNITS * block.baseFeePerGas) / 1e18;
-  const l1Share = REBALANCE_L1_DATA_FEE_ETH / Math.max(REBALANCE_L1_DATA_FEE_ETH + l2Eth, Number.EPSILON);
-  return scoreFromThresholds(l1Share * 100, [
-    [20, 90],
-    [40, 84],
-    [65, 76],
-    [85, 68],
-    [100, 60],
-  ]);
-}
-
-function aeroTotalsUsdc(aeroPrice) {
-  return simulationEngine.aeroTotalsUsdc(aeroPrice);
-}
-
-function aeroEventUsdc(aeroPrice) {
-  return simulationEngine.aeroEventUsdc(aeroPrice);
-}
-
-function impactRiskDetails(rewardState, aeroPrice, eventAero) {
-  const share = impactShare(rewardState);
-  const event = eventAero || aeroEventUsdc(aeroPrice);
-  return `impact share ${fmtNumber(share * 100, 2)}%; event AERO base ${fmtUsdc(event.base)}; haircut -${fmtUsdc(event.haircut)}`;
-}
-
-function simulationReliability(row, block, rewardState) {
-  const timestamp = Math.floor(new Date(row.time).getTime() / 1000);
-  const onChainPrice = priceFromSqrtX96(rewardState.sqrtPriceX96);
-  return conservativeReliability([
-    { label: "WETH on-chain price", score: onChainPriceReliability(), weight: 0.30 },
-    { label: "reward state", score: rewardStateReliability(rewardState), weight: 0.27 },
-    { label: "AERO on-chain price", score: state.sim.aeroPriceReliability, weight: 0.20 },
-    { label: "block match", score: blockTimeReliability(timestamp, block), weight: 0.17 },
-    { label: "CSV cross-check", score: priceAgreementReliability(row.open, onChainPrice), weight: 0.06 },
-  ]);
-}
-
-function rebalanceReliability(rewardState, swapReliability, hasSwap, block) {
-  return conservativeReliability([
-    { label: "reward state", score: rewardStateReliability(rewardState), weight: 0.27 },
-    { label: "AERO on-chain price", score: state.sim.aeroPriceReliability, weight: 0.17 },
-    { label: "swap quote", score: hasSwap ? swapReliability : 94, weight: 0.24 },
-    { label: "gas estimate", score: gasEstimateReliability(block), weight: 0.18 },
-    { label: "automation fee", score: 90, weight: 0.14 },
-  ]);
 }
 
 async function buildRebalanceRow(index, exit, block, runToken = null) {
@@ -1411,15 +1326,18 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   priceFromSqrtX96,
   computePositionPlanForRange,
   estimateHistoricalSwap,
-  estimateRebalanceGasUsdc,
-  rebalanceReliability,
+  rewardStateReliability,
+  blockTimeReliability,
+  priceAgreementReliability,
+  conservativeReliability,
+  scoreFromThresholds,
+  fmtNumber,
   fmtUsdc,
-  simulationReliability,
-  impactRiskDetails,
   reliabilityDetailsText,
-  impactShare,
   AERODROME_TICK_SPACING,
   REBALANCE_MANUAL_FEE_BPS,
+  REBALANCE_GAS_UNITS,
+  REBALANCE_L1_DATA_FEE_ETH,
   Q128,
   AERO_DECIMALS,
   recordSimulationStepDuration,
