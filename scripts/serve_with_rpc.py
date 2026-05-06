@@ -142,6 +142,9 @@ def compact_simulation_payload(payload):
     if "tableRows" in compact:
         compact["tableRowCount"] = len(compact.get("tableRows") or [])
         compact.pop("tableRows", None)
+    if "rawRows" in compact:
+        compact["rawRowCount"] = len(compact.get("rawRows") or [])
+        compact.pop("rawRows", None)
     return compact
 
 

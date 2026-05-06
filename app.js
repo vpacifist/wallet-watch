@@ -1275,6 +1275,82 @@ function simulationRowTitle(row) {
   return `${details}; swap ${rb.swapDirection} via ${rb.swapSource}; swap loss ${fmtUsdc(rb.swapLossUsdc)}; gas ${fmtUsdc(rb.gasUsdc)}; fee ${fmtUsdc(rb.automationFeeUsdc)}; ticks ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}`;
 }
 
+function compactNumber(value, digits = 8) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Number(number.toFixed(digits));
+}
+
+function simulationRowToRaw(row) {
+  if (!row) return null;
+  const marketRow = state.rows[row.index] || {};
+  const stateAfter = row.stateAfter || {};
+  const tickLower = Number.isFinite(stateAfter.tickLower) ? stateAfter.tickLower : state.sim.tickLower;
+  const tickUpper = Number.isFinite(stateAfter.tickUpper) ? stateAfter.tickUpper : state.sim.tickUpper;
+  const raw = {
+    index: row.index,
+    time: marketRow.time || "",
+    timestamp: marketRow.time ? Math.floor(rowTimestampMs(marketRow) / 1000) : null,
+    event: row.event || "",
+    blockNumber: row.blockNumber || null,
+    tick: Number.isFinite(row.tick) ? row.tick : null,
+    tickLower,
+    tickUpper,
+    rangeLowerPrice: compactNumber(priceForTick(tickLower), 6),
+    rangeUpperPrice: compactNumber(priceForTick(tickUpper), 6),
+    missingCandle: Boolean(marketRow.missingCandle),
+    qualityFlags: [...(marketRow.qualityFlags || [])],
+    price: compactNumber(row.price, 6),
+    value: compactNumber(row.value, 6),
+    weth: compactNumber(row.weth, 10),
+    usdc: compactNumber(row.usdc, 6),
+    aeroUsdc: compactNumber(row.aeroUsdc, 6),
+    aeroTotalUsdc: compactNumber(row.aeroTotalUsdc, 6),
+    aeroBaseUsdc: compactNumber(row.aeroBaseUsdc, 6),
+    aeroHaircutUsdc: compactNumber(row.aeroHaircutUsdc, 6),
+    aeroPrice: compactNumber(row.aeroPrice, 8),
+    reliability: compactNumber(row.reliability, 4),
+  };
+  if (row.rebalance) {
+    raw.rebalance = {
+      oldTickLower: row.rebalance.oldTickLower,
+      oldTickUpper: row.rebalance.oldTickUpper,
+      newTickLower: row.rebalance.newTickLower,
+      newTickUpper: row.rebalance.newTickUpper,
+      swapDirection: row.rebalance.swapDirection,
+      swapSource: row.rebalance.swapSource,
+      swapLossUsdc: compactNumber(row.rebalance.swapLossUsdc, 6),
+      gasUsdc: compactNumber(row.rebalance.gasUsdc, 6),
+      automationFeeUsdc: compactNumber(row.rebalance.automationFeeUsdc, 6),
+      totalCostUsdc: compactNumber(row.rebalance.totalCostUsdc, 6),
+    };
+  }
+  return raw;
+}
+
+function getSimulationRawRows() {
+  return state.sim.rows.map(simulationRowToRaw).filter(Boolean);
+}
+
+function getSimulationDataQuality() {
+  return state.dataQuality || null;
+}
+
+function simulationRawRowToCells(row) {
+  if (!row || typeof row !== "object") return [];
+  return [
+    row.time ? fmtInputTime(row.time) : "",
+    row.missingCandle ? `${row.event} ? missing candle` : row.event,
+    fmtUsdc(row.value),
+    fmtPrice(row.price),
+    fmtNumber(row.weth, 8),
+    fmtNumber(row.usdc, 2),
+    fmtUsdc(row.aeroUsdc),
+    `-${fmtUsdc(row.aeroHaircutUsdc || 0)}`,
+    fmtReliability(row.reliability),
+  ];
+}
+
 function renderSimulationTable(scrollToLatest = false) {
   simTableBody.innerHTML = state.sim.rows.map((row) => `
     <tr data-index="${row.index}" class="${row.index === state.sim.activeRowIndex ? "activeRow" : ""}" title="${simulationRowTitle(row)}">
@@ -1509,11 +1585,14 @@ function renderResultTableRows(tableRows = []) {
     resultEmpty.textContent = "Detailed rows are not stored for this simulation.";
     return;
   }
-  for (const rowText of tableRows) {
+  for (const rowItem of tableRows) {
     const tr = document.createElement("tr");
-    String(rowText).split("\t").forEach((cellText) => {
+    const cells = typeof rowItem === "object" && rowItem !== null
+      ? simulationRawRowToCells(rowItem)
+      : String(rowItem).split("\t").map((cellText) => cellText.trim());
+    cells.forEach((cellText) => {
       const td = document.createElement("td");
-      td.textContent = cellText.trim();
+      td.textContent = cellText;
       tr.append(td);
     });
     resultTableBody.append(tr);
@@ -1555,7 +1634,7 @@ function renderSimulationResultView(simulation) {
   if (resultLastRow) {
     resultLastRow.textContent = info.notice;
   }
-  renderResultTableRows(simulation?.result?.tableRows || []);
+  renderResultTableRows(simulation?.result?.rawRows || simulation?.result?.tableRows || []);
 }
 
 function openSimulationResultTab(simulation) {
@@ -1658,13 +1737,16 @@ function animateServerJobDelete(row) {
 }
 
 function renderServerResultTable(simulation) {
-  const tableRows = simulation?.result?.tableRows || [];
+  const tableRows = simulation?.result?.rawRows || simulation?.result?.tableRows || [];
   if (!SERVER_SIMULATION_MODE || !simTableBody || !simTableWrap || !tableRows.length) return;
   simTableBody.replaceChildren();
-  tableRows.forEach((rowText, index) => {
+  tableRows.forEach((rowItem, index) => {
     const tr = document.createElement("tr");
     tr.dataset.index = String(index);
-    String(rowText).split("\t").forEach((cellText) => {
+    const cells = typeof rowItem === "object" && rowItem !== null
+      ? simulationRawRowToCells(rowItem)
+      : String(rowItem).split("\t").map((cellText) => cellText.trim());
+    cells.forEach((cellText) => {
       const td = document.createElement("td");
       td.textContent = cellText;
       tr.append(td);
@@ -2314,5 +2396,7 @@ fetch(CSV_FILE)
     console.error(error);
   });
 
+globalThis.getSimulationRawRows = getSimulationRawRows;
+globalThis.getSimulationDataQuality = getSimulationDataQuality;
 
 

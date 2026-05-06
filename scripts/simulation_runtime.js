@@ -234,6 +234,16 @@ function readTableRows(document) {
   return Array.from(table.querySelectorAll("tr"), (row) => row.textContent || "");
 }
 
+function readRawRows(sandbox) {
+  if (typeof sandbox.getSimulationRawRows !== "function") return [];
+  return sandbox.getSimulationRawRows();
+}
+
+function readDataQuality(sandbox) {
+  if (typeof sandbox.getSimulationDataQuality !== "function") return null;
+  return sandbox.getSimulationDataQuality();
+}
+
 async function runSimulation(config, emit = () => {}) {
   if (!config.start || !config.end) {
     emit({ type: "result", status: "error", message: "SERVER_SIM_CONFIG requires start and end" });
@@ -338,7 +348,8 @@ async function runSimulation(config, emit = () => {}) {
         lastRow: state.lastRow,
         currentValue: state.currentValue,
         currentAero: state.currentAero,
-        tableRows: readTableRows(document),
+        rawRows: readRawRows(sandbox),
+        dataQuality: readDataQuality(sandbox),
       });
       return { exitCode: 0 };
     }
