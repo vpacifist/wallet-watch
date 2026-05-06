@@ -229,6 +229,11 @@ function readUi(document) {
   };
 }
 
+function readTableRows(document) {
+  const table = document.getElementById("simTableBody");
+  return Array.from(table.querySelectorAll("tr"), (row) => row.textContent || "");
+}
+
 async function runSimulation(config, emit = () => {}) {
   if (!config.start || !config.end) {
     emit({ type: "result", status: "error", message: "SERVER_SIM_CONFIG requires start and end" });
@@ -333,6 +338,7 @@ async function runSimulation(config, emit = () => {}) {
         lastRow: state.lastRow,
         currentValue: state.currentValue,
         currentAero: state.currentAero,
+        tableRows: readTableRows(document),
       });
       return { exitCode: 0 };
     }

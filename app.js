@@ -1452,6 +1452,23 @@ function renderServerJobsList(items = serverSimulation.jobs) {
   }
 }
 
+function renderServerResultTable(simulation) {
+  const tableRows = simulation?.result?.tableRows || [];
+  if (!SERVER_SIMULATION_MODE || !simTableBody || !simTableWrap || !tableRows.length) return;
+  simTableBody.replaceChildren();
+  tableRows.forEach((rowText, index) => {
+    const tr = document.createElement("tr");
+    tr.dataset.index = String(index);
+    String(rowText).split("\t").forEach((cellText) => {
+      const td = document.createElement("td");
+      td.textContent = cellText;
+      tr.append(td);
+    });
+    simTableBody.append(tr);
+  });
+  simTableWrap.hidden = false;
+}
+
 async function loadServerJobs() {
   if (!SERVER_SIMULATION_MODE || !serverJobsList) return;
   try {
@@ -1480,6 +1497,7 @@ function renderServerSimulation(simulation) {
   if (index >= 0) serverSimulation.jobs[index] = simulation;
   else serverSimulation.jobs.unshift(simulation);
   renderServerJobsList(serverSimulation.jobs);
+  renderServerResultTable(simulation);
   updateSimulationControls();
 }
 
