@@ -1420,7 +1420,6 @@ function getSimulationDataQuality() {
 function simulationRawRowToCells(row) {
   if (!row || typeof row !== "object") return [];
   const eventParts = [row.missingCandle ? `${row.event} · missing candle` : row.event];
-  if (row.aeroModel) eventParts.push(`AERO ${row.aeroModel}`);
   if (row.rebalance?.swapIsFallback) eventParts.push("swap fallback");
   return [
     row.time ? fmtInputTime(row.time) : "",
@@ -1439,7 +1438,7 @@ function renderSimulationTable(scrollToLatest = false) {
   simTableBody.innerHTML = state.sim.rows.map((row) => `
     <tr data-index="${row.index}" class="${row.index === state.sim.activeRowIndex ? "activeRow" : ""}" title="${simulationRowTitle(row)}">
       <td>${fmtInputTime(state.rows[row.index]?.time || "")}</td>
-      <td>${[row.event, row.aeroModel ? `AERO ${row.aeroModel}` : "", row.rebalance?.swapIsFallback ? "swap fallback" : ""].filter(Boolean).join(" · ")}</td>
+      <td>${[row.event, row.rebalance?.swapIsFallback ? "swap fallback" : ""].filter(Boolean).join(" · ")}</td>
       <td>${fmtUsdc(row.value)}</td>
       <td>${fmtPrice(row.price)}</td>
       <td>${fmtNumber(row.weth, 8)}</td>

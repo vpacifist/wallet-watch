@@ -88,7 +88,7 @@ async function main() {
     rows: 3,
     currentValue: "$9,988.05",
     currentAero: "$0.44",
-    lastRow: "2026-02-01 00:02\tprice change · AERO conservative\t$9,988.05\t$2,445.43\t2.72582127\t3,322.25\t$0.19\t$0.13\t96.00%",
+    lastRow: "2026-02-01 00:02\tprice change\t$9,988.05\t$2,445.43\t2.72582127\t3,322.25\t$0.19\t$0.13\t96.00%",
   });
 
   await runCase({
@@ -98,7 +98,7 @@ async function main() {
     rows: 6,
     currentValue: "$10,005.23",
     currentAero: "$1.28",
-    lastRow: "2026-02-01 00:05\tprice change · AERO conservative\t$10,005.23\t$2,452.20\t2.34785504\t4,247.82\t$0.30\t$0.31\t96.00%",
+    lastRow: "2026-02-01 00:05\tprice change\t$10,005.23\t$2,452.20\t2.34785504\t4,247.82\t$0.30\t$0.31\t96.00%",
   });
 
   await runCase({
@@ -109,7 +109,7 @@ async function main() {
     rows: 21,
     currentValue: "$9,998.08",
     currentAero: "$9.52",
-    lastRow: "2026-02-01 00:20\tprice change · AERO conservative\t$9,998.08\t$2,473.29\t1.76061013\t5,643.58\t$0.59\t$0.79\t96.00%",
+    lastRow: "2026-02-01 00:20\tprice change\t$9,998.08\t$2,473.29\t1.76061013\t5,643.58\t$0.59\t$0.79\t96.00%",
     hasRebalance: true,
   });
 }
