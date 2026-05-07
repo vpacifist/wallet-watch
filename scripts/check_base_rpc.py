@@ -6,12 +6,28 @@ import statistics
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
+ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BLOCK = 29100000
 WETH_ADDRESS = "0x4200000000000000000000000000000000000006"
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+
+def load_dotenv(path):
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def redact_url(url):
@@ -117,6 +133,7 @@ def print_table(rows):
 
 
 def main():
+    load_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser(description="Check Base RPC endpoints for wallet-watch historical simulation methods.")
     parser.add_argument("--urls", default=os.environ.get("BASE_RPC_URLS", ""), help="Comma-separated RPC URLs. Defaults to BASE_RPC_URLS.")
     parser.add_argument("--block", type=int, default=int(os.environ.get("BASE_RPC_CHECK_BLOCK", DEFAULT_BLOCK)))

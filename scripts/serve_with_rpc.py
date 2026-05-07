@@ -16,6 +16,7 @@ import uuid
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,6 +78,22 @@ STATS = {
 }
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
+
+
+def redact_url(url):
+    parts = urlsplit(url)
+    query = urlencode([
+        (key, "..." if any(token in key.lower() for token in ["key", "token", "secret", "id"]) else value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+    ])
+    path_parts = [part for part in parts.path.split("/") if part]
+    redacted_path = parts.path
+    if path_parts and len(path_parts[-1]) >= 16:
+        redacted_path = "/" + "/".join([*path_parts[:-1], "..."])
+    netloc = parts.hostname or ""
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, redacted_path, query, ""))
 
 
 class ApiError(Exception):
@@ -741,9 +758,9 @@ def upstream_post(payload):
                         "responseBytes": len(raw),
                         "preview": preview,
                     }
-                    attempted_errors.append((url, last_error))
-                    if DEBUG_RPC_ERRORS:
-                        print(f"RPC invalid JSON from {url} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+                attempted_errors.append((url, last_error))
+                if DEBUG_RPC_ERRORS:
+                    print(f"RPC invalid JSON from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
                     continue
                 responses = parsed if isinstance(parsed, list) else [parsed]
                 if all("error" not in item for item in responses):
@@ -751,20 +768,20 @@ def upstream_post(payload):
                 last_error = next((item["error"] for item in responses if "error" in item), None)
                 attempted_errors.append((url, last_error))
                 if DEBUG_RPC_ERRORS:
-                    print(f"RPC upstream error from {url} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+                    print(f"RPC upstream error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
             except urllib.error.HTTPError as exc:
                 last_error = {"code": exc.code, "message": exc.read().decode("utf-8", errors="replace")}
                 attempted_errors.append((url, last_error))
                 if DEBUG_RPC_ERRORS:
-                    print(f"RPC HTTP error from {url} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+                    print(f"RPC HTTP error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
             except (urllib.error.URLError, TimeoutError) as exc:
                 last_error = {"message": str(exc)}
                 attempted_errors.append((url, last_error))
                 if DEBUG_RPC_ERRORS:
-                    print(f"RPC network error from {url} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+                    print(f"RPC network error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
         time.sleep(1.2)
     if attempted_errors:
-        providers = ", ".join(url for url, _ in attempted_errors[-len(RPC_URLS):])
+        providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(RPC_URLS):])
         print(f"RPC upstream failed for [{summary}] after retries; last providers: {providers}; last_error={last_error}", file=sys.stderr, flush=True)
     raise RuntimeError(json.dumps(last_error or {"message": "RPC proxy error"}))
 
@@ -1070,7 +1087,7 @@ if __name__ == "__main__":
     print(f"Market data cache: {DATA_PATH}", file=sys.stderr, flush=True)
     print(f"Simulation data: {SIM_DATA_PATH}", file=sys.stderr, flush=True)
     print("Raw eth_getLogs JSON cache: disabled; logs are normalized and deduplicated", file=sys.stderr, flush=True)
-    print(f"RPC upstreams: {', '.join(RPC_URLS)}", file=sys.stderr, flush=True)
+    print(f"RPC upstreams: {', '.join(redact_url(url) for url in RPC_URLS)}", file=sys.stderr, flush=True)
     print(f"Listening on {HOST}:{PORT}", file=sys.stderr, flush=True)
     try:
         http.server.ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
