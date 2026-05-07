@@ -167,6 +167,7 @@ const {
   addUtcDays,
   addUtcHours,
   addressFromWord,
+  analyzeDataQuality: analyzeRowsDataQuality,
   aeroPriceReliability,
   aeroUsdcPriceFromSqrtX96,
   blockTag,
@@ -1073,31 +1074,7 @@ function rowIndexForTimestamp(timestamp, mode = "nearest") {
 }
 
 function analyzeDataQuality(rows) {
-  if (!rows.length) {
-    return { rowCount: 0, gapCount: 0, missingMinutes: 0, maxGapMinutes: 0, firstTime: "", lastTime: "" };
-  }
-  let gapCount = 0;
-  let missingMinutes = 0;
-  let maxGapMinutes = 0;
-  let previous = rowTimestampMs(rows[0]);
-  for (let index = 1; index < rows.length; index += 1) {
-    const current = rowTimestampMs(rows[index]);
-    const gapMinutes = Math.round((current - previous) / (60 * 1000));
-    if (gapMinutes > 1) {
-      gapCount += 1;
-      missingMinutes += gapMinutes - 1;
-      if (gapMinutes > maxGapMinutes) maxGapMinutes = gapMinutes;
-    }
-    previous = current;
-  }
-  return {
-    rowCount: rows.length,
-    gapCount,
-    missingMinutes,
-    maxGapMinutes,
-    firstTime: rows[0].time,
-    lastTime: rows[rows.length - 1].time,
-  };
+  return analyzeRowsDataQuality(rows);
 }
 
 function dataQualityStatus(quality) {
@@ -1105,19 +1082,38 @@ function dataQualityStatus(quality) {
   const grid = quality.minuteRowCount && quality.minuteRowCount !== quality.rowCount
     ? ` · сетка ${quality.minuteRowCount.toLocaleString("en-US")} мин`
     : "";
-  if (!quality.gapCount) return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, без пропусков${grid}`;
-  return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, пропущено ${quality.missingMinutes.toLocaleString("en-US")} мин${grid}`;
+  const issueCount = (quality.gapCount || 0)
+    + (quality.duplicateTimestampCount || 0)
+    + (quality.outOfOrderCount || 0)
+    + (quality.invalidPriceCount || 0)
+    + (quality.zeroPriceCount || 0)
+    + (quality.emptyVolumeCount || 0);
+  if (!issueCount) return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, без проблем${grid}`;
+  const parts = [];
+  if (quality.gapCount) parts.push(`пропущено ${quality.missingMinutes.toLocaleString("en-US")} мин`);
+  if (quality.duplicateTimestampCount) parts.push(`дубликаты ${quality.duplicateTimestampCount.toLocaleString("en-US")}`);
+  if (quality.invalidPriceCount || quality.zeroPriceCount) parts.push(`плохие цены ${(quality.invalidPriceCount + quality.zeroPriceCount).toLocaleString("en-US")}`);
+  if (quality.emptyVolumeCount) parts.push(`пустой volume ${quality.emptyVolumeCount.toLocaleString("en-US")}`);
+  return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, ${parts.join(", ")}${grid}`;
 }
 
 function dataQualityTitle(quality) {
   if (!quality || !quality.rowCount) return "";
-  if (!quality.gapCount) return "Поминутная сетка без обнаруженных разрывов.";
-  return [
-    `Найдено ${quality.gapCount.toLocaleString("en-US")} разрывов в CSV.`,
-    `Всего пропущено ${quality.missingMinutes.toLocaleString("en-US")} минут.`,
-    `Максимальный разрыв: ${quality.maxGapMinutes} мин.`,
-    "Симуляция идет по полной минутной сетке; пропущенные свечи помечаются quality flag и считаются по on-chain state.",
-  ].join(" ");
+  const details = [];
+  if (quality.gapCount) {
+    details.push(
+      `Найдено ${quality.gapCount.toLocaleString("en-US")} разрывов в CSV.`,
+      `Всего пропущено ${quality.missingMinutes.toLocaleString("en-US")} минут.`,
+      `Максимальный разрыв: ${quality.maxGapMinutes} мин.`,
+      "Симуляция идет по полной минутной сетке; пропущенные свечи помечаются quality flag и считаются по on-chain state.",
+    );
+  }
+  if (quality.duplicateTimestampCount) details.push(`Дубликаты timestamp: ${quality.duplicateTimestampCount.toLocaleString("en-US")}.`);
+  if (quality.outOfOrderCount) details.push(`Строки не по порядку: ${quality.outOfOrderCount.toLocaleString("en-US")}.`);
+  if (quality.invalidPriceCount) details.push(`Некорректные price-поля: ${quality.invalidPriceCount.toLocaleString("en-US")}.`);
+  if (quality.zeroPriceCount) details.push(`Нулевые или отрицательные price-поля: ${quality.zeroPriceCount.toLocaleString("en-US")}.`);
+  if (quality.emptyVolumeCount) details.push(`Пустой или некорректный volume: ${quality.emptyVolumeCount.toLocaleString("en-US")}.`);
+  return details.length ? details.join(" ") : "Поминутная сетка без обнаруженных проблем.";
 }
 
 function formatDuration(ms) {

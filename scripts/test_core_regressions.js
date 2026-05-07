@@ -73,8 +73,27 @@ function testAeroUsdcPriceOrder() {
   assertNear(inverse, 1 / (ratio * 1e-12), 1e9, "inverse token-order decimal adjustment");
 }
 
+function testDataQualitySummary() {
+  const rows = core.parseCsv([
+    "time_open,time_close,open,high,low,close,volume",
+    "2026-02-01T00:00:00Z,2026-02-01T00:01:00Z,100,101,99,100,10",
+    "2026-02-01T00:02:00Z,2026-02-01T00:03:00Z,0,101,99,100,abc",
+    "2026-02-01T00:02:00Z,2026-02-01T00:03:00Z,100,101,99,100,10",
+    "2026-02-01T00:05:00Z,2026-02-01T00:06:00Z,105,106,104,105,10",
+  ].join("\n"));
+  const quality = core.analyzeDataQuality(rows);
+  assert.equal(quality.rowCount, 4, "quality row count");
+  assert.equal(quality.gapCount, 2, "quality gap count");
+  assert.equal(quality.missingMinutes, 3, "quality missing minutes");
+  assert.equal(quality.duplicateTimestampCount, 1, "quality duplicate timestamp count");
+  assert.equal(quality.outOfOrderCount, 1, "quality out-of-order count");
+  assert.equal(quality.zeroPriceCount, 1, "quality zero price count");
+  assert.equal(quality.emptyVolumeCount, 1, "quality empty volume count");
+}
+
 testTickPriceRoundTrip();
 testConcentratedLiquidityPlan();
 testRawUnitConversions();
 testReliabilityFloors();
 testAeroUsdcPriceOrder();
+testDataQualitySummary();
