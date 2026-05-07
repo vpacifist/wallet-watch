@@ -34,6 +34,23 @@ function emit(payload) {
   console.log(JSON.stringify(payload));
 }
 
+function progressEvent(startedAt, state, rawRows, newRawRows, reason = "heartbeat") {
+  return {
+    type: "progress",
+    id: config.id,
+    reason,
+    elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+    rows: state.rowCount,
+    button: state.button,
+    notice: state.notice,
+    lastRow: state.lastRow,
+    currentValue: state.currentValue,
+    currentAero: state.currentAero,
+    latestRawRow: rawRows.at(-1) || null,
+    newRawRows,
+  };
+}
+
 function isCompleted(state) {
   return state.notice.includes("Симуляция дошла до конца") || state.notice.includes("Симуляция дошла до даты конца");
 }
@@ -95,17 +112,37 @@ function isTransientRpcStop(state) {
       rangePct: document.getElementById("rangePercentInput")?.value || "",
     }));
     emit({ type: "inputs", id: config.id, ...appliedInputs });
-    await page.evaluate(async () => {
+    const startPromise = page.evaluate(async () => {
       if (typeof startSimulation !== "function") throw new Error("startSimulation is not available");
       await startSimulation();
     });
+    let startSettled = false;
+    let startError = null;
+    startPromise.catch((error) => {
+      startError = error;
+    }).finally(() => {
+      startSettled = true;
+    });
+    let lastStartHeartbeatAt = 0;
+    const progressEverySeconds = config.progressEverySeconds || 2;
+    while (!startSettled) {
+      await sleep(250);
+      const state = await readState(page);
+      const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
+      if (elapsedSeconds - lastStartHeartbeatAt >= progressEverySeconds) {
+        lastStartHeartbeatAt = elapsedSeconds;
+        emit(progressEvent(startedAt, state, await readRawRows(page), [], "initializing"));
+      }
+    }
+    await startPromise;
+    if (startError) throw startError;
     const startedState = await readState(page);
     emit({ type: "started", id: config.id, ...startedState });
     if (startedState.button === "START" && startedState.rowCount === 0) {
       throw new Error(`Simulation did not start: ${startedState.notice}`);
     }
 
-    let lastProgressAt = 0;
+    let lastHeartbeatAt = 0;
     let retryAttempts = 0;
     let retryDelayMs = (config.retryInitialSeconds || 60) * 1000;
     let state = await readState(page);
@@ -113,28 +150,18 @@ function isTransientRpcStop(state) {
     const timeoutMs = (config.timeoutSeconds || 21600) * 1000;
 
     while (Date.now() - startedAt < timeoutMs) {
-      await sleep(1000);
+      await sleep(250);
       state = await readState(page);
       const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
+      const rawRows = await readRawRows(page);
 
-      if (elapsedSeconds - lastProgressAt >= (config.progressEverySeconds || 10)) {
-        lastProgressAt = elapsedSeconds;
-        const rawRows = await readRawRows(page);
+      if (rawRows.length > lastEmittedRawCount) {
         const newRawRows = rawRows.slice(lastEmittedRawCount);
         lastEmittedRawCount = rawRows.length;
-        emit({
-          type: "progress",
-          id: config.id,
-          elapsedSeconds,
-          rows: state.rowCount,
-          button: state.button,
-          notice: state.notice,
-          lastRow: state.lastRow,
-          currentValue: state.currentValue,
-          currentAero: state.currentAero,
-          latestRawRow: rawRows.at(-1) || null,
-          newRawRows,
-        });
+        emit(progressEvent(startedAt, state, rawRows, newRawRows, "new_rows"));
+      } else if (elapsedSeconds - lastHeartbeatAt >= progressEverySeconds) {
+        lastHeartbeatAt = elapsedSeconds;
+        emit(progressEvent(startedAt, state, rawRows, [], "heartbeat"));
       }
 
       if (isCompleted(state)) {

@@ -143,6 +143,30 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual(simulation["progress"]["latestRawRow"]["index"], 0)
       self.assertEqual(simulation["progress"]["newRawRows"][0]["event"], "price change")
 
+    def test_progress_stream_accumulates_rows_between_polls(self):
+      self.server.insert_simulation("sim-merge", {"start": "2026-02-01 00:00", "end": "2026-02-01 00:02"})
+      pipe = io.StringIO(
+          json.dumps({
+              "type": "progress",
+              "rows": 1,
+              "latestRawRow": {"index": 0, "blockNumber": 10, "event": "deposit"},
+              "newRawRows": [{"index": 0, "blockNumber": 10, "event": "deposit"}],
+          }) + "\n" +
+          json.dumps({
+              "type": "progress",
+              "rows": 2,
+              "latestRawRow": {"index": 1, "blockNumber": 11, "event": "price change"},
+              "newRawRows": [{"index": 1, "blockNumber": 11, "event": "price change"}],
+          }) + "\n"
+      )
+
+      self.server.stream_simulation_stdout("sim-merge", pipe)
+
+      simulation = self.server.get_simulation("sim-merge")
+      self.assertEqual(simulation["progress"]["rawRowCount"], 2)
+      self.assertEqual([row["index"] for row in simulation["progress"]["rawRows"]], [0, 1])
+      self.assertEqual(simulation["progress"]["latestRawRow"]["index"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

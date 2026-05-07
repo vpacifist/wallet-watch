@@ -366,13 +366,45 @@ def normalize_simulation_params(payload):
         "deposit": deposit,
         "rangePct": range_pct,
         "timeoutSeconds": timeout_seconds,
-        "progressEverySeconds": int(payload.get("progressEverySeconds", 10)),
+        "progressEverySeconds": int(payload.get("progressEverySeconds", 2)),
         "rebalanceManualFeeBps": float(payload.get("rebalanceManualFeeBps", os.environ.get("REBALANCE_MANUAL_FEE_BPS", "1"))),
         "rebalanceGasUnits": int(payload.get("rebalanceGasUnits", os.environ.get("REBALANCE_GAS_UNITS", "1450000"))),
         "rebalanceL1DataFeeEth": float(payload.get("rebalanceL1DataFeeEth", os.environ.get("REBALANCE_L1_DATA_FEE_ETH", "0.000012"))),
         "rebalanceFallbackSlippageBps": float(payload.get("rebalanceFallbackSlippageBps", os.environ.get("REBALANCE_FALLBACK_SLIPPAGE_BPS", "5"))),
         "lpFeeRate": float(payload.get("lpFeeRate", os.environ.get("LP_FEE_RATE", "0.0005"))),
     }
+
+
+def progress_row_key(row):
+    if not isinstance(row, dict):
+        return json.dumps(row, sort_keys=True, ensure_ascii=False)
+    return ":".join(str(row.get(key, "")) for key in ("index", "blockNumber", "event"))
+
+
+def merge_simulation_progress(simulation_id, event):
+    current = get_simulation(simulation_id) or {}
+    previous = current.get("progress") if isinstance(current.get("progress"), dict) else {}
+    merged = dict(event)
+    existing_rows = previous.get("rawRows") if isinstance(previous, dict) else []
+    rows_by_key = {}
+    if isinstance(existing_rows, list):
+        for row in existing_rows:
+            rows_by_key[progress_row_key(row)] = row
+    for key in ("rawRows", "newRawRows"):
+        rows = event.get(key)
+        if isinstance(rows, list):
+            for row in rows:
+                rows_by_key[progress_row_key(row)] = row
+    raw_rows = sorted(
+        rows_by_key.values(),
+        key=lambda row: row.get("index", 0) if isinstance(row, dict) else 0,
+    )
+    if raw_rows:
+        merged["rawRows"] = raw_rows
+        merged["rawRowCount"] = len(raw_rows)
+        merged["latestRawRow"] = event.get("latestRawRow") or raw_rows[-1]
+        merged["rows"] = max(int(event.get("rows") or 0), len(raw_rows))
+    return merged
 
 
 def stream_simulation_stdout(simulation_id, pipe):
@@ -397,7 +429,8 @@ def stream_simulation_stdout(simulation_id, pipe):
                 finished_at=now_int(),
             )
         else:
-            update_simulation(simulation_id, status="running", progress_json=json.dumps(event, ensure_ascii=False))
+            progress = merge_simulation_progress(simulation_id, event)
+            update_simulation(simulation_id, status="running", progress_json=json.dumps(progress, ensure_ascii=False))
 
 
 def stream_simulation_stderr(simulation_id, pipe):
@@ -453,7 +486,17 @@ def start_simulation_job(params):
         encoding="utf-8",
         errors="replace",
     )
-    update_simulation(simulation_id, status="running", pid=process.pid)
+    update_simulation(
+        simulation_id,
+        status="running",
+        pid=process.pid,
+        progress_json=json.dumps({
+            "type": "started",
+            "elapsedSeconds": 0,
+            "rows": 0,
+            "notice": "server worker started; opening local simulation page",
+        }, ensure_ascii=False),
+    )
     with SIM_LOCK:
         RUNNING_SIMULATIONS[simulation_id] = process
     threading.Thread(target=stream_simulation_stdout, args=(simulation_id, process.stdout), daemon=True).start()

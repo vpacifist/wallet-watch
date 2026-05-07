@@ -157,6 +157,7 @@ const serverSimulation = {
   available: SERVER_SIMULATION_MODE,
   jobs: [],
   rawRows: [],
+  startedAtMs: 0,
 };
 const appTabs = {
   active: "new",
@@ -208,6 +209,7 @@ const {
   scoreFromThresholds,
   sqrtPriceX96ForPrice,
   startOfUtcDay,
+  tickRangeAroundTick,
   tickForPrice,
   toSignedWord,
   wordAt,
@@ -1519,6 +1521,7 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   priceForTick,
   priceFromSqrtX96,
   computePositionPlanForRange,
+  tickRangeAroundTick,
   estimateHistoricalSwap,
   rewardStateReliability,
   blockTimeReliability,
@@ -1589,12 +1592,44 @@ function serverSimulationText(simulation) {
   };
 }
 
+function formatStopwatch(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const restSeconds = total % 60;
+  const mm = String(minutes).padStart(2, "0");
+  const ss = String(restSeconds).padStart(2, "0");
+  return hours ? `${String(hours).padStart(2, "0")}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function serverElapsedSeconds(simulation) {
+  const progressElapsed = Number(simulation?.progress?.elapsedSeconds || simulation?.result?.elapsedSeconds || 0);
+  if (Number.isFinite(progressElapsed) && progressElapsed > 0) return Math.floor(progressElapsed);
+  if (!serverSimulation.startedAtMs && simulation?.created_at) {
+    serverSimulation.startedAtMs = simulation.created_at * 1000;
+  }
+  return serverSimulation.startedAtMs ? Math.floor((Date.now() - serverSimulation.startedAtMs) / 1000) : 0;
+}
+
+function serverProgressStage(simulation, info) {
+  const progress = simulation?.progress || {};
+  const rows = Number(info.rows || 0);
+  if (progress.type === "retry_wait") return `RPC временно недоступен, жду ${progress.waitSeconds || "?"} сек перед повтором`;
+  if (progress.type === "retry_resume") return "возобновляю расчет после RPC retry";
+  if (progress.type === "started") return "воркер открыл локальную страницу и запустил расчет";
+  if (rows <= 0) return info.notice || "инициализация: читаю historical state Base RPC, slot0, reward state и цену AERO";
+  return info.lastRow ? `последняя строка: ${info.lastRow}` : (info.notice || "считаю следующую строку");
+}
+
 function applyServerRawProgress(simulation) {
   if (!SERVER_SIMULATION_MODE) return;
   const progress = simulation?.progress || {};
   const resultRows = simulation?.result?.rawRows;
+  const progressRows = progress.rawRows;
   if (Array.isArray(resultRows)) {
     serverSimulation.rawRows = resultRows;
+  } else if (Array.isArray(progressRows)) {
+    serverSimulation.rawRows = progressRows;
   } else if (Array.isArray(progress.newRawRows) && progress.newRawRows.length) {
     const byKey = new Map(serverSimulation.rawRows.map((row) => [`${row.index}:${row.blockNumber}:${row.event}`, row]));
     progress.newRawRows.forEach((row) => byKey.set(`${row.index}:${row.blockNumber}:${row.event}`, row));
@@ -1913,13 +1948,16 @@ function renderServerSimulation(simulation) {
   serverSimulation.id = simulation.id;
   serverSimulation.running = !isServerSimulationTerminal(simulation.status);
   if (!serverSimulation.running) serverSimulation.paused = false;
+  if (!serverSimulation.startedAtMs && simulation.created_at) serverSimulation.startedAtMs = simulation.created_at * 1000;
   applyServerRawProgress(simulation);
   const info = serverSimulationText(simulation);
+  const elapsedSeconds = serverElapsedSeconds(simulation);
+  const stage = serverProgressStage(simulation, info);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
   if (info.currentAero) currentAeroEarned.textContent = info.currentAero;
   setSimulationNotice({
-    status: serverSimulation.running ? "Симуляция считается на сервере." : `Серверная симуляция: ${simulation.status}.`,
-    details: [`rows ${info.rows}`, info.elapsed, info.notice].filter(Boolean).join(" — "),
+    status: `[${formatStopwatch(elapsedSeconds)}] ${serverSimulation.running ? "Симуляция считается на сервере." : `Серверная симуляция: ${simulation.status}.`}`,
+    details: [`rows ${info.rows}`, info.elapsed || formatDuration(elapsedSeconds * 1000), stage].filter(Boolean).join(" — "),
     estimate: "",
   });
   const index = serverSimulation.jobs.findIndex((item) => item.id === simulation.id);
@@ -1957,7 +1995,7 @@ function watchServerSimulation(id) {
   stopServerSimulationPolling();
   serverSimulation.paused = false;
   pollServerSimulation(id);
-  serverSimulation.pollTimer = setInterval(() => pollServerSimulation(id), 5000);
+  serverSimulation.pollTimer = setInterval(() => pollServerSimulation(id), 1000);
 }
 
 function pauseServerSimulation() {
@@ -2072,10 +2110,34 @@ async function startServerSimulation() {
     setSimulationNotice("Диапазон должен быть положительным числом меньше 100%.");
     return;
   }
+  resetSimulationRows();
   serverSimulation.running = true;
   serverSimulation.paused = false;
+  serverSimulation.startedAtMs = Date.now();
+  serverSimulation.rawRows = [];
+  if (state.rows.length) {
+    const startIndex = rowIndexForTimestamp(inputTimestamp, "atOrAfter");
+    const endIndex = rowIndexForTimestamp(endTimestamp, "atOrBefore");
+    if (endIndex <= startIndex) {
+      setSimulationNotice("Дата конца должна быть позже даты старта.");
+      serverSimulation.running = false;
+      updateSimulationControls();
+      return;
+    }
+    state.sim.startIndex = startIndex;
+    state.sim.endIndex = endIndex;
+    state.sim.currentIndex = startIndex;
+    simStartInput.value = fmtInputTime(state.rows[startIndex].time);
+    simEndInput.value = fmtInputTime(state.rows[endIndex].time);
+    zoomToSimulationRange(startIndex, endIndex);
+    draw();
+  }
   updateSimulationControls();
-  setSimulationNotice("Запускаю серверную симуляцию...");
+  setSimulationNotice({
+    status: "[00:00] Запускаю серверную симуляцию...",
+    details: "Передаю период на сервер и подготавливаю live-обновление строк.",
+    estimate: "",
+  });
   try {
     const simulation = await fetchJson("/api/simulations", {
       method: "POST",
@@ -2084,6 +2146,7 @@ async function startServerSimulation() {
         end: fmtInputTime(endTimestamp),
         deposit: String(depositUsdc),
         rangePct: rangePercent,
+        progressEverySeconds: 2,
       }),
     });
     renderServerSimulation(simulation);
