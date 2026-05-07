@@ -1079,6 +1079,7 @@ function analyzeDataQuality(rows) {
 
 function dataQualityStatus(quality) {
   if (!quality || !quality.rowCount) return "CSV загружен";
+  const source = quality.source ? `${quality.source.replace(/^\.\//, "")} · ` : "";
   const grid = quality.minuteRowCount && quality.minuteRowCount !== quality.rowCount
     ? ` · сетка ${quality.minuteRowCount.toLocaleString("en-US")} мин`
     : "";
@@ -1088,18 +1089,21 @@ function dataQualityStatus(quality) {
     + (quality.invalidPriceCount || 0)
     + (quality.zeroPriceCount || 0)
     + (quality.emptyVolumeCount || 0);
-  if (!issueCount) return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, без проблем${grid}`;
+  if (!issueCount) return `CSV загружен · ${source}${quality.rowCount.toLocaleString("en-US")} строк, без проблем${grid}`;
   const parts = [];
   if (quality.gapCount) parts.push(`пропущено ${quality.missingMinutes.toLocaleString("en-US")} мин`);
   if (quality.duplicateTimestampCount) parts.push(`дубликаты ${quality.duplicateTimestampCount.toLocaleString("en-US")}`);
   if (quality.invalidPriceCount || quality.zeroPriceCount) parts.push(`плохие цены ${(quality.invalidPriceCount + quality.zeroPriceCount).toLocaleString("en-US")}`);
   if (quality.emptyVolumeCount) parts.push(`пустой volume ${quality.emptyVolumeCount.toLocaleString("en-US")}`);
-  return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, ${parts.join(", ")}${grid}`;
+  return `CSV загружен · ${source}${quality.rowCount.toLocaleString("en-US")} строк, ${parts.join(", ")}${grid}`;
 }
 
 function dataQualityTitle(quality) {
   if (!quality || !quality.rowCount) return "";
   const details = [];
+  if (quality.source) details.push(`Источник: ${quality.source}.`);
+  if (quality.firstTime && quality.lastTime) details.push(`Период: ${fmtInputTime(quality.firstTime)} - ${fmtInputTime(quality.lastTime)} UTC.`);
+  if (quality.minuteRowCount) details.push(`Поминутная сетка: ${quality.minuteRowCount.toLocaleString("en-US")} строк.`);
   if (quality.gapCount) {
     details.push(
       `Найдено ${quality.gapCount.toLocaleString("en-US")} разрывов в CSV.`,
@@ -2509,6 +2513,7 @@ fetch(CSV_FILE)
   .then((text) => {
     const csvRows = parseCsv(text);
     state.dataQuality = analyzeDataQuality(csvRows);
+    state.dataQuality.source = CSV_FILE;
     state.rows = buildCompleteMinuteRows(csvRows);
     state.dataQuality.minuteRowCount = state.rows.length;
     statusEl.textContent = dataQualityStatus(state.dataQuality);

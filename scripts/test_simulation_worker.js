@@ -66,6 +66,8 @@ async function runCase(testCase) {
   assert.equal(typeof lastRaw.aeroReliability, "number", `${testCase.name} should expose AERO reliability`);
   assert.equal(lastRaw.missingCandle, false, `${testCase.name} should not mark fixture rows missing`);
   assert.ok(final.dataQuality && typeof final.dataQuality.rowCount === "number", `${testCase.name} should include data quality`);
+  assert.equal(final.dataQuality.source, "./weth_usdc_1m_2026_feb_mar_apr.csv", `${testCase.name} should include CSV source`);
+  assert.equal(typeof final.dataQuality.minuteRowCount, "number", `${testCase.name} should include minute-grid row count`);
   if (testCase.hasRebalance) {
     assert.ok(events.some((event) => String(event.lastRow || "").includes("rebalance")), `${testCase.name} should include a rebalance row`);
     const rebalanceRow = final.rawRows.find((row) => row.rebalance);
