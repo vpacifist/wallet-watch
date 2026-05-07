@@ -55,7 +55,7 @@ async function runCase(testCase) {
   assert.equal(final.lastRow, testCase.lastRow, `${testCase.name} last row`);
   const lastRaw = final.rawRows.at(-1);
   assert.equal(lastRaw.time, testCase.start.slice(0, 10) === "2026-02-01" ? `${testCase.end.replace(" ", "T")}:00Z` : lastRaw.time, `${testCase.name} last raw timestamp`);
-  assert.equal(lastRaw.event, "price change", `${testCase.name} last raw event`);
+  assert.equal(lastRaw.event, testCase.lastEvent ?? "price change", `${testCase.name} last raw event`);
   assert.equal(typeof lastRaw.blockNumber, "number", `${testCase.name} raw block number`);
   assert.equal(typeof lastRaw.price, "number", `${testCase.name} raw price`);
   assert.equal(typeof lastRaw.value, "number", `${testCase.name} raw value`);
@@ -86,9 +86,11 @@ async function main() {
     start: "2026-02-01 00:00",
     end: "2026-02-01 00:02",
     rows: 3,
-    currentValue: "$9,988.05",
-    currentAero: "$0.44",
-    lastRow: "2026-02-01 00:02\tprice change\t$9,988.05\t$2,445.43\t2.72582127\t3,322.25\t$0.19\t$0.13\t96.00%",
+    currentValue: "$9,976.64",
+    currentAero: "$0.76",
+    lastRow: "2026-02-01 00:02\trebalance -$6.03 · swap fallback\t$9,976.64\t$2,445.37\t0.02531485\t9,914.74\t$0.76\t$0.00\t76.00%",
+    lastEvent: "rebalance -$6.03",
+    hasRebalance: true,
   });
 
   await runCase({
@@ -96,9 +98,11 @@ async function main() {
     start: "2026-02-01 00:00",
     end: "2026-02-01 00:05",
     rows: 6,
-    currentValue: "$10,005.23",
-    currentAero: "$1.28",
-    lastRow: "2026-02-01 00:05\tprice change\t$10,005.23\t$2,452.20\t2.34785504\t4,247.82\t$0.30\t$0.31\t96.00%",
+    currentValue: "$9,957.96",
+    currentAero: "$1.23",
+    lastRow: "2026-02-01 00:05\trebalance -$6.04 · swap fallback\t$9,957.96\t$2,445.61\t4.05712502\t35.83\t$0.00\t$0.00\t76.00%",
+    lastEvent: "rebalance -$6.04",
+    hasRebalance: true,
   });
 
   await runCase({
@@ -107,9 +111,10 @@ async function main() {
     end: "2026-02-01 00:20",
     rangePct: 0.1,
     rows: 21,
-    currentValue: "$9,998.08",
-    currentAero: "$9.52",
-    lastRow: "2026-02-01 00:20\tprice change\t$9,998.08\t$2,473.29\t1.76061013\t5,643.58\t$0.59\t$0.79\t96.00%",
+    currentValue: "$9,863.42",
+    currentAero: "$1.23",
+    lastRow: "2026-02-01 00:20\trebalance -$5.99 · swap fallback\t$9,863.42\t$2,445.47\t0.00764595\t9,844.72\t$0.00\t$0.00\t76.00%",
+    lastEvent: "rebalance -$5.99",
     hasRebalance: true,
   });
 }

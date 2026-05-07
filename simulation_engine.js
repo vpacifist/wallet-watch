@@ -13,6 +13,7 @@
       priceForTick,
       priceFromSqrtX96,
       computePositionPlanForRange,
+      tickRangeAroundTick,
       estimateHistoricalSwap,
       rewardStateReliability,
       blockTimeReliability,
@@ -308,9 +309,7 @@
       const previousRow = state.sim.rows.length ? state.sim.rows[state.sim.rows.length - 1] : null;
       const oldTickLower = state.sim.tickLower;
       const oldTickUpper = state.sim.tickUpper;
-      const oldAnchorTick = state.sim.anchorTick || Math.round((oldTickLower + oldTickUpper) / (2 * AERODROME_TICK_SPACING)) * AERODROME_TICK_SPACING;
-      const lowerDistance = Math.max(AERODROME_TICK_SPACING, oldAnchorTick - oldTickLower);
-      const upperDistance = Math.max(AERODROME_TICK_SPACING, oldTickUpper - oldAnchorTick);
+      const oldSpanTicks = Math.max(AERODROME_TICK_SPACING, oldTickUpper - oldTickLower);
       const exitPrice = priceFromSqrtX96(exit.sqrtPriceX96);
       const rewardState = await readRewardInside(block.number, oldTickLower, oldTickUpper);
       const aeroPrice = await getAeroPrice(block.number);
@@ -344,9 +343,11 @@
         usdc: lpFeeTotalsAfter.usdc - previousFeeTotals.usdc,
         usdcValue: lpFeeTotalsAfter.usdcValue - previousFeeTotals.usdcValue,
       };
-      const newAnchorTick = Math.floor(exit.tick / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
-      const newTickLower = newAnchorTick - lowerDistance;
-      const newTickUpper = newAnchorTick + upperDistance;
+      const {
+        tickLower: newTickLower,
+        tickUpper: newTickUpper,
+        anchorTick: newAnchorTick,
+      } = tickRangeAroundTick(exit.tick, oldSpanTicks);
       const grossCapital = oldAmounts.value;
       const targetGross = computePositionPlanForRange(grossCapital, exitPrice, newTickLower, newTickUpper, newAnchorTick);
       const excessWeth = oldAmounts.weth - targetGross.weth;

@@ -30,11 +30,12 @@ function testTickPriceRoundTrip() {
 
 function testConcentratedLiquidityPlan() {
   const plan = core.computePositionPlan(10000, 2450, 0.01);
-  assert.equal(plan.tickLower, -198400, "lower tick should remain spacing-aligned");
-  assert.equal(plan.tickUpper, -198100, "upper tick should remain spacing-aligned");
+  assert.equal(plan.tickLower, -198300, "lower tick should remain spacing-aligned");
+  assert.equal(plan.tickUpper, -198200, "upper tick should remain spacing-aligned");
   assert.equal(plan.anchorTick, -198300, "anchor tick should remain spacing-aligned");
-  assertNear(plan.weth, 2.4704508554659728, 1e-12, "initial WETH amount");
-  assertNear(plan.usdc, 3947.3954041083666, 1e-9, "initial USDC amount");
+  assert.equal(plan.tickUpper - plan.tickLower, 100, "1% range should use one tick-spacing width");
+  assertNear(plan.weth, 3.3333815146859016, 1e-12, "initial WETH amount");
+  assertNear(plan.usdc, 1833.215289019541, 1e-9, "initial USDC amount");
   assertNear(plan.value, 10000, 1e-9, "initial position value");
   assert.ok(plan.liquidityRaw > 0n, "raw liquidity should be positive");
   assert.ok(core.priceForTick(plan.tickLower) < 2450, "lower range price should be below entry");

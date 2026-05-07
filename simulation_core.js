@@ -279,12 +279,36 @@
       throw new Error("AERO/USDC pool token order mismatch");
     }
 
+    function rangeSpanTicksForWidth(rangeWidth) {
+      const rawSpan = Math.log1p(rangeWidth) / Math.log(1.0001);
+      return Math.max(
+        AERODROME_TICK_SPACING,
+        Math.round(rawSpan / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING,
+      );
+    }
+
+    function tickRangeAroundTick(tick, spanTicks) {
+      const span = Math.max(
+        AERODROME_TICK_SPACING,
+        Math.round(spanTicks / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING,
+      );
+      let tickLower = Math.floor((tick - span / 2) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
+      let tickUpper = tickLower + span;
+      while (tick < tickLower) {
+        tickLower -= AERODROME_TICK_SPACING;
+        tickUpper -= AERODROME_TICK_SPACING;
+      }
+      while (tick >= tickUpper) {
+        tickLower += AERODROME_TICK_SPACING;
+        tickUpper += AERODROME_TICK_SPACING;
+      }
+      const anchorTick = Math.floor(tick / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
+      return { tickLower, tickUpper, anchorTick };
+    }
+
     function computePositionPlan(depositUsdc, price, rangeWidth) {
-      const lowerPrice = price * (1 - rangeWidth);
-      const upperPrice = price * (1 + rangeWidth);
-      const tickLower = Math.floor(tickForPrice(lowerPrice) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
-      const tickUpper = Math.ceil(tickForPrice(upperPrice) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
-      const anchorTick = Math.round(tickForPrice(price) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
+      const spanTicks = rangeSpanTicksForWidth(rangeWidth);
+      const { tickLower, tickUpper, anchorTick } = tickRangeAroundTick(tickForPrice(price), spanTicks);
       return computePositionPlanForRange(depositUsdc, price, tickLower, tickUpper, anchorTick);
     }
 
@@ -449,6 +473,8 @@
       addressFromWord,
       blockTag,
       aeroUsdcPriceFromSqrtX96,
+      rangeSpanTicksForWidth,
+      tickRangeAroundTick,
       computePositionPlan,
       computePositionPlanForRange,
       priceFromSqrtX96,
