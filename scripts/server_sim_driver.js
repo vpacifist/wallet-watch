@@ -18,6 +18,18 @@ async function readState(page) {
   });
 }
 
+async function readRawRows(page) {
+  return await page.evaluate(() => (
+    typeof getSimulationRawRows === "function" ? getSimulationRawRows() : []
+  ));
+}
+
+async function readDataQuality(page) {
+  return await page.evaluate(() => (
+    typeof getSimulationDataQuality === "function" ? getSimulationDataQuality() : null
+  ));
+}
+
 function emit(payload) {
   console.log(JSON.stringify(payload));
 }
@@ -97,6 +109,7 @@ function isTransientRpcStop(state) {
     let retryAttempts = 0;
     let retryDelayMs = (config.retryInitialSeconds || 60) * 1000;
     let state = await readState(page);
+    let lastEmittedRawCount = 0;
     const timeoutMs = (config.timeoutSeconds || 21600) * 1000;
 
     while (Date.now() - startedAt < timeoutMs) {
@@ -106,6 +119,9 @@ function isTransientRpcStop(state) {
 
       if (elapsedSeconds - lastProgressAt >= (config.progressEverySeconds || 10)) {
         lastProgressAt = elapsedSeconds;
+        const rawRows = await readRawRows(page);
+        const newRawRows = rawRows.slice(lastEmittedRawCount);
+        lastEmittedRawCount = rawRows.length;
         emit({
           type: "progress",
           id: config.id,
@@ -116,10 +132,13 @@ function isTransientRpcStop(state) {
           lastRow: state.lastRow,
           currentValue: state.currentValue,
           currentAero: state.currentAero,
+          latestRawRow: rawRows.at(-1) || null,
+          newRawRows,
         });
       }
 
       if (isCompleted(state)) {
+        const rawRows = await readRawRows(page);
         emit({
           type: "result",
           id: config.id,
@@ -130,6 +149,8 @@ function isTransientRpcStop(state) {
           lastRow: state.lastRow,
           currentValue: state.currentValue,
           currentAero: state.currentAero,
+          rawRows,
+          dataQuality: await readDataQuality(page),
         });
         await browser.close();
         process.exit(0);

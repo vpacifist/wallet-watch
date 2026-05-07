@@ -1,5 +1,6 @@
 import importlib.util
 import gc
+import io
 import json
 import tempfile
 import unittest
@@ -100,6 +101,24 @@ class ServerContractTests(unittest.TestCase):
       handler.headers = FakeHeaders({"X-Admin-API-Token": "wrong"})
       self.assertFalse(handler.require_admin_token())
       self.assertEqual(sent[-1][0], 401)
+
+    def test_progress_stream_persists_structured_rows(self):
+      self.server.insert_simulation("sim-progress", {"start": "2026-02-01 00:00", "end": "2026-02-01 00:02"})
+      pipe = io.StringIO(
+          json.dumps({
+              "type": "progress",
+              "rows": 1,
+              "latestRawRow": {"index": 0, "event": "price change"},
+              "newRawRows": [{"index": 0, "event": "price change"}],
+          }) + "\n"
+      )
+
+      self.server.stream_simulation_stdout("sim-progress", pipe)
+
+      simulation = self.server.get_simulation("sim-progress")
+      self.assertEqual(simulation["status"], "running")
+      self.assertEqual(simulation["progress"]["latestRawRow"]["index"], 0)
+      self.assertEqual(simulation["progress"]["newRawRows"][0]["event"], "price change")
 
 
 if __name__ == "__main__":

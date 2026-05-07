@@ -1743,7 +1743,8 @@ function renderSimulationResultView(simulation) {
   if (resultLastRow) {
     resultLastRow.textContent = info.notice;
   }
-  renderResultTableRows(simulation?.result?.rawRows || simulation?.result?.tableRows || []);
+  const liveRows = simulation?.id === serverSimulation.id ? serverSimulation.rawRows : [];
+  renderResultTableRows(simulation?.result?.rawRows || simulation?.result?.tableRows || liveRows || []);
 }
 
 function openSimulationResultTab(simulation) {
