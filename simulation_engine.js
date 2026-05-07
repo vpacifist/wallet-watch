@@ -27,6 +27,8 @@
       REBALANCE_MANUAL_FEE_BPS,
       REBALANCE_GAS_UNITS,
       REBALANCE_L1_DATA_FEE_ETH,
+      REBALANCE_FALLBACK_SLIPPAGE_BPS,
+      AERO_IMPACT_HAIRCUT_MAX,
       Q128,
       AERO_DECIMALS,
       recordSimulationStepDuration,
@@ -154,7 +156,7 @@
       const raw = dilutedAeroRaw(rewardState);
       if (raw > 0n) {
         const baseAero = Number(raw) / Number(AERO_DECIMALS);
-        const haircut = Math.min(0.5, impactShare(rewardState));
+        const haircut = Math.min(AERO_IMPACT_HAIRCUT_MAX, impactShare(rewardState));
         const conservativeAero = baseAero * (1 - haircut);
         state.sim.aeroBaseUnharvested += baseAero;
         state.sim.aeroHaircutUnharvested += baseAero - conservativeAero;
@@ -200,9 +202,25 @@
       return 97;
     }
 
-    function estimateRebalanceGasUsdc(block, ethUsdcPrice) {
+    function estimateRebalanceGasDetails(block, ethUsdcPrice) {
       const l2Eth = Number(REBALANCE_GAS_UNITS * block.baseFeePerGas) / 1e18;
-      return (l2Eth + REBALANCE_L1_DATA_FEE_ETH) * ethUsdcPrice;
+      const l1DataFeeEth = REBALANCE_L1_DATA_FEE_ETH;
+      const l2GasFeeUsdc = l2Eth * ethUsdcPrice;
+      const l1DataFeeUsdc = l1DataFeeEth * ethUsdcPrice;
+      return {
+        gasSource: "historical-baseFeePerGas-plus-configured-l1-data-fee",
+        gasUsdc: l2GasFeeUsdc + l1DataFeeUsdc,
+        l2GasFeeUsdc,
+        l1DataFeeUsdc,
+        l2GasFeeEth: l2Eth,
+        l1DataFeeEth,
+        gasReliability: gasEstimateReliability(block),
+        gasAssumptions: [
+          "L2 execution fee uses historical block baseFeePerGas and configured rebalance gas units.",
+          "Base L1 data fee cannot be exactly reconstructed without the real transaction calldata and final L1 pricing fields.",
+          "Configured l1DataFeeEth is treated as an estimated historical cost input.",
+        ],
+      };
     }
 
     function gasEstimateReliability(block) {
@@ -309,16 +327,24 @@
         aeroBaseAmount: aeroAmounts.base,
         aeroHaircutAmount: aeroAmounts.haircut,
         aeroPrice,
-        aeroModel: "conservative",
-        aeroSource: "gauge-rewardInside-estimate",
+        aeroBase: aeroEvent.base,
+        aeroConservative: aeroEvent.conservative,
+        aeroImpactHaircut: aeroEvent.haircut,
+        aeroImpactModel: "counterfactual-conservative-haircut",
+        aeroImpactAssumption: `haircut = min(position share, ${fmtNumber(AERO_IMPACT_HAIRCUT_MAX * 100, 2)}%) applied to reconstructed AERO rewards`,
+        aeroModel: "conservative-scenario",
+        aeroSource: "gauge-rewardInside-reconstructed",
+        aeroSourceLabel: "counterfactual-adjusted",
         aeroReliability: state.sim.aeroPriceReliability,
         lpFeesWeth: lpFeeEvent.weth,
         lpFeesUsdc: lpFeeEvent.usdc,
         lpFeesUsdcValue: lpFeeEvent.usdcValue,
         lpFeesTotalUsdc: lpFeeTotalsAfter.usdcValue,
         lpFeesSource: lpFeeEstimate.source,
+        lpFeesSourceLabel: lpFeeEstimate.sourceLabel || "counterfactual-adjusted",
         lpFeesReliability: lpFeeEstimate.reliability,
         lpFeesSwapCount: lpFeeEstimate.swapCount,
+        lpFeesRangeCrossed: Boolean(lpFeeEstimate.rangeCrossed),
         reliability: reliability.score,
         reliabilityDetails: reliabilityDetailsText(reliability.parts),
         impactDetails: impactRiskDetails(rewardState, aeroPrice, aeroEvent),
@@ -333,6 +359,7 @@
       const oldSpanTicks = Math.max(AERODROME_TICK_SPACING, oldTickUpper - oldTickLower);
       const exitPrice = priceFromSqrtX96(exit.sqrtPriceX96);
       const rewardState = await readRewardInside(block.number, oldTickLower, oldTickUpper);
+      rewardState.rangeCrossed = true;
       const aeroPrice = await getAeroPrice(block.number);
       ensureActiveSimulation(runToken);
       const previousAeroAmounts = {
@@ -378,7 +405,8 @@
       if (excessUsdc > 0) swap = { direction: "USDC_TO_WETH", amount: excessUsdc };
       const swapQuote = await estimateHistoricalSwap(swap, exitPrice, block.number);
       ensureActiveSimulation(runToken);
-      const gasUsdc = estimateRebalanceGasUsdc(block, exitPrice);
+      const gasDetails = estimateRebalanceGasDetails(block, exitPrice);
+      const gasUsdc = gasDetails.gasUsdc;
       const automationFeeUsdc = grossCapital * REBALANCE_MANUAL_FEE_BPS / 10000;
       const totalCostUsdc = swapQuote.lossUsdc + gasUsdc + automationFeeUsdc;
       const netCapital = Math.max(0, grossCapital - totalCostUsdc);
@@ -424,16 +452,24 @@
         aeroBaseAmount: aeroAmounts.base,
         aeroHaircutAmount: aeroAmounts.haircut,
         aeroPrice,
-        aeroModel: "conservative",
-        aeroSource: "gauge-rewardInside-estimate",
+        aeroBase: aeroEvent.base,
+        aeroConservative: aeroEvent.conservative,
+        aeroImpactHaircut: aeroEvent.haircut,
+        aeroImpactModel: "counterfactual-conservative-haircut",
+        aeroImpactAssumption: `haircut = min(position share, ${fmtNumber(AERO_IMPACT_HAIRCUT_MAX * 100, 2)}%) applied to reconstructed AERO rewards`,
+        aeroModel: "conservative-scenario",
+        aeroSource: "gauge-rewardInside-reconstructed",
+        aeroSourceLabel: "counterfactual-adjusted",
         aeroReliability: state.sim.aeroPriceReliability,
         lpFeesWeth: lpFeeEvent.weth,
         lpFeesUsdc: lpFeeEvent.usdc,
         lpFeesUsdcValue: lpFeeEvent.usdcValue,
         lpFeesTotalUsdc: lpFeeTotalsAfter.usdcValue,
         lpFeesSource: lpFeeEstimate.source,
+        lpFeesSourceLabel: lpFeeEstimate.sourceLabel || "counterfactual-adjusted",
         lpFeesReliability: lpFeeEstimate.reliability,
         lpFeesSwapCount: lpFeeEstimate.swapCount,
+        lpFeesRangeCrossed: Boolean(lpFeeEstimate.rangeCrossed),
         reliability: reliability.score,
         reliabilityDetails: reliabilityDetailsText(reliability.parts),
         impactDetails,
@@ -445,10 +481,18 @@
           newTickUpper,
           swapDirection: swap.direction,
           swapSource: swapQuote.source,
-          swapIsFallback: swapQuote.source.startsWith("fallback"),
+          swapSourceLabel: swapQuote.sourceLabel || (swapQuote.source === "fallback" ? "fallback" : "reconstructed-onchain"),
+          swapIsFallback: swapQuote.source === "fallback" || swapQuote.source.startsWith("fallback"),
           fallbackSlippageBps: REBALANCE_FALLBACK_SLIPPAGE_BPS,
+          quoteFailureReason: swapQuote.failureReason || "",
+          quoteAttempts: swapQuote.quoteAttempts || 0,
           swapLossUsdc: swapQuote.lossUsdc,
           gasUsdc,
+          gasSource: gasDetails.gasSource,
+          l2GasFeeUsdc: gasDetails.l2GasFeeUsdc,
+          l1DataFeeUsdc: gasDetails.l1DataFeeUsdc,
+          gasReliability: gasDetails.gasReliability,
+          gasAssumptions: gasDetails.gasAssumptions,
           gasUnits: Number(REBALANCE_GAS_UNITS),
           l1DataFeeEth: REBALANCE_L1_DATA_FEE_ETH,
           automationFeeUsdc,

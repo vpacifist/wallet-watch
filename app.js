@@ -122,6 +122,7 @@ const REBALANCE_MANUAL_FEE_BPS = Number(RUNTIME_CONFIG.rebalanceManualFeeBps ?? 
 const REBALANCE_GAS_UNITS = BigInt(RUNTIME_CONFIG.rebalanceGasUnits ?? 1450000);
 const REBALANCE_L1_DATA_FEE_ETH = Number(RUNTIME_CONFIG.rebalanceL1DataFeeEth ?? 0.000012);
 const REBALANCE_FALLBACK_SLIPPAGE_BPS = Number(RUNTIME_CONFIG.rebalanceFallbackSlippageBps ?? 5);
+const AERO_IMPACT_HAIRCUT_MAX = Number(RUNTIME_CONFIG.aeroImpactHaircutMax ?? 0.5);
 const BASE_RPC_URLS = ["/rpc"];
 const SERVER_SIMULATION_MODE = !new URLSearchParams(window.location.search).has("local-sim");
 let baseRpcIndex = 0;
@@ -218,6 +219,8 @@ const {
   feeGrowthInsideFromState,
   growthDeltaIn256,
   applyGrowthDelta,
+  normalizeSourceLabel,
+  findBlockAtOrAfterWithGetter,
   sqrtPriceX96ForPrice,
   startOfUtcDay,
   tickRangeAroundTick,
@@ -324,39 +327,14 @@ async function latestBlockNumber() {
 }
 
 async function findBlockAtOrAfter(timestampSeconds, afterBlock = 1) {
-  const cached = state.sim.blockCache.get(timestampSeconds);
-  if (cached) return cached;
-
-  let estimate = BASE_BLOCK_ANCHOR.number + Math.round((timestampSeconds - BASE_BLOCK_ANCHOR.timestamp) / BASE_SECONDS_PER_BLOCK);
-  estimate = Math.max(1, estimate);
-  let estimatedBlock = await getBlock(estimate);
-  let low = Math.max(1, estimate - 240);
-  let high = estimate + 240;
-  if (estimatedBlock.timestamp < timestampSeconds) {
-    low = estimate + 1;
-    high = estimate + 240;
-    while ((await getBlock(high)).timestamp < timestampSeconds) {
-      low = high + 1;
-      high += 240;
-    }
-  } else {
-    high = estimate;
-    low = Math.max(1, estimate - 240);
-    while (low > 1 && (await getBlock(low)).timestamp >= timestampSeconds) {
-      high = low;
-      low = Math.max(1, low - 240);
-    }
-  }
-  low = Math.max(low, afterBlock);
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2);
-    const block = await getBlock(mid);
-    if (block.timestamp < timestampSeconds) low = mid + 1;
-    else high = mid;
-  }
-  const result = await getBlock(low);
-  state.sim.blockCache.set(timestampSeconds, result);
-  return result;
+  return await findBlockAtOrAfterWithGetter({
+    timestampSeconds,
+    afterBlock,
+    anchor: BASE_BLOCK_ANCHOR,
+    secondsPerBlock: BASE_SECONDS_PER_BLOCK,
+    getBlock,
+    cache: state.sim.blockCache,
+  });
 }
 
 function decodeSlot0(data) {
@@ -501,12 +479,7 @@ async function getAeroPrice(blockNumber) {
 
 async function findSwapExit(fromBlock, toBlock, tickLower, tickUpper) {
   if (toBlock < fromBlock) return null;
-  const logs = await rpcCall("eth_getLogs", [{
-    address: POOL_ADDRESS,
-    fromBlock: blockTag(fromBlock),
-    toBlock: blockTag(toBlock),
-    topics: [SWAP_TOPIC],
-  }]);
+  const logs = await getSwapLogs(fromBlock, toBlock);
   for (const log of logs) {
     const tick = Number(toSignedWord(wordAt(log.data, 4)));
     if (tick < tickLower || tick >= tickUpper) {
@@ -519,6 +492,25 @@ async function findSwapExit(fromBlock, toBlock, tickLower, tickUpper) {
     }
   }
   return null;
+}
+
+async function getSwapLogs(fromBlock, toBlock) {
+  if (toBlock < fromBlock) return [];
+  const logs = await rpcCall("eth_getLogs", [{
+    address: POOL_ADDRESS,
+    fromBlock: blockTag(fromBlock),
+    toBlock: blockTag(toBlock),
+    topics: [SWAP_TOPIC],
+  }]);
+  return [...(logs || [])].sort((left, right) => {
+    const leftBlock = Number(BigInt(left.blockNumber));
+    const rightBlock = Number(BigInt(right.blockNumber));
+    if (leftBlock !== rightBlock) return leftBlock - rightBlock;
+    const leftTx = Number(BigInt(left.transactionIndex || "0x0"));
+    const rightTx = Number(BigInt(right.transactionIndex || "0x0"));
+    if (leftTx !== rightTx) return leftTx - rightTx;
+    return Number(BigInt(left.logIndex || "0x0")) - Number(BigInt(right.logIndex || "0x0"));
+  });
 }
 
 function decodeSwapLog(log) {
@@ -535,18 +527,34 @@ function decodeSwapLog(log) {
 
 async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
   if (toBlock < fromBlock || state.sim.liquidityRaw <= 0n) {
-    return { weth: 0, usdc: 0, usdcValue: 0, source: "no-block-range", reliability: 100, swapCount: 0 };
+    return { weth: 0, usdc: 0, usdcValue: 0, source: "no-block-range", sourceLabel: "exact-onchain", reliability: 100, swapCount: 0 };
   }
   if (rewardState.feeGrowthInside0X128 !== undefined && rewardState.feeGrowthInside1X128 !== undefined) {
+    let logs = [];
+    if (rewardState.rangeCrossed) {
+      try {
+        logs = await getSwapLogs(fromBlock, toBlock);
+      } catch (_) {
+        logs = [];
+      }
+    }
+    const inRangeLogs = logs.map(decodeSwapLog).filter((swap) => swap.tick >= state.sim.tickLower && swap.tick < state.sim.tickUpper);
+    const crossedRange = logs.some((log) => {
+      const swap = decodeSwapLog(log);
+      return swap.tick < state.sim.tickLower || swap.tick >= state.sim.tickUpper;
+    }) && inRangeLogs.length > 0;
     const delta0 = growthDeltaIn256(rewardState.feeGrowthInside0X128, state.sim.feeGrowthInside0Last);
     const delta1 = growthDeltaIn256(rewardState.feeGrowthInside1X128, state.sim.feeGrowthInside1Last);
     const activeNow = rewardState.tick >= state.sim.tickLower && rewardState.tick < state.sim.tickUpper
       ? rewardState.activeLiquidity
       : 0n;
     const previousActive = state.sim.feeDilutionLiquidityLast || 0n;
-    const baseLiquidity = activeNow > 0n && previousActive > 0n
+    const logLiquidity = inRangeLogs.reduce((sum, swap) => sum + (swap.liquidity > 0n ? swap.liquidity : 0n), 0n);
+    const logBaseLiquidity = inRangeLogs.length ? logLiquidity / BigInt(inRangeLogs.length) : 0n;
+    const endpointBaseLiquidity = activeNow > 0n && previousActive > 0n
       ? (activeNow + previousActive) / 2n
       : (activeNow > 0n ? activeNow : previousActive);
+    const baseLiquidity = logBaseLiquidity > 0n ? logBaseLiquidity : endpointBaseLiquidity;
     const fee0 = applyGrowthDelta({
       liquidityRaw: state.sim.liquidityRaw,
       growthDeltaX128: delta0,
@@ -566,18 +574,15 @@ async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
       weth: rawToWeth(fee0.raw),
       usdc: rawToUsdc(fee1.raw),
       usdcValue: rawToWeth(fee0.raw) * price + rawToUsdc(fee1.raw),
-      source: "feeGrowthInside-diluted",
-      reliability: baseLiquidity > 0n ? 92 : 76,
-      swapCount: null,
+      source: crossedRange ? "feeGrowthInside-subinterval-diluted" : "feeGrowthInside-diluted",
+      sourceLabel: "counterfactual-adjusted",
+      reliability: baseLiquidity > 0n ? (crossedRange ? 94 : 92) : 76,
+      swapCount: logs.length,
+      rangeCrossed: crossedRange,
       dilutionShare: Math.max(fee0.dilutionShare, fee1.dilutionShare),
     };
   }
-  const logs = await rpcCall("eth_getLogs", [{
-    address: POOL_ADDRESS,
-    fromBlock: blockTag(fromBlock),
-    toBlock: blockTag(toBlock),
-    topics: [SWAP_TOPIC],
-  }]);
+  const logs = await getSwapLogs(fromBlock, toBlock);
   let weth = 0;
   let usdc = 0;
   let swapCount = 0;
@@ -597,54 +602,74 @@ async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
     usdc,
     usdcValue: weth * price + usdc,
     source: "estimated-from-swap-logs",
+    sourceLabel: "estimated",
     reliability: swapCount ? 68 : 92,
     swapCount,
   };
 }
 
 async function quoteAerodromeSwap(tokenIn, tokenOut, amountInRaw, blockNumber) {
-  if (amountInRaw <= 0n) return null;
-  const data = `${SELECTORS.quoteExactInputSingle}${encodeAddress(tokenIn)}${encodeAddress(tokenOut)}${encodeUint256(AERODROME_TICK_SPACING)}${encodeUint256(amountInRaw)}${encodeUint256(0)}`;
-  try {
-    const result = await rpcCall("eth_call", [{ to: AERO_SLIPSTREAM_QUOTER, data }, blockTag(blockNumber)]);
-    return { amountOutRaw: hexToBigInt(`0x${wordAt(result, 0)}`), source: "aerodrome-quoter", reliability: 94 };
-  } catch (error) {
-    return null;
+  if (amountInRaw <= 0n) return { amountOutRaw: 0n, source: "no-swap", reliability: 100, sourceLabel: "exact-onchain" };
+  const validPair = new Set([tokenIn.toLowerCase(), tokenOut.toLowerCase()]);
+  if (!validPair.has(WETH_ADDRESS.toLowerCase()) || !validPair.has(USDC_ADDRESS.toLowerCase())) {
+    return { amountOutRaw: 0n, source: "invalid-token-pair", reliability: 0, sourceLabel: "fallback", failureReason: "token order/pair validation failed" };
   }
+  const data = `${SELECTORS.quoteExactInputSingle}${encodeAddress(tokenIn)}${encodeAddress(tokenOut)}${encodeUint256(AERODROME_TICK_SPACING)}${encodeUint256(amountInRaw)}${encodeUint256(0)}`;
+  let failureReason = "";
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const result = await rpcCall("eth_call", [{ to: AERO_SLIPSTREAM_QUOTER, data }, blockTag(blockNumber)]);
+      return { amountOutRaw: hexToBigInt(`0x${wordAt(result, 0)}`), source: "aerodrome-quoter", reliability: 94, sourceLabel: "reconstructed-onchain", attempts: attempt };
+    } catch (error) {
+      failureReason = error.message || "quoter eth_call failed";
+    }
+  }
+  return { amountOutRaw: 0n, source: "fallback", reliability: 50, sourceLabel: "fallback", failureReason, attempts: 2 };
+}
+
+function fallbackSwapQuote(swap, price, direction, failureReason) {
+  if (direction === "WETH_TO_USDC") {
+    const outputAmount = swap.amount * price * (1 - REBALANCE_FALLBACK_SLIPPAGE_BPS / 10000);
+    return { outputAmount, lossUsdc: swap.amount * price - outputAmount, source: "fallback", sourceLabel: "fallback", reliability: 50, failureReason };
+  }
+  const outputAmount = swap.amount / price * (1 - REBALANCE_FALLBACK_SLIPPAGE_BPS / 10000);
+  return { outputAmount, lossUsdc: swap.amount - outputAmount * price, source: "fallback", sourceLabel: "fallback", reliability: 50, failureReason };
 }
 
 async function estimateHistoricalSwap(swap, price, blockNumber) {
   if (swap.amount <= 0) {
-    return { outputAmount: 0, lossUsdc: 0, source: "no-swap", reliability: 100 };
+    return { outputAmount: 0, lossUsdc: 0, source: "no-swap", sourceLabel: "exact-onchain", reliability: 100 };
   }
   if (swap.direction === "WETH_TO_USDC") {
     const amountInRaw = rawWeth(swap.amount);
     const quote = await quoteAerodromeSwap(WETH_ADDRESS, USDC_ADDRESS, amountInRaw, blockNumber);
-    if (quote) {
+    if (quote.source !== "fallback") {
       const outputAmount = rawToUsdc(quote.amountOutRaw);
       return {
         outputAmount,
         lossUsdc: Math.max(0, swap.amount * price - outputAmount),
         source: quote.source,
+        sourceLabel: quote.sourceLabel,
         reliability: quote.reliability,
+        quoteAttempts: quote.attempts,
       };
     }
-    const outputAmount = swap.amount * price * (1 - REBALANCE_FALLBACK_SLIPPAGE_BPS / 10000);
-    return { outputAmount, lossUsdc: swap.amount * price - outputAmount, source: "fallback-5bps", reliability: 58 };
+    return fallbackSwapQuote(swap, price, "WETH_TO_USDC", quote.failureReason);
   }
   const amountInRaw = rawUsdc(swap.amount);
   const quote = await quoteAerodromeSwap(USDC_ADDRESS, WETH_ADDRESS, amountInRaw, blockNumber);
-  if (quote) {
+  if (quote.source !== "fallback") {
     const outputAmount = rawToWeth(quote.amountOutRaw);
     return {
       outputAmount,
       lossUsdc: Math.max(0, swap.amount - outputAmount * price),
       source: quote.source,
+      sourceLabel: quote.sourceLabel,
       reliability: quote.reliability,
+      quoteAttempts: quote.attempts,
     };
   }
-  const outputAmount = swap.amount / price * (1 - REBALANCE_FALLBACK_SLIPPAGE_BPS / 10000);
-  return { outputAmount, lossUsdc: swap.amount - outputAmount * price, source: "fallback-5bps", reliability: 58 };
+  return fallbackSwapQuote(swap, price, "USDC_TO_WETH", quote.failureReason);
 }
 
 async function buildRebalanceRow(index, exit, block, runToken = null) {
@@ -1458,20 +1483,40 @@ function simulationRowToRaw(row) {
     lpFeesUsdcValue: compactNumber(row.lpFeesUsdcValue, 6),
     lpFeesTotalUsdc: compactNumber(row.lpFeesTotalUsdc, 6),
     lpFeesSource: row.lpFeesSource || "",
+    lpFeesSourceLabel: normalizeSourceLabel(row.lpFeesSourceLabel || "counterfactual-adjusted"),
     lpFeesReliability: compactNumber(row.lpFeesReliability, 4),
     lpFeesSwapCount: row.lpFeesSwapCount || 0,
+    lpFeesRangeCrossed: Boolean(row.lpFeesRangeCrossed),
     aeroUsdc: compactNumber(row.aeroUsdc, 6),
     aeroTotalUsdc: compactNumber(row.aeroTotalUsdc, 6),
     aeroBaseUsdc: compactNumber(row.aeroBaseUsdc, 6),
     aeroHaircutUsdc: compactNumber(row.aeroHaircutUsdc, 6),
+    aeroBase: compactNumber(row.aeroBase, 6),
+    aeroConservative: compactNumber(row.aeroConservative, 6),
+    aeroImpactHaircut: compactNumber(row.aeroImpactHaircut, 6),
+    aeroImpactModel: row.aeroImpactModel || "counterfactual-conservative-haircut",
+    aeroImpactAssumption: row.aeroImpactAssumption || "",
     aeroAmount: compactNumber(row.aeroAmount, 10),
     aeroTotalAmount: compactNumber(row.aeroTotalAmount, 10),
     aeroBaseAmount: compactNumber(row.aeroBaseAmount, 10),
     aeroHaircutAmount: compactNumber(row.aeroHaircutAmount, 10),
     aeroPrice: compactNumber(row.aeroPrice, 8),
-    aeroModel: row.aeroModel || "conservative",
-    aeroSource: row.aeroSource || "gauge-rewardInside-estimate",
+    aeroModel: row.aeroModel || "conservative-scenario",
+    aeroSource: row.aeroSource || "gauge-rewardInside-reconstructed",
+    aeroSourceLabel: normalizeSourceLabel(row.aeroSourceLabel || "counterfactual-adjusted"),
     aeroReliability: compactNumber(row.aeroReliability ?? row.reliability, 4),
+    priceSourceLabel: "exact-onchain",
+    csvPriceSourceLabel: marketRow.missingCandle ? "estimated" : "heuristic",
+    csvOnchainDivergenceBps: Number.isFinite(marketRow.open) && Number.isFinite(row.price) && row.price > 0
+      ? compactNumber(Math.abs(marketRow.open / row.price - 1) * 10000, 4)
+      : null,
+    sourceLabels: Array.from(new Set([
+      "exact-onchain",
+      normalizeSourceLabel(row.lpFeesSourceLabel || "counterfactual-adjusted"),
+      normalizeSourceLabel(row.aeroSourceLabel || "counterfactual-adjusted"),
+      marketRow.missingCandle ? "estimated" : "heuristic",
+      row.rebalance?.swapIsFallback ? "fallback" : null,
+    ].filter(Boolean))),
     reliability: compactNumber(row.reliability, 4),
   };
   if (row.rebalance) {
@@ -1482,10 +1527,18 @@ function simulationRowToRaw(row) {
       newTickUpper: row.rebalance.newTickUpper,
       swapDirection: row.rebalance.swapDirection,
       swapSource: row.rebalance.swapSource,
+      swapSourceLabel: normalizeSourceLabel(row.rebalance.swapSourceLabel || (row.rebalance.swapIsFallback ? "fallback" : "reconstructed-onchain")),
       swapIsFallback: Boolean(row.rebalance.swapIsFallback),
       fallbackSlippageBps: compactNumber(row.rebalance.fallbackSlippageBps, 4),
+      quoteFailureReason: row.rebalance.quoteFailureReason || "",
+      quoteAttempts: row.rebalance.quoteAttempts || 0,
       swapLossUsdc: compactNumber(row.rebalance.swapLossUsdc, 6),
       gasUsdc: compactNumber(row.rebalance.gasUsdc, 6),
+      gasSource: row.rebalance.gasSource || "historical-baseFeePerGas-plus-configured-l1-data-fee",
+      l2GasFeeUsdc: compactNumber(row.rebalance.l2GasFeeUsdc, 6),
+      l1DataFeeUsdc: compactNumber(row.rebalance.l1DataFeeUsdc, 6),
+      gasReliability: compactNumber(row.rebalance.gasReliability, 4),
+      gasAssumptions: [...(row.rebalance.gasAssumptions || [])],
       gasUnits: row.rebalance.gasUnits || null,
       l1DataFeeEth: compactNumber(row.rebalance.l1DataFeeEth, 10),
       automationFeeUsdc: compactNumber(row.rebalance.automationFeeUsdc, 6),
@@ -1622,6 +1675,8 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   REBALANCE_MANUAL_FEE_BPS,
   REBALANCE_GAS_UNITS,
   REBALANCE_L1_DATA_FEE_ETH,
+  REBALANCE_FALLBACK_SLIPPAGE_BPS,
+  AERO_IMPACT_HAIRCUT_MAX,
   Q128,
   AERO_DECIMALS,
   recordSimulationStepDuration,
@@ -1825,6 +1880,17 @@ function createResultMetric(label, value) {
   return metric;
 }
 
+function simulationWarnings(rawRows = [], dataQuality = null) {
+  const warnings = new Set();
+  if (dataQuality?.missingMinutes > 0) warnings.add(`${dataQuality.missingMinutes} missing CSV minute(s) filled`);
+  if (rawRows.some((row) => row?.missingCandle)) warnings.add("missing candles present in raw rows");
+  if (rawRows.some((row) => row?.rebalance?.swapIsFallback)) warnings.add("rebalance swap fallback used");
+  if (rawRows.some((row) => (row?.csvOnchainDivergenceBps || 0) > 100)) warnings.add("CSV/on-chain price divergence above 100 bps");
+  if (rawRows.some((row) => row?.sourceLabels?.includes("estimated"))) warnings.add("estimated fields present");
+  if (rawRows.some((row) => row?.sourceLabels?.includes("heuristic"))) warnings.add("heuristic quality fields present");
+  return Array.from(warnings);
+}
+
 function renderResultTableRows(tableRows = []) {
   if (!resultTableBody || !resultTableWrap || !resultEmpty) return;
   resultTableBody.replaceChildren();
@@ -1872,12 +1938,15 @@ function renderSimulationResultView(simulation) {
     ].filter(Boolean).join(" · ");
   }
   if (resultSummary) {
+    const rawRows = simulation?.result?.rawRows || simulation?.progress?.rawRows || [];
+    const warnings = simulationWarnings(rawRows, simulation?.result?.dataQuality || simulation?.progress?.dataQuality || null);
     resultSummary.replaceChildren(
       createResultMetric("Status", simulation.status || "unknown"),
       createResultMetric("Rows", info.rows ? String(info.rows) : ""),
       createResultMetric("Position value", info.currentValue),
       createResultMetric("AERO earned", info.currentAero),
       createResultMetric("Elapsed", info.elapsed),
+      createResultMetric("Warnings", warnings.length ? warnings.join("; ") : "none"),
     );
   }
   if (resultLastRow) {

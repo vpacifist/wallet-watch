@@ -116,6 +116,31 @@ function testFeeGrowthInsideAccounting() {
   });
   assert.equal(belowRange.feeGrowthInside0X128, 300n, "below-range fee growth follows tick outside accounting");
   assert.equal(belowRange.feeGrowthInside1X128, 200n, "below-range token1 fee growth follows tick outside accounting");
+
+  const aboveRange = core.feeGrowthInsideFromState({
+    tickLower: -100,
+    tickUpper: 100,
+    tickCurrent: 200,
+    feeGrowthGlobal0X128: 1000n,
+    feeGrowthGlobal1X128: 2000n,
+    lowerTick: { feeGrowthOutside0X128: 100n, feeGrowthOutside1X128: 300n },
+    upperTick: { feeGrowthOutside0X128: 700n, feeGrowthOutside1X128: 1500n },
+  });
+  assert.equal(aboveRange.feeGrowthInside0X128, 600n, "above-range token0 fee growth follows tick outside accounting");
+  assert.equal(aboveRange.feeGrowthInside1X128, 1200n, "above-range token1 fee growth follows tick outside accounting");
+
+  const uint256 = 1n << 256n;
+  const wrapped = core.feeGrowthInsideFromState({
+    tickLower: -100,
+    tickUpper: 100,
+    tickCurrent: 0,
+    feeGrowthGlobal0X128: 5n,
+    feeGrowthGlobal1X128: 9n,
+    lowerTick: { feeGrowthOutside0X128: uint256 - 10n, feeGrowthOutside1X128: uint256 - 20n },
+    upperTick: { feeGrowthOutside0X128: 2n, feeGrowthOutside1X128: 3n },
+  });
+  assert.equal(wrapped.feeGrowthInside0X128, 13n, "fee growth inside should support uint256 wraparound");
+  assert.equal(wrapped.feeGrowthInside1X128, 26n, "token1 fee growth inside should support uint256 wraparound");
 }
 
 function testDilutedGrowthDelta() {
@@ -127,6 +152,40 @@ function testDilutedGrowthDelta() {
   });
   assert.equal(result.raw, 900n, "hypothetical liquidity should dilute fee/reward growth by added liquidity share");
   assert.equal(result.dilutionShare, 0.1, "dilution share should expose simulated share of post-add liquidity");
+
+  const zero = core.applyGrowthDelta({
+    liquidityRaw: 0n,
+    growthDeltaX128: 10n * (2n ** 128n),
+    baseLiquidityRaw: 900n,
+    q128: 2n ** 128n,
+  });
+  assert.equal(zero.raw, 0n, "zero liquidity should accrue no fee/reward growth");
+}
+
+async function testFindBlockAtOrAfter() {
+  const blocks = new Map([
+    [1, { number: 1, timestamp: 100 }],
+    [2, { number: 2, timestamp: 100 }],
+    [3, { number: 3, timestamp: 102 }],
+    [4, { number: 4, timestamp: 104 }],
+    [5, { number: 5, timestamp: 106 }],
+    [6, { number: 6, timestamp: 108 }],
+    [7, { number: 7, timestamp: 110 }],
+    [8, { number: 8, timestamp: 112 }],
+    [9, { number: 9, timestamp: 114 }],
+    [10, { number: 10, timestamp: 116 }],
+  ]);
+  const getBlock = async (number) => blocks.get(Math.max(1, Math.min(10, number)));
+  const options = {
+    anchor: { number: 3, timestamp: 102 },
+    secondsPerBlock: 2,
+    getBlock,
+  };
+  assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 102 })).number, 3, "exact timestamp should return matching block");
+  assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 99 })).number, 1, "before anchor should scan backward");
+  assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 111 })).number, 8, "after anchor should return first block at or after timestamp");
+  assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 100 })).number, 1, "duplicate timestamps should return first duplicate");
+  assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 100, afterBlock: 2 })).number, 2, "afterBlock should be part of lookup semantics");
 }
 
 testTickPriceRoundTrip();
@@ -137,3 +196,7 @@ testAeroUsdcPriceOrder();
 testDataQualitySummary();
 testFeeGrowthInsideAccounting();
 testDilutedGrowthDelta();
+testFindBlockAtOrAfter().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
