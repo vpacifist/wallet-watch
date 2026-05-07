@@ -59,6 +59,10 @@ PUBLIC_BASE_URL=https://your-railway-domain.up.railway.app
 MARKET_DATA_PATH=/data/market_data.sqlite
 SIM_DATA_PATH=/data/simulations.sqlite
 BASE_RPC_URLS=https://base.drpc.org,https://base.gateway.tenderly.co,https://mainnet.base.org,https://base.llamarpc.com
+MAX_RUNNING_SIMULATIONS=1
+MAX_SIMULATION_DAYS=31
+RPC_RATE_LIMIT_PER_MINUTE=300
+API_RATE_LIMIT_PER_MINUTE=60
 REBALANCE_MANUAL_FEE_BPS=1
 REBALANCE_GAS_UNITS=1450000
 REBALANCE_L1_DATA_FEE_ETH=0.000012
@@ -68,7 +72,16 @@ LP_FEE_RATE=0.0005
 
 Для постоянного хранения кеша и статусов между рестартами сервиса подключи Railway Volume в `/data`.
 
-Если деплой публичный, можно задать `ADMIN_API_TOKEN`. Тогда создание, отмена и удаление симуляций потребуют токен. В браузере при первом 401 приложение попросит токен и сохранит его в `localStorage`. Не коммить реальные токены и приватные RPC URL в репозиторий.
+Если деплой публичный, задай `ADMIN_API_TOKEN`. Тогда создание, отмена и удаление симуляций потребуют токен. В браузере при первом 401 приложение попросит токен и сохранит его в `localStorage`. Не коммить реальные токены и приватные RPC URL в репозиторий.
+
+Публичные лимиты задаются через env vars:
+
+- `MAX_RUNNING_SIMULATIONS=1` — одновременно считается только одна симуляция.
+- `MAX_SIMULATION_DAYS=31` — сервер отклоняет слишком длинные периоды.
+- `RPC_RATE_LIMIT_PER_MINUTE=300` — ограничение запросов к `/rpc` с одного IP.
+- `API_RATE_LIMIT_PER_MINUTE=60` — ограничение запросов к `/api/simulations` с одного IP.
+
+Финансовые defaults тоже настраиваются через env: AERO считается консервативно в текущей модели, fallback slippage для ребаланса — `REBALANCE_FALLBACK_SLIPPAGE_BPS=5`, операционная комиссия ребаланса — `REBALANCE_MANUAL_FEE_BPS=1`.
 
 Для проверки приватных RPC под исторические симуляции есть локальный benchmark:
 

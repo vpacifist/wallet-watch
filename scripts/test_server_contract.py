@@ -79,11 +79,20 @@ class ServerContractTests(unittest.TestCase):
       self.assertIn("lpFeeRate", params)
 
     def test_normalize_rejects_invalid_range(self):
-      with self.assertRaisesRegex(ValueError, "rangePct"):
+      with self.assertRaisesRegex(self.server.ApiError, "rangePct"):
         self.server.normalize_simulation_params({
             "start": "2026-02-01 00:00",
             "end": "2026-02-01 00:05",
             "rangePct": "100",
+        })
+
+    def test_normalize_rejects_period_over_limit(self):
+      self.server.MAX_SIMULATION_DAYS = 31
+      with self.assertRaisesRegex(self.server.ApiError, "limited to 31 days"):
+        self.server.normalize_simulation_params({
+            "start": "2026-02-01 00:00",
+            "end": "2026-03-10 00:00",
+            "rangePct": "1",
         })
 
     def test_admin_token_accepts_header_or_bearer(self):
@@ -101,6 +110,20 @@ class ServerContractTests(unittest.TestCase):
       handler.headers = FakeHeaders({"X-Admin-API-Token": "wrong"})
       self.assertFalse(handler.require_admin_token())
       self.assertEqual(sent[-1][0], 401)
+
+    def test_rate_limit_is_per_bucket_and_ip(self):
+      self.server.RATE_LIMITS.clear()
+      handler = object.__new__(self.server.Handler)
+      sent = []
+      handler.send_json = lambda status, payload: sent.append((status, payload))
+      handler.headers = FakeHeaders({})
+      handler.client_address = ("203.0.113.10", 12345)
+
+      self.assertTrue(handler.check_rate_limit("api", 2))
+      self.assertTrue(handler.check_rate_limit("api", 2))
+      self.assertFalse(handler.check_rate_limit("api", 2))
+      self.assertEqual(sent[-1][0], 429)
+      self.assertEqual(sent[-1][1]["code"], "rate_limit_exceeded")
 
     def test_progress_stream_persists_structured_rows(self):
       self.server.insert_simulation("sim-progress", {"start": "2026-02-01 00:00", "end": "2026-02-01 00:02"})

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import ctypes
+import datetime
 import http.server
 import json
 import os
@@ -12,11 +13,30 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections import defaultdict, deque
 from contextlib import contextmanager
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_dotenv(path):
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_dotenv(ROOT / ".env")
+
 DEFAULT_RPC_URLS = ["https://base.drpc.org", "https://base.gateway.tenderly.co", "https://mainnet.base.org", "https://base.llamarpc.com"]
 RPC_URLS = [url.strip() for url in os.environ.get("BASE_RPC_URLS", "").split(",") if url.strip()] or DEFAULT_RPC_URLS
 DATA_PATH = Path(os.environ.get("MARKET_DATA_PATH", ROOT / "output" / "market_data.sqlite"))
@@ -29,6 +49,10 @@ MAX_UPSTREAM_BATCH_SIZE = int(os.environ.get("MAX_UPSTREAM_BATCH_SIZE", "3"))
 MAX_EXACT_RESULT_BYTES = int(os.environ.get("MAX_EXACT_RESULT_BYTES", str(512 * 1024)))
 DEBUG_RPC_ERRORS = os.environ.get("DEBUG_RPC_ERRORS", "").lower() in {"1", "true", "yes", "on"}
 ADMIN_API_TOKEN = os.environ.get("ADMIN_API_TOKEN", "").strip()
+MAX_RUNNING_SIMULATIONS = int(os.environ.get("MAX_RUNNING_SIMULATIONS", "1"))
+MAX_SIMULATION_DAYS = float(os.environ.get("MAX_SIMULATION_DAYS", "31"))
+RPC_RATE_LIMIT_PER_MINUTE = int(os.environ.get("RPC_RATE_LIMIT_PER_MINUTE", "300"))
+API_RATE_LIMIT_PER_MINUTE = int(os.environ.get("API_RATE_LIMIT_PER_MINUTE", "60"))
 
 AERO_USDC_POOL = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1"
 AERO_PRICE_CACHE = {}
@@ -37,6 +61,8 @@ DB_LOCK = threading.Lock()
 SIM_LOCK = threading.Lock()
 RUNNING_SIMULATIONS = {}
 STATS_LOCK = threading.Lock()
+RATE_LIMIT_LOCK = threading.Lock()
+RATE_LIMITS = defaultdict(deque)
 STATS = {
     "requests": 0,
     "cache_hits": 0,
@@ -51,6 +77,14 @@ STATS = {
 }
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
+
+
+class ApiError(Exception):
+    def __init__(self, status, message, code=None):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.code = code or "api_error"
 
 
 @contextmanager
@@ -145,6 +179,26 @@ def init_simulations():
 
 def now_int():
     return int(time.time())
+
+
+def parse_simulation_time(value):
+    normalized = str(value).strip().replace(" ", "T")
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    if len(normalized) == 16:
+        normalized += ":00"
+    parsed = datetime.datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def active_running_simulations():
+    with SIM_LOCK:
+        stale = [simulation_id for simulation_id, process in RUNNING_SIMULATIONS.items() if process.poll() is not None]
+        for simulation_id in stale:
+            RUNNING_SIMULATIONS.pop(simulation_id, None)
+        return len(RUNNING_SIMULATIONS)
 
 
 def compact_simulation_payload(payload):
@@ -269,11 +323,25 @@ def normalize_simulation_params(payload):
     start = str(payload.get("start", "")).strip()
     end = str(payload.get("end", "")).strip()
     if len(start) < 16 or len(end) < 16:
-        raise ValueError("start and end are required")
+        raise ApiError(400, "start and end are required", "invalid_simulation_period")
+    try:
+        start_time = parse_simulation_time(start)
+        end_time = parse_simulation_time(end)
+    except ValueError as exc:
+        raise ApiError(400, f"invalid simulation date: {exc}", "invalid_simulation_period")
+    if end_time <= start_time:
+        raise ApiError(400, "end must be after start", "invalid_simulation_period")
+    days = (end_time - start_time).total_seconds() / (24 * 60 * 60)
+    if days > MAX_SIMULATION_DAYS:
+        raise ApiError(
+            400,
+            f"simulation period is limited to {MAX_SIMULATION_DAYS:g} days",
+            "simulation_period_too_long",
+        )
     deposit = str(payload.get("deposit", "10000")).strip() or "10000"
     range_pct = float(payload.get("rangePct", payload.get("range_pct", 1)))
     if range_pct <= 0 or range_pct >= 100:
-        raise ValueError("rangePct must be greater than 0 and less than 100")
+        raise ApiError(400, "rangePct must be greater than 0 and less than 100", "invalid_range_pct")
     timeout_seconds = int(payload.get("timeoutSeconds", 21600))
     return {
         "start": start,
@@ -338,6 +406,13 @@ def wait_for_simulation(simulation_id, process):
 
 
 def start_simulation_job(params):
+    running = active_running_simulations()
+    if running >= MAX_RUNNING_SIMULATIONS:
+        raise ApiError(
+            409,
+            f"simulation limit reached: {running} running, max {MAX_RUNNING_SIMULATIONS}",
+            "simulation_limit_reached",
+        )
     simulation_id = uuid.uuid4().hex
     insert_simulation(simulation_id, params)
     config = {
@@ -782,9 +857,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
+    def client_ip(self):
+        forwarded = self.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+        return forwarded or self.client_address[0]
+
+    def check_rate_limit(self, bucket, limit):
+        if limit <= 0:
+            return True
+        client_ip = self.client_ip()
+        if client_ip in {"127.0.0.1", "::1", "localhost"}:
+            return True
+        now = time.time()
+        key = (bucket, client_ip)
+        with RATE_LIMIT_LOCK:
+            hits = RATE_LIMITS[key]
+            while hits and now - hits[0] >= 60:
+                hits.popleft()
+            if len(hits) >= limit:
+                retry_after = max(1, int(60 - (now - hits[0])))
+                self.send_json(
+                    429,
+                    {
+                        "error": f"rate limit exceeded for {bucket}",
+                        "code": "rate_limit_exceeded",
+                        "retryAfterSeconds": retry_after,
+                    },
+                )
+                return False
+            hits.append(now)
+        return True
+
+    def check_api_rate_limit(self):
+        return self.check_rate_limit("api", API_RATE_LIMIT_PER_MINUTE)
+
+    def check_rpc_rate_limit(self):
+        return self.check_rate_limit("rpc", RPC_RATE_LIMIT_PER_MINUTE)
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/simulations":
+            if not self.check_api_rate_limit():
+                return
             if not self.require_admin_token():
                 return
             try:
@@ -794,11 +907,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 params = normalize_simulation_params(payload)
                 result = start_simulation_job(params)
                 self.send_json(202, result)
+            except ApiError as exc:
+                self.send_json(exc.status, {"error": exc.message, "code": exc.code})
             except Exception as exc:
                 self.send_json(400, {"error": str(exc)})
             return
 
         if parsed.path.startswith("/api/simulations/") and parsed.path.endswith("/cancel"):
+            if not self.check_api_rate_limit():
+                return
             if not self.require_admin_token():
                 return
             simulation_id = parsed.path.split("/")[-2]
@@ -811,6 +928,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if self.path != "/rpc":
             self.send_error(404)
+            return
+        if not self.check_rpc_rate_limit():
             return
 
         length = int(self.headers.get("content-length", "0"))
@@ -847,14 +966,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(200, {"ok": True, "status": "healthy", "time": now_int()})
             return
         if parsed.path == "/api/simulations":
+            if not self.check_api_rate_limit():
+                return
             params = urllib.parse.parse_qs(parsed.query)
             limit = params.get("limit", ["20"])[0]
             self.send_json(200, {"items": list_simulations(limit)})
             return
         if parsed.path == "/api/simulations/latest":
+            if not self.check_api_rate_limit():
+                return
             self.send_json(200, get_latest_simulation() or {})
             return
         if parsed.path.startswith("/api/simulations/"):
+            if not self.check_api_rate_limit():
+                return
             if not self.require_admin_token():
                 return
             simulation_id = parsed.path.rsplit("/", 1)[-1]
@@ -885,6 +1010,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path.startswith("/api/simulations/"):
+            if not self.check_api_rate_limit():
+                return
             if not self.require_admin_token():
                 return
             simulation_id = parsed.path.rsplit("/", 1)[-1]

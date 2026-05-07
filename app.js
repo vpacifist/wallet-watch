@@ -1541,8 +1541,16 @@ async function fetchJson(url, options = {}) {
       return await fetchJson(url, options);
     }
   }
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return await response.json();
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = payload?.error || payload?.message || `HTTP ${response.status}`;
+    const error = new Error(detail);
+    error.status = response.status;
+    error.code = payload?.code || "";
+    error.retryAfterSeconds = payload?.retryAfterSeconds || 0;
+    throw error;
+  }
+  return payload;
 }
 
 function isServerSimulationTerminal(status) {
