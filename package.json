@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "start": "python3 scripts/serve_with_rpc.py",
-    "test": "node scripts/test_simulation_worker.js"
+    "test": "node scripts/test_core_regressions.js && python scripts/test_server_contract.py && node scripts/test_simulation_worker.js"
   },
   "engines": {
     "node": ">=22"

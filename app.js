@@ -157,6 +157,7 @@ const serverSimulation = {
   available: SERVER_SIMULATION_MODE,
   jobs: [],
   rawRows: [],
+  startedAtMs: 0,
 };
 const appTabs = {
   active: "new",
@@ -167,6 +168,7 @@ const {
   addUtcDays,
   addUtcHours,
   addressFromWord,
+  analyzeDataQuality: analyzeRowsDataQuality,
   aeroPriceReliability,
   aeroUsdcPriceFromSqrtX96,
   blockTag,
@@ -207,6 +209,7 @@ const {
   scoreFromThresholds,
   sqrtPriceX96ForPrice,
   startOfUtcDay,
+  tickRangeAroundTick,
   tickForPrice,
   toSignedWord,
   wordAt,
@@ -1073,51 +1076,50 @@ function rowIndexForTimestamp(timestamp, mode = "nearest") {
 }
 
 function analyzeDataQuality(rows) {
-  if (!rows.length) {
-    return { rowCount: 0, gapCount: 0, missingMinutes: 0, maxGapMinutes: 0, firstTime: "", lastTime: "" };
-  }
-  let gapCount = 0;
-  let missingMinutes = 0;
-  let maxGapMinutes = 0;
-  let previous = rowTimestampMs(rows[0]);
-  for (let index = 1; index < rows.length; index += 1) {
-    const current = rowTimestampMs(rows[index]);
-    const gapMinutes = Math.round((current - previous) / (60 * 1000));
-    if (gapMinutes > 1) {
-      gapCount += 1;
-      missingMinutes += gapMinutes - 1;
-      if (gapMinutes > maxGapMinutes) maxGapMinutes = gapMinutes;
-    }
-    previous = current;
-  }
-  return {
-    rowCount: rows.length,
-    gapCount,
-    missingMinutes,
-    maxGapMinutes,
-    firstTime: rows[0].time,
-    lastTime: rows[rows.length - 1].time,
-  };
+  return analyzeRowsDataQuality(rows);
 }
 
 function dataQualityStatus(quality) {
   if (!quality || !quality.rowCount) return "CSV загружен";
+  const source = quality.source ? `${quality.source.replace(/^\.\//, "")} · ` : "";
   const grid = quality.minuteRowCount && quality.minuteRowCount !== quality.rowCount
     ? ` · сетка ${quality.minuteRowCount.toLocaleString("en-US")} мин`
     : "";
-  if (!quality.gapCount) return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, без пропусков${grid}`;
-  return `CSV загружен · ${quality.rowCount.toLocaleString("en-US")} строк, пропущено ${quality.missingMinutes.toLocaleString("en-US")} мин${grid}`;
+  const issueCount = (quality.gapCount || 0)
+    + (quality.duplicateTimestampCount || 0)
+    + (quality.outOfOrderCount || 0)
+    + (quality.invalidPriceCount || 0)
+    + (quality.zeroPriceCount || 0)
+    + (quality.emptyVolumeCount || 0);
+  if (!issueCount) return `CSV загружен · ${source}${quality.rowCount.toLocaleString("en-US")} строк, без проблем${grid}`;
+  const parts = [];
+  if (quality.gapCount) parts.push(`пропущено ${quality.missingMinutes.toLocaleString("en-US")} мин`);
+  if (quality.duplicateTimestampCount) parts.push(`дубликаты ${quality.duplicateTimestampCount.toLocaleString("en-US")}`);
+  if (quality.invalidPriceCount || quality.zeroPriceCount) parts.push(`плохие цены ${(quality.invalidPriceCount + quality.zeroPriceCount).toLocaleString("en-US")}`);
+  if (quality.emptyVolumeCount) parts.push(`пустой volume ${quality.emptyVolumeCount.toLocaleString("en-US")}`);
+  return `CSV загружен · ${source}${quality.rowCount.toLocaleString("en-US")} строк, ${parts.join(", ")}${grid}`;
 }
 
 function dataQualityTitle(quality) {
   if (!quality || !quality.rowCount) return "";
-  if (!quality.gapCount) return "Поминутная сетка без обнаруженных разрывов.";
-  return [
-    `Найдено ${quality.gapCount.toLocaleString("en-US")} разрывов в CSV.`,
-    `Всего пропущено ${quality.missingMinutes.toLocaleString("en-US")} минут.`,
-    `Максимальный разрыв: ${quality.maxGapMinutes} мин.`,
-    "Симуляция идет по полной минутной сетке; пропущенные свечи помечаются quality flag и считаются по on-chain state.",
-  ].join(" ");
+  const details = [];
+  if (quality.source) details.push(`Источник: ${quality.source}.`);
+  if (quality.firstTime && quality.lastTime) details.push(`Период: ${fmtInputTime(quality.firstTime)} - ${fmtInputTime(quality.lastTime)} UTC.`);
+  if (quality.minuteRowCount) details.push(`Поминутная сетка: ${quality.minuteRowCount.toLocaleString("en-US")} строк.`);
+  if (quality.gapCount) {
+    details.push(
+      `Найдено ${quality.gapCount.toLocaleString("en-US")} разрывов в CSV.`,
+      `Всего пропущено ${quality.missingMinutes.toLocaleString("en-US")} минут.`,
+      `Максимальный разрыв: ${quality.maxGapMinutes} мин.`,
+      "Симуляция идет по полной минутной сетке; пропущенные свечи помечаются quality flag и считаются по on-chain state.",
+    );
+  }
+  if (quality.duplicateTimestampCount) details.push(`Дубликаты timestamp: ${quality.duplicateTimestampCount.toLocaleString("en-US")}.`);
+  if (quality.outOfOrderCount) details.push(`Строки не по порядку: ${quality.outOfOrderCount.toLocaleString("en-US")}.`);
+  if (quality.invalidPriceCount) details.push(`Некорректные price-поля: ${quality.invalidPriceCount.toLocaleString("en-US")}.`);
+  if (quality.zeroPriceCount) details.push(`Нулевые или отрицательные price-поля: ${quality.zeroPriceCount.toLocaleString("en-US")}.`);
+  if (quality.emptyVolumeCount) details.push(`Пустой или некорректный volume: ${quality.emptyVolumeCount.toLocaleString("en-US")}.`);
+  return details.length ? details.join(" ") : "Поминутная сетка без обнаруженных проблем.";
 }
 
 function formatDuration(ms) {
@@ -1380,6 +1382,9 @@ function simulationRowToRaw(row) {
     aeroBaseAmount: compactNumber(row.aeroBaseAmount, 10),
     aeroHaircutAmount: compactNumber(row.aeroHaircutAmount, 10),
     aeroPrice: compactNumber(row.aeroPrice, 8),
+    aeroModel: row.aeroModel || "conservative",
+    aeroSource: row.aeroSource || "gauge-rewardInside-estimate",
+    aeroReliability: compactNumber(row.aeroReliability ?? row.reliability, 4),
     reliability: compactNumber(row.reliability, 4),
   };
   if (row.rebalance) {
@@ -1390,9 +1395,14 @@ function simulationRowToRaw(row) {
       newTickUpper: row.rebalance.newTickUpper,
       swapDirection: row.rebalance.swapDirection,
       swapSource: row.rebalance.swapSource,
+      swapIsFallback: Boolean(row.rebalance.swapIsFallback),
+      fallbackSlippageBps: compactNumber(row.rebalance.fallbackSlippageBps, 4),
       swapLossUsdc: compactNumber(row.rebalance.swapLossUsdc, 6),
       gasUsdc: compactNumber(row.rebalance.gasUsdc, 6),
+      gasUnits: row.rebalance.gasUnits || null,
+      l1DataFeeEth: compactNumber(row.rebalance.l1DataFeeEth, 10),
       automationFeeUsdc: compactNumber(row.rebalance.automationFeeUsdc, 6),
+      automationFeeBps: compactNumber(row.rebalance.automationFeeBps, 4),
       totalCostUsdc: compactNumber(row.rebalance.totalCostUsdc, 6),
       quoteOutputAmount: compactNumber(row.rebalance.quoteOutputAmount, 10),
       quoteReliability: compactNumber(row.rebalance.quoteReliability, 4),
@@ -1411,9 +1421,11 @@ function getSimulationDataQuality() {
 
 function simulationRawRowToCells(row) {
   if (!row || typeof row !== "object") return [];
+  const eventParts = [row.missingCandle ? `${row.event} · missing candle` : row.event];
+  if (row.rebalance?.swapIsFallback) eventParts.push("swap fallback");
   return [
     row.time ? fmtInputTime(row.time) : "",
-    row.missingCandle ? `${row.event} · missing candle` : row.event,
+    eventParts.filter(Boolean).join(" · "),
     fmtUsdc(row.value),
     fmtPrice(row.price),
     fmtNumber(row.weth, 8),
@@ -1428,7 +1440,7 @@ function renderSimulationTable(scrollToLatest = false) {
   simTableBody.innerHTML = state.sim.rows.map((row) => `
     <tr data-index="${row.index}" class="${row.index === state.sim.activeRowIndex ? "activeRow" : ""}" title="${simulationRowTitle(row)}">
       <td>${fmtInputTime(state.rows[row.index]?.time || "")}</td>
-      <td>${row.event}</td>
+      <td>${[row.event, row.rebalance?.swapIsFallback ? "swap fallback" : ""].filter(Boolean).join(" · ")}</td>
       <td>${fmtUsdc(row.value)}</td>
       <td>${fmtPrice(row.price)}</td>
       <td>${fmtNumber(row.weth, 8)}</td>
@@ -1509,6 +1521,7 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   priceForTick,
   priceFromSqrtX96,
   computePositionPlanForRange,
+  tickRangeAroundTick,
   estimateHistoricalSwap,
   rewardStateReliability,
   blockTimeReliability,
@@ -1545,8 +1558,16 @@ async function fetchJson(url, options = {}) {
       return await fetchJson(url, options);
     }
   }
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return await response.json();
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    const detail = payload?.error || payload?.message || `HTTP ${response.status}`;
+    const error = new Error(detail);
+    error.status = response.status;
+    error.code = payload?.code || "";
+    error.retryAfterSeconds = payload?.retryAfterSeconds || 0;
+    throw error;
+  }
+  return payload;
 }
 
 function isServerSimulationTerminal(status) {
@@ -1571,12 +1592,44 @@ function serverSimulationText(simulation) {
   };
 }
 
+function formatStopwatch(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const restSeconds = total % 60;
+  const mm = String(minutes).padStart(2, "0");
+  const ss = String(restSeconds).padStart(2, "0");
+  return hours ? `${String(hours).padStart(2, "0")}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function serverElapsedSeconds(simulation) {
+  const progressElapsed = Number(simulation?.progress?.elapsedSeconds || simulation?.result?.elapsedSeconds || 0);
+  if (Number.isFinite(progressElapsed) && progressElapsed > 0) return Math.floor(progressElapsed);
+  if (!serverSimulation.startedAtMs && simulation?.created_at) {
+    serverSimulation.startedAtMs = simulation.created_at * 1000;
+  }
+  return serverSimulation.startedAtMs ? Math.floor((Date.now() - serverSimulation.startedAtMs) / 1000) : 0;
+}
+
+function serverProgressStage(simulation, info) {
+  const progress = simulation?.progress || {};
+  const rows = Number(info.rows || 0);
+  if (progress.type === "retry_wait") return `RPC временно недоступен, жду ${progress.waitSeconds || "?"} сек перед повтором`;
+  if (progress.type === "retry_resume") return "возобновляю расчет после RPC retry";
+  if (progress.type === "started") return "воркер открыл локальную страницу и запустил расчет";
+  if (rows <= 0) return info.notice || "инициализация: читаю historical state Base RPC, slot0, reward state и цену AERO";
+  return info.lastRow ? `последняя строка: ${info.lastRow}` : (info.notice || "считаю следующую строку");
+}
+
 function applyServerRawProgress(simulation) {
   if (!SERVER_SIMULATION_MODE) return;
   const progress = simulation?.progress || {};
   const resultRows = simulation?.result?.rawRows;
+  const progressRows = progress.rawRows;
   if (Array.isArray(resultRows)) {
     serverSimulation.rawRows = resultRows;
+  } else if (Array.isArray(progressRows)) {
+    serverSimulation.rawRows = progressRows;
   } else if (Array.isArray(progress.newRawRows) && progress.newRawRows.length) {
     const byKey = new Map(serverSimulation.rawRows.map((row) => [`${row.index}:${row.blockNumber}:${row.event}`, row]));
     progress.newRawRows.forEach((row) => byKey.set(`${row.index}:${row.blockNumber}:${row.event}`, row));
@@ -1743,7 +1796,8 @@ function renderSimulationResultView(simulation) {
   if (resultLastRow) {
     resultLastRow.textContent = info.notice;
   }
-  renderResultTableRows(simulation?.result?.rawRows || simulation?.result?.tableRows || []);
+  const liveRows = simulation?.id === serverSimulation.id ? serverSimulation.rawRows : [];
+  renderResultTableRows(simulation?.result?.rawRows || simulation?.result?.tableRows || liveRows || []);
 }
 
 function openSimulationResultTab(simulation) {
@@ -1894,13 +1948,16 @@ function renderServerSimulation(simulation) {
   serverSimulation.id = simulation.id;
   serverSimulation.running = !isServerSimulationTerminal(simulation.status);
   if (!serverSimulation.running) serverSimulation.paused = false;
+  if (!serverSimulation.startedAtMs && simulation.created_at) serverSimulation.startedAtMs = simulation.created_at * 1000;
   applyServerRawProgress(simulation);
   const info = serverSimulationText(simulation);
+  const elapsedSeconds = serverElapsedSeconds(simulation);
+  const stage = serverProgressStage(simulation, info);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
   if (info.currentAero) currentAeroEarned.textContent = info.currentAero;
   setSimulationNotice({
-    status: serverSimulation.running ? "Симуляция считается на сервере." : `Серверная симуляция: ${simulation.status}.`,
-    details: [`rows ${info.rows}`, info.elapsed, info.notice].filter(Boolean).join(" — "),
+    status: `[${formatStopwatch(elapsedSeconds)}] ${serverSimulation.running ? "Симуляция считается на сервере." : `Серверная симуляция: ${simulation.status}.`}`,
+    details: [`rows ${info.rows}`, info.elapsed || formatDuration(elapsedSeconds * 1000), stage].filter(Boolean).join(" — "),
     estimate: "",
   });
   const index = serverSimulation.jobs.findIndex((item) => item.id === simulation.id);
@@ -1938,7 +1995,7 @@ function watchServerSimulation(id) {
   stopServerSimulationPolling();
   serverSimulation.paused = false;
   pollServerSimulation(id);
-  serverSimulation.pollTimer = setInterval(() => pollServerSimulation(id), 5000);
+  serverSimulation.pollTimer = setInterval(() => pollServerSimulation(id), 1000);
 }
 
 function pauseServerSimulation() {
@@ -2053,10 +2110,34 @@ async function startServerSimulation() {
     setSimulationNotice("Диапазон должен быть положительным числом меньше 100%.");
     return;
   }
+  resetSimulationRows();
   serverSimulation.running = true;
   serverSimulation.paused = false;
+  serverSimulation.startedAtMs = Date.now();
+  serverSimulation.rawRows = [];
+  if (state.rows.length) {
+    const startIndex = rowIndexForTimestamp(inputTimestamp, "atOrAfter");
+    const endIndex = rowIndexForTimestamp(endTimestamp, "atOrBefore");
+    if (endIndex <= startIndex) {
+      setSimulationNotice("Дата конца должна быть позже даты старта.");
+      serverSimulation.running = false;
+      updateSimulationControls();
+      return;
+    }
+    state.sim.startIndex = startIndex;
+    state.sim.endIndex = endIndex;
+    state.sim.currentIndex = startIndex;
+    simStartInput.value = fmtInputTime(state.rows[startIndex].time);
+    simEndInput.value = fmtInputTime(state.rows[endIndex].time);
+    zoomToSimulationRange(startIndex, endIndex);
+    draw();
+  }
   updateSimulationControls();
-  setSimulationNotice("Запускаю серверную симуляцию...");
+  setSimulationNotice({
+    status: "[00:00] Запускаю серверную симуляцию...",
+    details: "Передаю период на сервер и подготавливаю live-обновление строк.",
+    estimate: "",
+  });
   try {
     const simulation = await fetchJson("/api/simulations", {
       method: "POST",
@@ -2065,6 +2146,7 @@ async function startServerSimulation() {
         end: fmtInputTime(endTimestamp),
         deposit: String(depositUsdc),
         rangePct: rangePercent,
+        progressEverySeconds: 2,
       }),
     });
     renderServerSimulation(simulation);
@@ -2493,6 +2575,7 @@ fetch(CSV_FILE)
   .then((text) => {
     const csvRows = parseCsv(text);
     state.dataQuality = analyzeDataQuality(csvRows);
+    state.dataQuality.source = CSV_FILE;
     state.rows = buildCompleteMinuteRows(csvRows);
     state.dataQuality.minuteRowCount = state.rows.length;
     statusEl.textContent = dataQualityStatus(state.dataQuality);

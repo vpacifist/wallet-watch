@@ -239,6 +239,23 @@ function readRawRows(sandbox) {
   return sandbox.getSimulationRawRows();
 }
 
+function progressEvent(config, startedAt, state, rawRows, newRawRows, reason = "heartbeat") {
+  return {
+    type: "progress",
+    id: config.id,
+    reason,
+    elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
+    rows: state.rowCount,
+    button: state.button,
+    notice: state.notice,
+    lastRow: state.lastRow,
+    currentValue: state.currentValue,
+    currentAero: state.currentAero,
+    latestRawRow: rawRows.at(-1) || null,
+    newRawRows,
+  };
+}
+
 function readDataQuality(sandbox) {
   if (typeof sandbox.getSimulationDataQuality !== "function") return null;
   return sandbox.getSimulationDataQuality();
@@ -315,34 +332,45 @@ async function runSimulation(config, emit = () => {}) {
   });
 
   const startedAt = Date.now();
-  await sandbox.startSimulation();
+  let startSettled = false;
+  let startError = null;
+  const startPromise = sandbox.startSimulation()
+    .catch((error) => {
+      startError = error;
+    })
+    .finally(() => {
+      startSettled = true;
+    });
+  let lastStartHeartbeatAt = 0;
+  const progressEverySeconds = config.progressEverySeconds || 2;
+  while (!startSettled) {
+    await sleep(250);
+    const state = readUi(document);
+    const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
+    if (elapsedSeconds - lastStartHeartbeatAt >= progressEverySeconds) {
+      lastStartHeartbeatAt = elapsedSeconds;
+      emit(progressEvent(config, startedAt, state, readRawRows(sandbox), [], "initializing"));
+    }
+  }
+  await startPromise;
+  if (startError) throw startError;
   emit({ type: "started", id: config.id, ...readUi(document) });
 
-  let lastProgressAt = 0;
+  let lastHeartbeatAt = 0;
   let lastEmittedRawCount = 0;
   const timeoutMs = (config.timeoutSeconds || 21600) * 1000;
   while (Date.now() - startedAt < timeoutMs) {
-    await sleep(1000);
+    await sleep(250);
     const state = readUi(document);
     const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
-    if (elapsedSeconds - lastProgressAt >= (config.progressEverySeconds || 10)) {
-      lastProgressAt = elapsedSeconds;
-      const rawRows = readRawRows(sandbox);
+    const rawRows = readRawRows(sandbox);
+    if (rawRows.length > lastEmittedRawCount) {
       const newRawRows = rawRows.slice(lastEmittedRawCount);
       lastEmittedRawCount = rawRows.length;
-      emit({
-        type: "progress",
-        id: config.id,
-        elapsedSeconds,
-        rows: state.rowCount,
-        button: state.button,
-        notice: state.notice,
-        lastRow: state.lastRow,
-        currentValue: state.currentValue,
-        currentAero: state.currentAero,
-        latestRawRow: rawRows.at(-1) || null,
-        newRawRows,
-      });
+      emit(progressEvent(config, startedAt, state, rawRows, newRawRows, "new_rows"));
+    } else if (elapsedSeconds - lastHeartbeatAt >= progressEverySeconds) {
+      lastHeartbeatAt = elapsedSeconds;
+      emit(progressEvent(config, startedAt, state, rawRows, [], "heartbeat"));
     }
     if (state.notice.includes("Симуляция дошла до конца") || state.notice.includes("Симуляция дошла до даты конца")) {
       emit({

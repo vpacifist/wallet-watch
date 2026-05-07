@@ -13,6 +13,7 @@
       priceForTick,
       priceFromSqrtX96,
       computePositionPlanForRange,
+      tickRangeAroundTick,
       estimateHistoricalSwap,
       rewardStateReliability,
       blockTimeReliability,
@@ -287,6 +288,9 @@
         aeroBaseAmount: aeroAmounts.base,
         aeroHaircutAmount: aeroAmounts.haircut,
         aeroPrice,
+        aeroModel: "conservative",
+        aeroSource: "gauge-rewardInside-estimate",
+        aeroReliability: state.sim.aeroPriceReliability,
         lpFeesWeth: lpFeeEvent.weth,
         lpFeesUsdc: lpFeeEvent.usdc,
         lpFeesUsdcValue: lpFeeEvent.usdcValue,
@@ -305,9 +309,7 @@
       const previousRow = state.sim.rows.length ? state.sim.rows[state.sim.rows.length - 1] : null;
       const oldTickLower = state.sim.tickLower;
       const oldTickUpper = state.sim.tickUpper;
-      const oldAnchorTick = state.sim.anchorTick || Math.round((oldTickLower + oldTickUpper) / (2 * AERODROME_TICK_SPACING)) * AERODROME_TICK_SPACING;
-      const lowerDistance = Math.max(AERODROME_TICK_SPACING, oldAnchorTick - oldTickLower);
-      const upperDistance = Math.max(AERODROME_TICK_SPACING, oldTickUpper - oldAnchorTick);
+      const oldSpanTicks = Math.max(AERODROME_TICK_SPACING, oldTickUpper - oldTickLower);
       const exitPrice = priceFromSqrtX96(exit.sqrtPriceX96);
       const rewardState = await readRewardInside(block.number, oldTickLower, oldTickUpper);
       const aeroPrice = await getAeroPrice(block.number);
@@ -341,9 +343,11 @@
         usdc: lpFeeTotalsAfter.usdc - previousFeeTotals.usdc,
         usdcValue: lpFeeTotalsAfter.usdcValue - previousFeeTotals.usdcValue,
       };
-      const newAnchorTick = Math.floor(exit.tick / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
-      const newTickLower = newAnchorTick - lowerDistance;
-      const newTickUpper = newAnchorTick + upperDistance;
+      const {
+        tickLower: newTickLower,
+        tickUpper: newTickUpper,
+        anchorTick: newAnchorTick,
+      } = tickRangeAroundTick(exit.tick, oldSpanTicks);
       const grossCapital = oldAmounts.value;
       const targetGross = computePositionPlanForRange(grossCapital, exitPrice, newTickLower, newTickUpper, newAnchorTick);
       const excessWeth = oldAmounts.weth - targetGross.weth;
@@ -395,6 +399,9 @@
         aeroBaseAmount: aeroAmounts.base,
         aeroHaircutAmount: aeroAmounts.haircut,
         aeroPrice,
+        aeroModel: "conservative",
+        aeroSource: "gauge-rewardInside-estimate",
+        aeroReliability: state.sim.aeroPriceReliability,
         lpFeesWeth: lpFeeEvent.weth,
         lpFeesUsdc: lpFeeEvent.usdc,
         lpFeesUsdcValue: lpFeeEvent.usdcValue,
@@ -413,9 +420,14 @@
           newTickUpper,
           swapDirection: swap.direction,
           swapSource: swapQuote.source,
+          swapIsFallback: swapQuote.source.startsWith("fallback"),
+          fallbackSlippageBps: REBALANCE_FALLBACK_SLIPPAGE_BPS,
           swapLossUsdc: swapQuote.lossUsdc,
           gasUsdc,
+          gasUnits: Number(REBALANCE_GAS_UNITS),
+          l1DataFeeEth: REBALANCE_L1_DATA_FEE_ETH,
           automationFeeUsdc,
+          automationFeeBps: REBALANCE_MANUAL_FEE_BPS,
           totalCostUsdc,
           quoteOutputAmount: swapQuote.outputAmount,
           quoteReliability: swapQuote.reliability,

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import ctypes
+import datetime
 import http.server
 import json
 import os
@@ -12,10 +13,31 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from collections import defaultdict, deque
+from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def load_dotenv(path):
+    if not path.exists():
+        return
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_dotenv(ROOT / ".env")
+
 DEFAULT_RPC_URLS = ["https://base.drpc.org", "https://base.gateway.tenderly.co", "https://mainnet.base.org", "https://base.llamarpc.com"]
 RPC_URLS = [url.strip() for url in os.environ.get("BASE_RPC_URLS", "").split(",") if url.strip()] or DEFAULT_RPC_URLS
 DATA_PATH = Path(os.environ.get("MARKET_DATA_PATH", ROOT / "output" / "market_data.sqlite"))
@@ -28,6 +50,10 @@ MAX_UPSTREAM_BATCH_SIZE = int(os.environ.get("MAX_UPSTREAM_BATCH_SIZE", "3"))
 MAX_EXACT_RESULT_BYTES = int(os.environ.get("MAX_EXACT_RESULT_BYTES", str(512 * 1024)))
 DEBUG_RPC_ERRORS = os.environ.get("DEBUG_RPC_ERRORS", "").lower() in {"1", "true", "yes", "on"}
 ADMIN_API_TOKEN = os.environ.get("ADMIN_API_TOKEN", "").strip()
+MAX_RUNNING_SIMULATIONS = int(os.environ.get("MAX_RUNNING_SIMULATIONS", "1"))
+MAX_SIMULATION_DAYS = float(os.environ.get("MAX_SIMULATION_DAYS", "31"))
+RPC_RATE_LIMIT_PER_MINUTE = int(os.environ.get("RPC_RATE_LIMIT_PER_MINUTE", "300"))
+API_RATE_LIMIT_PER_MINUTE = int(os.environ.get("API_RATE_LIMIT_PER_MINUTE", "60"))
 
 AERO_USDC_POOL = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1"
 AERO_PRICE_CACHE = {}
@@ -36,6 +62,8 @@ DB_LOCK = threading.Lock()
 SIM_LOCK = threading.Lock()
 RUNNING_SIMULATIONS = {}
 STATS_LOCK = threading.Lock()
+RATE_LIMIT_LOCK = threading.Lock()
+RATE_LIMITS = defaultdict(deque)
 STATS = {
     "requests": 0,
     "cache_hits": 0,
@@ -52,9 +80,43 @@ ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 
 
+def redact_url(url):
+    parts = urlsplit(url)
+    query = urlencode([
+        (key, "..." if any(token in key.lower() for token in ["key", "token", "secret", "id"]) else value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+    ])
+    path_parts = [part for part in parts.path.split("/") if part]
+    redacted_path = parts.path
+    if path_parts and len(path_parts[-1]) >= 16:
+        redacted_path = "/" + "/".join([*path_parts[:-1], "..."])
+    netloc = parts.hostname or ""
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, redacted_path, query, ""))
+
+
+class ApiError(Exception):
+    def __init__(self, status, message, code=None):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+        self.code = code or "api_error"
+
+
+@contextmanager
+def sqlite_connection(path):
+    db = sqlite3.connect(path)
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
+
+
 def init_cache():
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(DATA_PATH) as db:
+    with sqlite_connection(DATA_PATH) as db:
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
         db.executescript(
@@ -109,7 +171,7 @@ def init_cache():
 
 def init_simulations():
     SIM_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(SIM_DATA_PATH) as db:
+    with sqlite_connection(SIM_DATA_PATH) as db:
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
         db.executescript(
@@ -134,6 +196,26 @@ def init_simulations():
 
 def now_int():
     return int(time.time())
+
+
+def parse_simulation_time(value):
+    normalized = str(value).strip().replace(" ", "T")
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    if len(normalized) == 16:
+        normalized += ":00"
+    parsed = datetime.datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def active_running_simulations():
+    with SIM_LOCK:
+        stale = [simulation_id for simulation_id, process in RUNNING_SIMULATIONS.items() if process.poll() is not None]
+        for simulation_id in stale:
+            RUNNING_SIMULATIONS.pop(simulation_id, None)
+        return len(RUNNING_SIMULATIONS)
 
 
 def compact_simulation_payload(payload):
@@ -175,7 +257,7 @@ def simulation_row_to_dict(row, compact=False):
 
 
 def get_simulation(simulation_id):
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         row = db.execute(
             """
             SELECT id, status, params_json, progress_json, result_json, error, pid,
@@ -189,7 +271,7 @@ def get_simulation(simulation_id):
 
 
 def get_latest_simulation():
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         row = db.execute(
             """
             SELECT id, status, params_json, progress_json, result_json, error, pid,
@@ -204,7 +286,7 @@ def get_latest_simulation():
 
 def list_simulations(limit=20):
     limit = max(1, min(int(limit or 20), 1000))
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         rows = db.execute(
             """
             SELECT id, status, params_json, progress_json, result_json, error, pid,
@@ -232,13 +314,13 @@ def update_simulation(simulation_id, **fields):
     assignments.append("updated_at = ?")
     values.append(now_int())
     values.append(simulation_id)
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         db.execute(f"UPDATE simulations SET {', '.join(assignments)} WHERE id = ?", values)
 
 
 def insert_simulation(simulation_id, params):
     timestamp = now_int()
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         db.execute(
             """
             INSERT INTO simulations (id, status, params_json, created_at, updated_at)
@@ -249,7 +331,7 @@ def insert_simulation(simulation_id, params):
 
 
 def delete_simulation(simulation_id):
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         cursor = db.execute("DELETE FROM simulations WHERE id = ?", (simulation_id,))
         return cursor.rowcount > 0
 
@@ -258,11 +340,25 @@ def normalize_simulation_params(payload):
     start = str(payload.get("start", "")).strip()
     end = str(payload.get("end", "")).strip()
     if len(start) < 16 or len(end) < 16:
-        raise ValueError("start and end are required")
+        raise ApiError(400, "start and end are required", "invalid_simulation_period")
+    try:
+        start_time = parse_simulation_time(start)
+        end_time = parse_simulation_time(end)
+    except ValueError as exc:
+        raise ApiError(400, f"invalid simulation date: {exc}", "invalid_simulation_period")
+    if end_time <= start_time:
+        raise ApiError(400, "end must be after start", "invalid_simulation_period")
+    days = (end_time - start_time).total_seconds() / (24 * 60 * 60)
+    if days > MAX_SIMULATION_DAYS:
+        raise ApiError(
+            400,
+            f"simulation period is limited to {MAX_SIMULATION_DAYS:g} days",
+            "simulation_period_too_long",
+        )
     deposit = str(payload.get("deposit", "10000")).strip() or "10000"
     range_pct = float(payload.get("rangePct", payload.get("range_pct", 1)))
     if range_pct <= 0 or range_pct >= 100:
-        raise ValueError("rangePct must be greater than 0 and less than 100")
+        raise ApiError(400, "rangePct must be greater than 0 and less than 100", "invalid_range_pct")
     timeout_seconds = int(payload.get("timeoutSeconds", 21600))
     return {
         "start": start,
@@ -270,13 +366,45 @@ def normalize_simulation_params(payload):
         "deposit": deposit,
         "rangePct": range_pct,
         "timeoutSeconds": timeout_seconds,
-        "progressEverySeconds": int(payload.get("progressEverySeconds", 10)),
+        "progressEverySeconds": int(payload.get("progressEverySeconds", 2)),
         "rebalanceManualFeeBps": float(payload.get("rebalanceManualFeeBps", os.environ.get("REBALANCE_MANUAL_FEE_BPS", "1"))),
         "rebalanceGasUnits": int(payload.get("rebalanceGasUnits", os.environ.get("REBALANCE_GAS_UNITS", "1450000"))),
         "rebalanceL1DataFeeEth": float(payload.get("rebalanceL1DataFeeEth", os.environ.get("REBALANCE_L1_DATA_FEE_ETH", "0.000012"))),
         "rebalanceFallbackSlippageBps": float(payload.get("rebalanceFallbackSlippageBps", os.environ.get("REBALANCE_FALLBACK_SLIPPAGE_BPS", "5"))),
         "lpFeeRate": float(payload.get("lpFeeRate", os.environ.get("LP_FEE_RATE", "0.0005"))),
     }
+
+
+def progress_row_key(row):
+    if not isinstance(row, dict):
+        return json.dumps(row, sort_keys=True, ensure_ascii=False)
+    return ":".join(str(row.get(key, "")) for key in ("index", "blockNumber", "event"))
+
+
+def merge_simulation_progress(simulation_id, event):
+    current = get_simulation(simulation_id) or {}
+    previous = current.get("progress") if isinstance(current.get("progress"), dict) else {}
+    merged = dict(event)
+    existing_rows = previous.get("rawRows") if isinstance(previous, dict) else []
+    rows_by_key = {}
+    if isinstance(existing_rows, list):
+        for row in existing_rows:
+            rows_by_key[progress_row_key(row)] = row
+    for key in ("rawRows", "newRawRows"):
+        rows = event.get(key)
+        if isinstance(rows, list):
+            for row in rows:
+                rows_by_key[progress_row_key(row)] = row
+    raw_rows = sorted(
+        rows_by_key.values(),
+        key=lambda row: row.get("index", 0) if isinstance(row, dict) else 0,
+    )
+    if raw_rows:
+        merged["rawRows"] = raw_rows
+        merged["rawRowCount"] = len(raw_rows)
+        merged["latestRawRow"] = event.get("latestRawRow") or raw_rows[-1]
+        merged["rows"] = max(int(event.get("rows") or 0), len(raw_rows))
+    return merged
 
 
 def stream_simulation_stdout(simulation_id, pipe):
@@ -301,7 +429,8 @@ def stream_simulation_stdout(simulation_id, pipe):
                 finished_at=now_int(),
             )
         else:
-            update_simulation(simulation_id, status="running", progress_json=json.dumps(event, ensure_ascii=False))
+            progress = merge_simulation_progress(simulation_id, event)
+            update_simulation(simulation_id, status="running", progress_json=json.dumps(progress, ensure_ascii=False))
 
 
 def stream_simulation_stderr(simulation_id, pipe):
@@ -327,6 +456,13 @@ def wait_for_simulation(simulation_id, process):
 
 
 def start_simulation_job(params):
+    running = active_running_simulations()
+    if running >= MAX_RUNNING_SIMULATIONS:
+        raise ApiError(
+            409,
+            f"simulation limit reached: {running} running, max {MAX_RUNNING_SIMULATIONS}",
+            "simulation_limit_reached",
+        )
     simulation_id = uuid.uuid4().hex
     insert_simulation(simulation_id, params)
     config = {
@@ -350,7 +486,17 @@ def start_simulation_job(params):
         encoding="utf-8",
         errors="replace",
     )
-    update_simulation(simulation_id, status="running", pid=process.pid)
+    update_simulation(
+        simulation_id,
+        status="running",
+        pid=process.pid,
+        progress_json=json.dumps({
+            "type": "started",
+            "elapsedSeconds": 0,
+            "rows": 0,
+            "notice": "server worker started; opening local simulation page",
+        }, ensure_ascii=False),
+    )
     with SIM_LOCK:
         RUNNING_SIMULATIONS[simulation_id] = process
     threading.Thread(target=stream_simulation_stdout, args=(simulation_id, process.stdout), daemon=True).start()
@@ -508,7 +654,7 @@ def covered_by_ranges(db, address, topic0, from_block, to_block):
 
 
 def cached_log_result(info):
-    with DB_LOCK, sqlite3.connect(DATA_PATH) as db:
+    with DB_LOCK, sqlite_connection(DATA_PATH) as db:
         if not covered_by_ranges(db, info["address"], info["topic0"], info["from_block"], info["to_block"]):
             return None
         rows = db.execute(
@@ -526,7 +672,7 @@ def cached_log_result(info):
 def cached_exact_result(key, payload):
     method = payload.get("method")
     params = payload.get("params", [])
-    with DB_LOCK, sqlite3.connect(DATA_PATH) as db:
+    with DB_LOCK, sqlite_connection(DATA_PATH) as db:
         if method == "eth_getBlockByNumber" and params:
             row = db.execute("SELECT raw_json FROM blocks WHERE tag = ?", (params[0].lower(),)).fetchone()
             if row:
@@ -592,7 +738,7 @@ def store_logs(db, info, logs):
 def store_exact_result(key, payload, result):
     result_json = json.dumps(result, separators=(",", ":"))
     result_bytes = len(result_json.encode("utf-8"))
-    with DB_LOCK, sqlite3.connect(DATA_PATH) as db:
+    with DB_LOCK, sqlite_connection(DATA_PATH) as db:
         if payload.get("method") == "eth_getBlockByNumber":
             store_block(db, payload, result)
         if result_bytes <= MAX_EXACT_RESULT_BYTES:
@@ -614,7 +760,7 @@ def store_exact_result(key, payload, result):
 
 
 def store_log_result(info, logs):
-    with DB_LOCK, sqlite3.connect(DATA_PATH) as db:
+    with DB_LOCK, sqlite_connection(DATA_PATH) as db:
         store_logs(db, info, logs)
 
 
@@ -655,9 +801,9 @@ def upstream_post(payload):
                         "responseBytes": len(raw),
                         "preview": preview,
                     }
-                    attempted_errors.append((url, last_error))
-                    if DEBUG_RPC_ERRORS:
-                        print(f"RPC invalid JSON from {url} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+                attempted_errors.append((url, last_error))
+                if DEBUG_RPC_ERRORS:
+                    print(f"RPC invalid JSON from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
                     continue
                 responses = parsed if isinstance(parsed, list) else [parsed]
                 if all("error" not in item for item in responses):
@@ -665,20 +811,20 @@ def upstream_post(payload):
                 last_error = next((item["error"] for item in responses if "error" in item), None)
                 attempted_errors.append((url, last_error))
                 if DEBUG_RPC_ERRORS:
-                    print(f"RPC upstream error from {url} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+                    print(f"RPC upstream error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
             except urllib.error.HTTPError as exc:
                 last_error = {"code": exc.code, "message": exc.read().decode("utf-8", errors="replace")}
                 attempted_errors.append((url, last_error))
                 if DEBUG_RPC_ERRORS:
-                    print(f"RPC HTTP error from {url} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+                    print(f"RPC HTTP error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
             except (urllib.error.URLError, TimeoutError) as exc:
                 last_error = {"message": str(exc)}
                 attempted_errors.append((url, last_error))
                 if DEBUG_RPC_ERRORS:
-                    print(f"RPC network error from {url} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+                    print(f"RPC network error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
         time.sleep(1.2)
     if attempted_errors:
-        providers = ", ".join(url for url, _ in attempted_errors[-len(RPC_URLS):])
+        providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(RPC_URLS):])
         print(f"RPC upstream failed for [{summary}] after retries; last providers: {providers}; last_error={last_error}", file=sys.stderr, flush=True)
     raise RuntimeError(json.dumps(last_error or {"message": "RPC proxy error"}))
 
@@ -771,9 +917,47 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
+    def client_ip(self):
+        forwarded = self.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip()
+        return forwarded or self.client_address[0]
+
+    def check_rate_limit(self, bucket, limit):
+        if limit <= 0:
+            return True
+        client_ip = self.client_ip()
+        if client_ip in {"127.0.0.1", "::1", "localhost"}:
+            return True
+        now = time.time()
+        key = (bucket, client_ip)
+        with RATE_LIMIT_LOCK:
+            hits = RATE_LIMITS[key]
+            while hits and now - hits[0] >= 60:
+                hits.popleft()
+            if len(hits) >= limit:
+                retry_after = max(1, int(60 - (now - hits[0])))
+                self.send_json(
+                    429,
+                    {
+                        "error": f"rate limit exceeded for {bucket}",
+                        "code": "rate_limit_exceeded",
+                        "retryAfterSeconds": retry_after,
+                    },
+                )
+                return False
+            hits.append(now)
+        return True
+
+    def check_api_rate_limit(self):
+        return self.check_rate_limit("api", API_RATE_LIMIT_PER_MINUTE)
+
+    def check_rpc_rate_limit(self):
+        return self.check_rate_limit("rpc", RPC_RATE_LIMIT_PER_MINUTE)
+
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/simulations":
+            if not self.check_api_rate_limit():
+                return
             if not self.require_admin_token():
                 return
             try:
@@ -783,11 +967,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 params = normalize_simulation_params(payload)
                 result = start_simulation_job(params)
                 self.send_json(202, result)
+            except ApiError as exc:
+                self.send_json(exc.status, {"error": exc.message, "code": exc.code})
             except Exception as exc:
                 self.send_json(400, {"error": str(exc)})
             return
 
         if parsed.path.startswith("/api/simulations/") and parsed.path.endswith("/cancel"):
+            if not self.check_api_rate_limit():
+                return
             if not self.require_admin_token():
                 return
             simulation_id = parsed.path.split("/")[-2]
@@ -800,6 +988,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if self.path != "/rpc":
             self.send_error(404)
+            return
+        if not self.check_rpc_rate_limit():
             return
 
         length = int(self.headers.get("content-length", "0"))
@@ -836,14 +1026,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_json(200, {"ok": True, "status": "healthy", "time": now_int()})
             return
         if parsed.path == "/api/simulations":
+            if not self.check_api_rate_limit():
+                return
             params = urllib.parse.parse_qs(parsed.query)
             limit = params.get("limit", ["20"])[0]
             self.send_json(200, {"items": list_simulations(limit)})
             return
         if parsed.path == "/api/simulations/latest":
+            if not self.check_api_rate_limit():
+                return
             self.send_json(200, get_latest_simulation() or {})
             return
         if parsed.path.startswith("/api/simulations/"):
+            if not self.check_api_rate_limit():
+                return
             if not self.require_admin_token():
                 return
             simulation_id = parsed.path.rsplit("/", 1)[-1]
@@ -874,6 +1070,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path.startswith("/api/simulations/"):
+            if not self.check_api_rate_limit():
+                return
+            if not self.require_admin_token():
+                return
             simulation_id = parsed.path.rsplit("/", 1)[-1]
             cancel_simulation_job(simulation_id)
             if delete_simulation(simulation_id):
@@ -930,7 +1130,7 @@ if __name__ == "__main__":
     print(f"Market data cache: {DATA_PATH}", file=sys.stderr, flush=True)
     print(f"Simulation data: {SIM_DATA_PATH}", file=sys.stderr, flush=True)
     print("Raw eth_getLogs JSON cache: disabled; logs are normalized and deduplicated", file=sys.stderr, flush=True)
-    print(f"RPC upstreams: {', '.join(RPC_URLS)}", file=sys.stderr, flush=True)
+    print(f"RPC upstreams: {', '.join(redact_url(url) for url in RPC_URLS)}", file=sys.stderr, flush=True)
     print(f"Listening on {HOST}:{PORT}", file=sys.stderr, flush=True)
     try:
         http.server.ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

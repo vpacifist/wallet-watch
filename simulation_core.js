@@ -71,6 +71,67 @@
       return complete;
     }
 
+    function analyzeDataQuality(rows) {
+      if (!rows.length) {
+        return {
+          rowCount: 0,
+          gapCount: 0,
+          missingMinutes: 0,
+          maxGapMinutes: 0,
+          duplicateTimestampCount: 0,
+          outOfOrderCount: 0,
+          invalidPriceCount: 0,
+          zeroPriceCount: 0,
+          emptyVolumeCount: 0,
+          firstTime: "",
+          lastTime: "",
+        };
+      }
+      let gapCount = 0;
+      let missingMinutes = 0;
+      let maxGapMinutes = 0;
+      let duplicateTimestampCount = 0;
+      let outOfOrderCount = 0;
+      let invalidPriceCount = 0;
+      let zeroPriceCount = 0;
+      let emptyVolumeCount = 0;
+      let previous = new Date(rows[0].time).getTime();
+      const seen = new Set([rows[0].time]);
+      for (const [index, row] of rows.entries()) {
+        const prices = [row.open, row.high, row.low, row.close].map(Number);
+        if (prices.some((price) => !Number.isFinite(price))) invalidPriceCount += 1;
+        else if (prices.some((price) => price <= 0)) zeroPriceCount += 1;
+        if (!Number.isFinite(Number(row.volume))) emptyVolumeCount += 1;
+        if (index === 0) continue;
+
+        const current = new Date(row.time).getTime();
+        if (seen.has(row.time)) duplicateTimestampCount += 1;
+        seen.add(row.time);
+        const gapMinutes = Math.round((current - previous) / (60 * 1000));
+        if (gapMinutes <= 0) {
+          outOfOrderCount += 1;
+        } else if (gapMinutes > 1) {
+          gapCount += 1;
+          missingMinutes += gapMinutes - 1;
+          if (gapMinutes > maxGapMinutes) maxGapMinutes = gapMinutes;
+        }
+        previous = current;
+      }
+      return {
+        rowCount: rows.length,
+        gapCount,
+        missingMinutes,
+        maxGapMinutes,
+        duplicateTimestampCount,
+        outOfOrderCount,
+        invalidPriceCount,
+        zeroPriceCount,
+        emptyVolumeCount,
+        firstTime: rows[0].time,
+        lastTime: rows[rows.length - 1].time,
+      };
+    }
+
     function fmtPrice(value) {
       return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }
@@ -218,12 +279,36 @@
       throw new Error("AERO/USDC pool token order mismatch");
     }
 
+    function rangeSpanTicksForWidth(rangeWidth) {
+      const rawSpan = Math.log1p(rangeWidth) / Math.log(1.0001);
+      return Math.max(
+        AERODROME_TICK_SPACING,
+        Math.round(rawSpan / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING,
+      );
+    }
+
+    function tickRangeAroundTick(tick, spanTicks) {
+      const span = Math.max(
+        AERODROME_TICK_SPACING,
+        Math.round(spanTicks / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING,
+      );
+      let tickLower = Math.floor((tick - span / 2) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
+      let tickUpper = tickLower + span;
+      while (tick < tickLower) {
+        tickLower -= AERODROME_TICK_SPACING;
+        tickUpper -= AERODROME_TICK_SPACING;
+      }
+      while (tick >= tickUpper) {
+        tickLower += AERODROME_TICK_SPACING;
+        tickUpper += AERODROME_TICK_SPACING;
+      }
+      const anchorTick = Math.floor(tick / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
+      return { tickLower, tickUpper, anchorTick };
+    }
+
     function computePositionPlan(depositUsdc, price, rangeWidth) {
-      const lowerPrice = price * (1 - rangeWidth);
-      const upperPrice = price * (1 + rangeWidth);
-      const tickLower = Math.floor(tickForPrice(lowerPrice) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
-      const tickUpper = Math.ceil(tickForPrice(upperPrice) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
-      const anchorTick = Math.round(tickForPrice(price) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING;
+      const spanTicks = rangeSpanTicksForWidth(rangeWidth);
+      const { tickLower, tickUpper, anchorTick } = tickRangeAroundTick(tickForPrice(price), spanTicks);
       return computePositionPlanForRange(depositUsdc, price, tickLower, tickUpper, anchorTick);
     }
 
@@ -358,6 +443,7 @@
     return {
       parseCsv,
       buildCompleteMinuteRows,
+      analyzeDataQuality,
       fmtPrice,
       fmtNumber,
       fmtUsdc,
@@ -387,6 +473,8 @@
       addressFromWord,
       blockTag,
       aeroUsdcPriceFromSqrtX96,
+      rangeSpanTicksForWidth,
+      tickRangeAroundTick,
       computePositionPlan,
       computePositionPlanForRange,
       priceFromSqrtX96,
