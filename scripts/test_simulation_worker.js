@@ -61,11 +61,18 @@ async function runCase(testCase) {
   assert.equal(typeof lastRaw.value, "number", `${testCase.name} raw value`);
   assert.equal(typeof lastRaw.lpFeesUsdcValue, "number", `${testCase.name} raw LP fee estimate`);
   assert.equal(typeof lastRaw.valueWithLpFees, "number", `${testCase.name} raw value with LP fees`);
+  assert.equal(lastRaw.aeroModel, "conservative", `${testCase.name} should expose conservative AERO model`);
+  assert.equal(lastRaw.aeroSource, "gauge-rewardInside-estimate", `${testCase.name} should expose AERO source`);
+  assert.equal(typeof lastRaw.aeroReliability, "number", `${testCase.name} should expose AERO reliability`);
   assert.equal(lastRaw.missingCandle, false, `${testCase.name} should not mark fixture rows missing`);
   assert.ok(final.dataQuality && typeof final.dataQuality.rowCount === "number", `${testCase.name} should include data quality`);
   if (testCase.hasRebalance) {
     assert.ok(events.some((event) => String(event.lastRow || "").includes("rebalance")), `${testCase.name} should include a rebalance row`);
-    assert.ok(final.rawRows.some((row) => row.rebalance), `${testCase.name} should include raw rebalance data`);
+    const rebalanceRow = final.rawRows.find((row) => row.rebalance);
+    assert.ok(rebalanceRow, `${testCase.name} should include raw rebalance data`);
+    assert.equal(typeof rebalanceRow.rebalance.swapIsFallback, "boolean", `${testCase.name} should mark swap fallback state`);
+    assert.equal(rebalanceRow.rebalance.fallbackSlippageBps, 5, `${testCase.name} should expose fallback slippage bps`);
+    assert.equal(rebalanceRow.rebalance.automationFeeBps, 1, `${testCase.name} should expose automation fee bps`);
   }
 }
 
@@ -79,7 +86,7 @@ async function main() {
     rows: 3,
     currentValue: "$9,988.05",
     currentAero: "$0.44",
-    lastRow: "2026-02-01 00:02\tprice change\t$9,988.05\t$2,445.43\t2.72582127\t3,322.25\t$0.19\t$0.13\t96.00%",
+    lastRow: "2026-02-01 00:02\tprice change · AERO conservative\t$9,988.05\t$2,445.43\t2.72582127\t3,322.25\t$0.19\t$0.13\t96.00%",
   });
 
   await runCase({
@@ -89,7 +96,7 @@ async function main() {
     rows: 6,
     currentValue: "$10,005.23",
     currentAero: "$1.28",
-    lastRow: "2026-02-01 00:05\tprice change\t$10,005.23\t$2,452.20\t2.34785504\t4,247.82\t$0.30\t$0.31\t96.00%",
+    lastRow: "2026-02-01 00:05\tprice change · AERO conservative\t$10,005.23\t$2,452.20\t2.34785504\t4,247.82\t$0.30\t$0.31\t96.00%",
   });
 
   await runCase({
@@ -100,7 +107,7 @@ async function main() {
     rows: 21,
     currentValue: "$9,998.08",
     currentAero: "$9.52",
-    lastRow: "2026-02-01 00:20\tprice change\t$9,998.08\t$2,473.29\t1.76061013\t5,643.58\t$0.59\t$0.79\t96.00%",
+    lastRow: "2026-02-01 00:20\tprice change · AERO conservative\t$9,998.08\t$2,473.29\t1.76061013\t5,643.58\t$0.59\t$0.79\t96.00%",
     hasRebalance: true,
   });
 }

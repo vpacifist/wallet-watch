@@ -1376,6 +1376,9 @@ function simulationRowToRaw(row) {
     aeroBaseAmount: compactNumber(row.aeroBaseAmount, 10),
     aeroHaircutAmount: compactNumber(row.aeroHaircutAmount, 10),
     aeroPrice: compactNumber(row.aeroPrice, 8),
+    aeroModel: row.aeroModel || "conservative",
+    aeroSource: row.aeroSource || "gauge-rewardInside-estimate",
+    aeroReliability: compactNumber(row.aeroReliability ?? row.reliability, 4),
     reliability: compactNumber(row.reliability, 4),
   };
   if (row.rebalance) {
@@ -1386,9 +1389,14 @@ function simulationRowToRaw(row) {
       newTickUpper: row.rebalance.newTickUpper,
       swapDirection: row.rebalance.swapDirection,
       swapSource: row.rebalance.swapSource,
+      swapIsFallback: Boolean(row.rebalance.swapIsFallback),
+      fallbackSlippageBps: compactNumber(row.rebalance.fallbackSlippageBps, 4),
       swapLossUsdc: compactNumber(row.rebalance.swapLossUsdc, 6),
       gasUsdc: compactNumber(row.rebalance.gasUsdc, 6),
+      gasUnits: row.rebalance.gasUnits || null,
+      l1DataFeeEth: compactNumber(row.rebalance.l1DataFeeEth, 10),
       automationFeeUsdc: compactNumber(row.rebalance.automationFeeUsdc, 6),
+      automationFeeBps: compactNumber(row.rebalance.automationFeeBps, 4),
       totalCostUsdc: compactNumber(row.rebalance.totalCostUsdc, 6),
       quoteOutputAmount: compactNumber(row.rebalance.quoteOutputAmount, 10),
       quoteReliability: compactNumber(row.rebalance.quoteReliability, 4),
@@ -1407,9 +1415,12 @@ function getSimulationDataQuality() {
 
 function simulationRawRowToCells(row) {
   if (!row || typeof row !== "object") return [];
+  const eventParts = [row.missingCandle ? `${row.event} · missing candle` : row.event];
+  if (row.aeroModel) eventParts.push(`AERO ${row.aeroModel}`);
+  if (row.rebalance?.swapIsFallback) eventParts.push("swap fallback");
   return [
     row.time ? fmtInputTime(row.time) : "",
-    row.missingCandle ? `${row.event} · missing candle` : row.event,
+    eventParts.filter(Boolean).join(" · "),
     fmtUsdc(row.value),
     fmtPrice(row.price),
     fmtNumber(row.weth, 8),
@@ -1424,7 +1435,7 @@ function renderSimulationTable(scrollToLatest = false) {
   simTableBody.innerHTML = state.sim.rows.map((row) => `
     <tr data-index="${row.index}" class="${row.index === state.sim.activeRowIndex ? "activeRow" : ""}" title="${simulationRowTitle(row)}">
       <td>${fmtInputTime(state.rows[row.index]?.time || "")}</td>
-      <td>${row.event}</td>
+      <td>${[row.event, row.aeroModel ? `AERO ${row.aeroModel}` : "", row.rebalance?.swapIsFallback ? "swap fallback" : ""].filter(Boolean).join(" · ")}</td>
       <td>${fmtUsdc(row.value)}</td>
       <td>${fmtPrice(row.price)}</td>
       <td>${fmtNumber(row.weth, 8)}</td>
