@@ -69,3 +69,11 @@ LP_FEE_RATE=0.0005
 Для постоянного хранения кеша и статусов между рестартами сервиса подключи Railway Volume в `/data`.
 
 Если деплой публичный, можно задать `ADMIN_API_TOKEN`. Тогда создание, отмена и удаление симуляций потребуют токен. В браузере при первом 401 приложение попросит токен и сохранит его в `localStorage`. Не коммить реальные токены и приватные RPC URL в репозиторий.
+
+Для проверки приватных RPC под исторические симуляции есть локальный benchmark:
+
+```bash
+BASE_RPC_URLS="https://provider-1.example/...,https://provider-2.example/..." python scripts/check_base_rpc.py
+```
+
+Скрипт проверяет `eth_getBlockByNumber`, исторический `eth_call`, batch-запрос и `eth_getLogs` на Base. В выводе URL редактируются, но реальные RPC URL все равно держи только в `.env`, локальном окружении или Railway Environment Variables.
