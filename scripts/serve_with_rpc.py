@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -52,9 +53,19 @@ ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 
 
+@contextmanager
+def sqlite_connection(path):
+    db = sqlite3.connect(path)
+    try:
+        with db:
+            yield db
+    finally:
+        db.close()
+
+
 def init_cache():
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(DATA_PATH) as db:
+    with sqlite_connection(DATA_PATH) as db:
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
         db.executescript(
@@ -109,7 +120,7 @@ def init_cache():
 
 def init_simulations():
     SIM_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(SIM_DATA_PATH) as db:
+    with sqlite_connection(SIM_DATA_PATH) as db:
         db.execute("PRAGMA journal_mode=WAL")
         db.execute("PRAGMA synchronous=NORMAL")
         db.executescript(
@@ -175,7 +186,7 @@ def simulation_row_to_dict(row, compact=False):
 
 
 def get_simulation(simulation_id):
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         row = db.execute(
             """
             SELECT id, status, params_json, progress_json, result_json, error, pid,
@@ -189,7 +200,7 @@ def get_simulation(simulation_id):
 
 
 def get_latest_simulation():
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         row = db.execute(
             """
             SELECT id, status, params_json, progress_json, result_json, error, pid,
@@ -204,7 +215,7 @@ def get_latest_simulation():
 
 def list_simulations(limit=20):
     limit = max(1, min(int(limit or 20), 1000))
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         rows = db.execute(
             """
             SELECT id, status, params_json, progress_json, result_json, error, pid,
@@ -232,13 +243,13 @@ def update_simulation(simulation_id, **fields):
     assignments.append("updated_at = ?")
     values.append(now_int())
     values.append(simulation_id)
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         db.execute(f"UPDATE simulations SET {', '.join(assignments)} WHERE id = ?", values)
 
 
 def insert_simulation(simulation_id, params):
     timestamp = now_int()
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         db.execute(
             """
             INSERT INTO simulations (id, status, params_json, created_at, updated_at)
@@ -249,7 +260,7 @@ def insert_simulation(simulation_id, params):
 
 
 def delete_simulation(simulation_id):
-    with SIM_LOCK, sqlite3.connect(SIM_DATA_PATH) as db:
+    with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         cursor = db.execute("DELETE FROM simulations WHERE id = ?", (simulation_id,))
         return cursor.rowcount > 0
 
@@ -508,7 +519,7 @@ def covered_by_ranges(db, address, topic0, from_block, to_block):
 
 
 def cached_log_result(info):
-    with DB_LOCK, sqlite3.connect(DATA_PATH) as db:
+    with DB_LOCK, sqlite_connection(DATA_PATH) as db:
         if not covered_by_ranges(db, info["address"], info["topic0"], info["from_block"], info["to_block"]):
             return None
         rows = db.execute(
@@ -526,7 +537,7 @@ def cached_log_result(info):
 def cached_exact_result(key, payload):
     method = payload.get("method")
     params = payload.get("params", [])
-    with DB_LOCK, sqlite3.connect(DATA_PATH) as db:
+    with DB_LOCK, sqlite_connection(DATA_PATH) as db:
         if method == "eth_getBlockByNumber" and params:
             row = db.execute("SELECT raw_json FROM blocks WHERE tag = ?", (params[0].lower(),)).fetchone()
             if row:
@@ -592,7 +603,7 @@ def store_logs(db, info, logs):
 def store_exact_result(key, payload, result):
     result_json = json.dumps(result, separators=(",", ":"))
     result_bytes = len(result_json.encode("utf-8"))
-    with DB_LOCK, sqlite3.connect(DATA_PATH) as db:
+    with DB_LOCK, sqlite_connection(DATA_PATH) as db:
         if payload.get("method") == "eth_getBlockByNumber":
             store_block(db, payload, result)
         if result_bytes <= MAX_EXACT_RESULT_BYTES:
@@ -614,7 +625,7 @@ def store_exact_result(key, payload, result):
 
 
 def store_log_result(info, logs):
-    with DB_LOCK, sqlite3.connect(DATA_PATH) as db:
+    with DB_LOCK, sqlite_connection(DATA_PATH) as db:
         store_logs(db, info, logs)
 
 
@@ -874,6 +885,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_DELETE(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path.startswith("/api/simulations/"):
+            if not self.require_admin_token():
+                return
             simulation_id = parsed.path.rsplit("/", 1)[-1]
             cancel_simulation_job(simulation_id)
             if delete_simulation(simulation_id):
