@@ -430,6 +430,68 @@
       return score;
     }
 
+    function feeGrowthInsideFromState({ tickLower, tickUpper, tickCurrent, feeGrowthGlobal0X128, feeGrowthGlobal1X128, lowerTick, upperTick }) {
+      const uint256 = 1n << 256n;
+      const subIn256 = (left, right) => {
+        const value = BigInt(left) - BigInt(right);
+        return value >= 0n ? value : value + uint256;
+      };
+      const lower0 = lowerTick.feeGrowthOutside0X128 || 0n;
+      const lower1 = lowerTick.feeGrowthOutside1X128 || 0n;
+      const upper0 = upperTick.feeGrowthOutside0X128 || 0n;
+      const upper1 = upperTick.feeGrowthOutside1X128 || 0n;
+      let below0;
+      let below1;
+      let above0;
+      let above1;
+      if (tickCurrent >= tickLower) {
+        below0 = lower0;
+        below1 = lower1;
+      } else {
+        below0 = subIn256(feeGrowthGlobal0X128, lower0);
+        below1 = subIn256(feeGrowthGlobal1X128, lower1);
+      }
+      if (tickCurrent < tickUpper) {
+        above0 = upper0;
+        above1 = upper1;
+      } else {
+        above0 = subIn256(feeGrowthGlobal0X128, upper0);
+        above1 = subIn256(feeGrowthGlobal1X128, upper1);
+      }
+      return {
+        feeGrowthInside0X128: subIn256(subIn256(feeGrowthGlobal0X128, below0), above0),
+        feeGrowthInside1X128: subIn256(subIn256(feeGrowthGlobal1X128, below1), above1),
+      };
+    }
+
+    function growthDeltaIn256(current, previous) {
+      const uint256 = 1n << 256n;
+      const value = BigInt(current || 0n) - BigInt(previous || 0n);
+      return value >= 0n ? value : value + uint256;
+    }
+
+    function liquidityDilutionFactor(realLiquidity, simulatedLiquidity) {
+      const real = BigInt(realLiquidity || 0n);
+      const simulated = BigInt(simulatedLiquidity || 0n);
+      if (simulated <= 0n) return { numerator: 0n, denominator: 1n, share: 0 };
+      if (real <= 0n) return { numerator: 1n, denominator: 1n, share: 1 };
+      const denominator = real + simulated;
+      return {
+        numerator: real,
+        denominator,
+        share: Number(simulated * 1000000n / denominator) / 1000000,
+      };
+    }
+
+    function applyGrowthDelta({ liquidityRaw, growthDeltaX128, baseLiquidityRaw, q128 }) {
+      const liquidity = BigInt(liquidityRaw || 0n);
+      const delta = BigInt(growthDeltaX128 || 0n);
+      if (liquidity <= 0n || delta <= 0n) return { raw: 0n, dilutionShare: 0 };
+      const dilution = liquidityDilutionFactor(baseLiquidityRaw, liquidity);
+      const raw = liquidity * delta * dilution.numerator / dilution.denominator / q128;
+      return { raw, dilutionShare: dilution.share };
+    }
+
     function aeroPriceReliability(ageSeconds) {
       return scoreFromThresholds(ageSeconds, [
         [60, 92],
@@ -489,6 +551,10 @@
       blockTimeReliability,
       priceAgreementReliability,
       rewardStateReliability,
+      feeGrowthInsideFromState,
+      growthDeltaIn256,
+      liquidityDilutionFactor,
+      applyGrowthDelta,
       aeroPriceReliability,
     };
   }

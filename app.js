@@ -48,6 +48,10 @@ const state = {
     rangeStepTicks: 0,
     rewardStart: 0n,
     rewardLast: 0n,
+    feeGrowthInside0Last: 0n,
+    feeGrowthInside1Last: 0n,
+    feeDilutionLiquidityLast: 0n,
+    rewardDilutionLiquidityLast: 0n,
     aeroUnharvested: 0,
     aeroBaseUnharvested: 0,
     aeroHaircutUnharvested: 0,
@@ -143,6 +147,10 @@ const SELECTORS = {
   lastUpdated: "0xd0b06f5d",
   stakedLiquidity: "0x3ab04b20",
   liquidity: "0x1a686502",
+  fee: "0xddca3f43",
+  feeGrowthGlobal0X128: "0xf3058399",
+  feeGrowthGlobal1X128: "0x46141319",
+  ticks: "0xf30dba93",
   getRewardGrowthInside: "0xa16368c9",
   quoteExactInputSingle: "0xf7729d43",
   token0: "0x0dfe1681",
@@ -207,6 +215,9 @@ const {
   reliabilityDetailsText,
   rewardStateReliability,
   scoreFromThresholds,
+  feeGrowthInsideFromState,
+  growthDeltaIn256,
+  applyGrowthDelta,
   sqrtPriceX96ForPrice,
   startOfUtcDay,
   tickRangeAroundTick,
@@ -355,6 +366,18 @@ function decodeSlot0(data) {
   };
 }
 
+function decodeTickInfo(data) {
+  return {
+    liquidityGross: hexToBigInt(`0x${wordAt(data, 0)}`),
+    liquidityNet: toSignedWord(wordAt(data, 1)),
+    stakedLiquidityNet: toSignedWord(wordAt(data, 2)),
+    feeGrowthOutside0X128: hexToBigInt(`0x${wordAt(data, 3)}`),
+    feeGrowthOutside1X128: hexToBigInt(`0x${wordAt(data, 4)}`),
+    rewardGrowthOutsideX128: hexToBigInt(`0x${wordAt(data, 5)}`),
+    initialized: hexToBigInt(`0x${wordAt(data, 9)}`) !== 0n,
+  };
+}
+
 async function readPoolSlot0(poolAddress, blockNumber) {
   const data = await rpcCall("eth_call", [{ to: poolAddress, data: SELECTORS.slot0 }, blockTag(blockNumber)]);
   return decodeSlot0(data);
@@ -362,7 +385,9 @@ async function readPoolSlot0(poolAddress, blockNumber) {
 
 async function readRewardInside(blockNumber, tickLower, tickUpper) {
   const tag = blockTag(blockNumber);
-  const [slotData, globalData, rateData, reserveData, lastUpdatedData, stakedData, activeLiquidityData] = await rpcBatch([
+  const tickLowerData = `${SELECTORS.ticks}${encodeInt24(tickLower)}`;
+  const tickUpperData = `${SELECTORS.ticks}${encodeInt24(tickUpper)}`;
+  const [slotData, globalData, rateData, reserveData, lastUpdatedData, stakedData, activeLiquidityData, feeData, feeGlobal0Data, feeGlobal1Data, lowerTickData, upperTickData] = await rpcBatch([
     { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.slot0 }, tag] },
     { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.rewardGrowthGlobal }, tag] },
     { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.rewardRate }, tag] },
@@ -370,6 +395,11 @@ async function readRewardInside(blockNumber, tickLower, tickUpper) {
     { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.lastUpdated }, tag] },
     { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.stakedLiquidity }, tag] },
     { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.liquidity }, tag] },
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.fee }, tag] },
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.feeGrowthGlobal0X128 }, tag] },
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.feeGrowthGlobal1X128 }, tag] },
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: tickLowerData }, tag] },
+    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: tickUpperData }, tag] },
   ]);
   const block = await getBlock(blockNumber);
   const slot = decodeSlot0(slotData);
@@ -379,6 +409,20 @@ async function readRewardInside(blockNumber, tickLower, tickUpper) {
   const lastUpdated = hexToBigInt(lastUpdatedData);
   const stakedLiquidity = hexToBigInt(stakedData);
   const activeLiquidity = hexToBigInt(activeLiquidityData);
+  const feeRate = Number(hexToBigInt(feeData)) / 1_000_000;
+  const feeGrowthGlobal0X128 = hexToBigInt(feeGlobal0Data);
+  const feeGrowthGlobal1X128 = hexToBigInt(feeGlobal1Data);
+  const lowerTick = decodeTickInfo(lowerTickData);
+  const upperTick = decodeTickInfo(upperTickData);
+  const feeGrowthInside = feeGrowthInsideFromState({
+    tickLower,
+    tickUpper,
+    tickCurrent: slot.tick,
+    feeGrowthGlobal0X128,
+    feeGrowthGlobal1X128,
+    lowerTick,
+    upperTick,
+  });
   const rewardElapsedSeconds = Math.max(0, block.timestamp - Number(lastUpdated));
   const elapsed = BigInt(rewardElapsedSeconds);
   const expectedReward = rewardRate * elapsed;
@@ -396,6 +440,10 @@ async function readRewardInside(blockNumber, tickLower, tickUpper) {
     block,
     rewardElapsedSeconds,
     rewardReserveCapped: expectedReward > rewardReserve,
+    feeRate,
+    feeGrowthGlobal0X128,
+    feeGrowthGlobal1X128,
+    ...feeGrowthInside,
   };
 }
 
@@ -488,6 +536,41 @@ function decodeSwapLog(log) {
 async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
   if (toBlock < fromBlock || state.sim.liquidityRaw <= 0n) {
     return { weth: 0, usdc: 0, usdcValue: 0, source: "no-block-range", reliability: 100, swapCount: 0 };
+  }
+  if (rewardState.feeGrowthInside0X128 !== undefined && rewardState.feeGrowthInside1X128 !== undefined) {
+    const delta0 = growthDeltaIn256(rewardState.feeGrowthInside0X128, state.sim.feeGrowthInside0Last);
+    const delta1 = growthDeltaIn256(rewardState.feeGrowthInside1X128, state.sim.feeGrowthInside1Last);
+    const activeNow = rewardState.tick >= state.sim.tickLower && rewardState.tick < state.sim.tickUpper
+      ? rewardState.activeLiquidity
+      : 0n;
+    const previousActive = state.sim.feeDilutionLiquidityLast || 0n;
+    const baseLiquidity = activeNow > 0n && previousActive > 0n
+      ? (activeNow + previousActive) / 2n
+      : (activeNow > 0n ? activeNow : previousActive);
+    const fee0 = applyGrowthDelta({
+      liquidityRaw: state.sim.liquidityRaw,
+      growthDeltaX128: delta0,
+      baseLiquidityRaw: baseLiquidity,
+      q128: Q128,
+    });
+    const fee1 = applyGrowthDelta({
+      liquidityRaw: state.sim.liquidityRaw,
+      growthDeltaX128: delta1,
+      baseLiquidityRaw: baseLiquidity,
+      q128: Q128,
+    });
+    state.sim.feeGrowthInside0Last = rewardState.feeGrowthInside0X128;
+    state.sim.feeGrowthInside1Last = rewardState.feeGrowthInside1X128;
+    state.sim.feeDilutionLiquidityLast = activeNow;
+    return {
+      weth: rawToWeth(fee0.raw),
+      usdc: rawToUsdc(fee1.raw),
+      usdcValue: rawToWeth(fee0.raw) * price + rawToUsdc(fee1.raw),
+      source: "feeGrowthInside-diluted",
+      reliability: baseLiquidity > 0n ? 92 : 76,
+      swapCount: null,
+      dilutionShare: Math.max(fee0.dilutionShare, fee1.dilutionShare),
+    };
   }
   const logs = await rpcCall("eth_getLogs", [{
     address: POOL_ADDRESS,
@@ -1305,6 +1388,10 @@ function resetSimulationRows() {
   state.sim.startGridTick = 0;
   state.sim.rangeStepTicks = 0;
   state.sim.rewardLast = 0n;
+  state.sim.feeGrowthInside0Last = 0n;
+  state.sim.feeGrowthInside1Last = 0n;
+  state.sim.feeDilutionLiquidityLast = 0n;
+  state.sim.rewardDilutionLiquidityLast = 0n;
   state.sim.aeroUnharvested = 0;
   state.sim.aeroBaseUnharvested = 0;
   state.sim.aeroHaircutUnharvested = 0;
@@ -2263,6 +2350,11 @@ async function startSimulation() {
     ensureActiveSimulation(runToken, false);
     state.sim.rewardStart = rewardState.rewardInside;
     state.sim.rewardLast = rewardState.rewardInside;
+    state.sim.feeGrowthInside0Last = rewardState.feeGrowthInside0X128 || 0n;
+    state.sim.feeGrowthInside1Last = rewardState.feeGrowthInside1X128 || 0n;
+    const positionActive = rewardState.tick >= state.sim.tickLower && rewardState.tick < state.sim.tickUpper;
+    state.sim.feeDilutionLiquidityLast = positionActive ? rewardState.activeLiquidity : 0n;
+    state.sim.rewardDilutionLiquidityLast = positionActive ? rewardState.activeLiquidity : rewardState.stakedLiquidity;
     state.sim.aeroUnharvested = 0;
     state.sim.aeroBaseUnharvested = 0;
     state.sim.aeroHaircutUnharvested = 0;

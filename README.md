@@ -1,58 +1,88 @@
 # Wallet Watch
 
-Веб-инструмент для симуляции WETH/USDC Aerodrome позиции на исторических минутных данных.
+Web tool for simulating a WETH/USDC Aerodrome Slipstream concentrated-liquidity position on historical Base data.
 
-## Локальный запуск
+## Local Run
 
 ```bash
 python scripts/serve_with_rpc.py
 ```
 
-Открой:
+Open:
 
 ```text
 http://127.0.0.1:8003/index.html
 ```
 
-По умолчанию кнопка `START` запускает серверную simulation job через `/api/simulations`. Сам расчет выполняется на сервере в Node worker, поэтому вкладку браузера можно закрыть, а позже открыть страницу снова и увидеть последний статус.
+By default `START` creates a server-side simulation job through `/api/simulations`. The calculation runs in the Node worker, so the browser tab can be closed and reopened later.
 
-Для старого локального режима расчета в браузере открой:
+For the legacy in-browser simulation mode:
 
 ```text
 http://127.0.0.1:8003/index.html?local-sim=1
 ```
 
-## Проверки
+## Tests
 
 ```bash
 npm test
 ```
 
-Тесты запускают серверный simulation runtime на коротких фиксированных диапазонах и сверяют итоговые значения.
+The suite covers core math, server API contracts, deterministic short historical simulation scenarios, rebalance rows, LP fee accounting, AERO reward dilution, and missing-candle handling.
 
-## Достоверность расчетов
+## Simulation Accuracy
 
-Симуляция использует CSV как минутную сетку и визуальный слой для графика. Если в CSV есть пропущенные минуты, приложение достраивает полную минутную сетку и помечает такие строки как `missing-candle`. Экономические расчеты для строки берут historical on-chain state через Base RPC: блок, `slot0`, reward state и swap logs.
+The CSV is used as the minute time grid and chart layer. Economic calculations use historical on-chain state at Base block tags: block timestamps, `slot0`, tick, active liquidity, staked liquidity, reward growth, fee growth, AERO/USDC price state, swap logs for range exits, and quoter calls for rebalance swaps when available.
 
-Важно различать типы данных:
+### Exact / On-Chain Inputs
 
-- `on-chain`: цена WETH/USDC из `slot0`, исторический блок, tick, reward state.
-- `estimated`: LP trading fees, gas ребаланса, fallback swap loss.
-- `conservative`: AERO после haircut на влияние собственной ликвидности.
+- Historical block lookup uses binary search around a Base timestamp anchor and verifies block timestamps.
+- WETH/USDC price and tick come from pool `slot0` at the historical block.
+- LP fee growth uses `feeGrowthGlobal0X128`, `feeGrowthGlobal1X128`, and `ticks(tickLower/tickUpper)` to reconstruct `feeGrowthInside`.
+- AERO rewards use pool reward state: `rewardGrowthGlobalX128`, `rewardRate`, `rewardReserve`, `lastUpdated`, `stakedLiquidity`, and `getRewardGrowthInside`.
+- Range exits are detected from historical `Swap` logs and the emitted tick.
+- AERO price comes from the historical AERO/USDC Slipstream pool state.
 
-Итоговые серверные результаты сохраняются как raw numeric rows (`rawRows`), а не только как отформатированные строки таблицы. Это нужно, чтобы результаты можно было проверять и сравнивать программно.
+### Estimated
+
+- Simulated liquidity is hypothetical. Fee and reward growth observed on-chain excludes this position, so the engine applies a dilution factor using observed real liquidity versus simulated added liquidity.
+- Rebalance swaps use Aerodrome Slipstream quoter historical `eth_call` when possible. If the quoter call fails, the fallback loss is `REBALANCE_FALLBACK_SLIPPAGE_BPS`.
+- Rebalance gas uses configured gas units plus a configured Base L1 data fee estimate. It reads historical L2 `baseFeePerGas`, but it does not reconstruct exact transaction calldata bytes.
+- Automation/manual rebalance fee is a configurable bps assumption.
+
+### Heuristic
+
+- `reliability` is a transparent quality score, not statistical confidence. It combines named components such as block match, on-chain price availability, reward-state health, quote source, gas estimate quality, and CSV/on-chain price cross-check.
+- AERO haircut is conservative scenario modeling for impact from adding own liquidity. It is not an Aerodrome contract field.
+
+### Limitations
+
+- The simulator does not mint a real NFT and cannot know exact future MEV, route execution, automation transaction calldata, or private relay behavior.
+- Fee/reward dilution uses observed historical liquidity as the counterfactual base. This is closer than raw swap-log pro rata accounting, but still not a full alternate-chain replay.
+- If historical `feeGrowthInside` reads fail, LP fees fall back to swap-log estimation and the row exposes the lower-reliability source.
+- Missing CSV candles are filled only to preserve the minute grid. Filled rows are marked `missing-candle`; economics still use on-chain state.
+
+## RPC And Cache
+
+`scripts/serve_with_rpc.py` proxies Base RPC and caches only historical calls:
+
+- `eth_getBlockByNumber` with numeric block tags.
+- `eth_call` with numeric block tags.
+- supported `eth_getLogs` filters with numeric `fromBlock` and `toBlock`.
+
+`latest`, `pending`, `safe`, and `finalized` are not exact-cacheable. Large log ranges are split into bounded chunks before upstream requests, then normalized and deduplicated in SQLite. Cache hits are returned only when stored ranges fully cover the requested interval.
 
 ## Railway
 
-Railway стартует приложение командой:
+Railway starts the app with:
 
 ```bash
 python scripts/serve_with_rpc.py
 ```
 
-Сервер слушает `0.0.0.0:$PORT`, если Railway задает переменную `PORT`.
+The server listens on `0.0.0.0:$PORT` when Railway provides `PORT`.
 
-Рекомендуемые переменные окружения:
+Recommended environment variables:
 
 ```text
 PUBLIC_BASE_URL=https://your-railway-domain.up.railway.app
@@ -67,26 +97,17 @@ REBALANCE_MANUAL_FEE_BPS=1
 REBALANCE_GAS_UNITS=1450000
 REBALANCE_L1_DATA_FEE_ETH=0.000012
 REBALANCE_FALLBACK_SLIPPAGE_BPS=5
-LP_FEE_RATE=0.0005
+MAX_LOG_BLOCK_SPAN=2000
 ```
 
-Для постоянного хранения кеша и статусов между рестартами сервиса подключи Railway Volume в `/data`.
+Use a Railway Volume mounted at `/data` to persist market-data and simulation caches across restarts.
 
-Если деплой публичный, задай `ADMIN_API_TOKEN`. Тогда создание, отмена и удаление симуляций потребуют токен. В браузере при первом 401 приложение попросит токен и сохранит его в `localStorage`. Не коммить реальные токены и приватные RPC URL в репозиторий.
+For public deployments set `ADMIN_API_TOKEN`; create/cancel/delete simulation APIs then require the token. Do not commit real tokens, secrets, or private RPC URLs. Keep them in `.env`, local environment, or Railway Environment Variables.
 
-Публичные лимиты задаются через env vars:
-
-- `MAX_RUNNING_SIMULATIONS=1` — одновременно считается только одна симуляция.
-- `MAX_SIMULATION_DAYS=31` — сервер отклоняет слишком длинные периоды.
-- `RPC_RATE_LIMIT_PER_MINUTE=300` — ограничение запросов к `/rpc` с одного IP.
-- `API_RATE_LIMIT_PER_MINUTE=60` — ограничение запросов к `/api/simulations` с одного IP.
-
-Финансовые defaults тоже настраиваются через env: AERO считается консервативно в текущей модели, fallback slippage для ребаланса — `REBALANCE_FALLBACK_SLIPPAGE_BPS=5`, операционная комиссия ребаланса — `REBALANCE_MANUAL_FEE_BPS=1`.
-
-Для проверки приватных RPC под исторические симуляции есть локальный benchmark:
+RPC compatibility check:
 
 ```bash
 BASE_RPC_URLS="https://provider-1.example/...,https://provider-2.example/..." python scripts/check_base_rpc.py
 ```
 
-Скрипт проверяет `eth_getBlockByNumber`, исторический `eth_call`, batch-запрос и `eth_getLogs` на Base. В выводе URL редактируются, но реальные RPC URL все равно держи только в `.env`, локальном окружении или Railway Environment Variables.
+The check covers `eth_getBlockByNumber`, historical `eth_call`, batch requests, and `eth_getLogs` on Base. Output redacts URLs, but real RPC URLs should still stay out of the repository.

@@ -92,9 +92,48 @@ function testDataQualitySummary() {
   assert.equal(quality.emptyVolumeCount, 1, "quality empty volume count");
 }
 
+function testFeeGrowthInsideAccounting() {
+  const inside = core.feeGrowthInsideFromState({
+    tickLower: -100,
+    tickUpper: 100,
+    tickCurrent: 0,
+    feeGrowthGlobal0X128: 1000n,
+    feeGrowthGlobal1X128: 2000n,
+    lowerTick: { feeGrowthOutside0X128: 100n, feeGrowthOutside1X128: 300n },
+    upperTick: { feeGrowthOutside0X128: 250n, feeGrowthOutside1X128: 400n },
+  });
+  assert.equal(inside.feeGrowthInside0X128, 650n, "fee growth inside token0 should subtract below and above");
+  assert.equal(inside.feeGrowthInside1X128, 1300n, "fee growth inside token1 should subtract below and above");
+
+  const belowRange = core.feeGrowthInsideFromState({
+    tickLower: -100,
+    tickUpper: 100,
+    tickCurrent: -200,
+    feeGrowthGlobal0X128: 1000n,
+    feeGrowthGlobal1X128: 2000n,
+    lowerTick: { feeGrowthOutside0X128: 400n, feeGrowthOutside1X128: 500n },
+    upperTick: { feeGrowthOutside0X128: 100n, feeGrowthOutside1X128: 300n },
+  });
+  assert.equal(belowRange.feeGrowthInside0X128, 300n, "below-range fee growth follows tick outside accounting");
+  assert.equal(belowRange.feeGrowthInside1X128, 200n, "below-range token1 fee growth follows tick outside accounting");
+}
+
+function testDilutedGrowthDelta() {
+  const result = core.applyGrowthDelta({
+    liquidityRaw: 100n,
+    growthDeltaX128: 10n * (2n ** 128n),
+    baseLiquidityRaw: 900n,
+    q128: 2n ** 128n,
+  });
+  assert.equal(result.raw, 900n, "hypothetical liquidity should dilute fee/reward growth by added liquidity share");
+  assert.equal(result.dilutionShare, 0.1, "dilution share should expose simulated share of post-add liquidity");
+}
+
 testTickPriceRoundTrip();
 testConcentratedLiquidityPlan();
 testRawUnitConversions();
 testReliabilityFloors();
 testAeroUsdcPriceOrder();
 testDataQualitySummary();
+testFeeGrowthInsideAccounting();
+testDilutedGrowthDelta();
