@@ -12,8 +12,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BLOCK = 29100000
-WETH_ADDRESS = "0x4200000000000000000000000000000000000006"
-TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+POOL_ADDRESS = "0xb2cc224c1c9fee385f8ad6a55b4d94e92359dc59"
+SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
 
 
 def load_dotenv(path):
@@ -78,9 +78,9 @@ def check_endpoint(url, block_number, log_span, samples, timeout):
     log_to_block = hex(block_number + log_span)
     checks = [
         ("block", {"jsonrpc": "2.0", "id": 1, "method": "eth_getBlockByNumber", "params": [block_tag, False]}),
-        ("call", {"jsonrpc": "2.0", "id": 2, "method": "eth_call", "params": [{"to": WETH_ADDRESS, "data": "0x313ce567"}, block_tag]}),
+        ("call", {"jsonrpc": "2.0", "id": 2, "method": "eth_call", "params": [{"to": POOL_ADDRESS, "data": "0x3850c7bd"}, block_tag]}),
         ("batch", [
-            {"jsonrpc": "2.0", "id": 3, "method": "eth_call", "params": [{"to": WETH_ADDRESS, "data": "0x313ce567"}, block_tag]},
+            {"jsonrpc": "2.0", "id": 3, "method": "eth_call", "params": [{"to": POOL_ADDRESS, "data": "0x3850c7bd"}, block_tag]},
             {"jsonrpc": "2.0", "id": 4, "method": "eth_getBlockByNumber", "params": [block_tag, False]},
         ]),
         ("logs", {
@@ -88,8 +88,8 @@ def check_endpoint(url, block_number, log_span, samples, timeout):
             "id": 5,
             "method": "eth_getLogs",
             "params": [{
-                "address": WETH_ADDRESS,
-                "topics": [TRANSFER_TOPIC],
+                "address": POOL_ADDRESS,
+                "topics": [SWAP_TOPIC],
                 "fromBlock": block_tag,
                 "toBlock": log_to_block,
             }],
