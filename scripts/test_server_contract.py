@@ -30,7 +30,9 @@ class ServerContractTests(unittest.TestCase):
     def setUp(self):
       self.server = load_server_module()
       self.tempdir = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+      self.server.DATA_PATH = Path(self.tempdir.name) / "market_data.sqlite"
       self.server.SIM_DATA_PATH = Path(self.tempdir.name) / "simulations.sqlite"
+      self.server.init_cache()
       self.server.init_simulations()
 
     def tearDown(self):
@@ -76,6 +78,7 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual(params["timeoutSeconds"], 60)
       self.assertEqual(params["progressEverySeconds"], 2)
       self.assertIn("rebalanceFallbackSlippageBps", params)
+      self.assertIn("aeroImpactHaircutMax", params)
       self.assertIn("lpFeeRate", params)
 
     def test_normalize_rejects_invalid_range(self):
@@ -166,6 +169,89 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual(simulation["progress"]["rawRowCount"], 2)
       self.assertEqual([row["index"] for row in simulation["progress"]["rawRows"]], [0, 1])
       self.assertEqual(simulation["progress"]["latestRawRow"]["index"], 1)
+
+    def test_log_cache_requires_full_partial_range_coverage(self):
+      info = {
+          "address": "0xpool",
+          "topic0": "0xtopic",
+          "from_block": 10,
+          "to_block": 12,
+      }
+      log = {
+          "address": "0xpool",
+          "topics": ["0xtopic"],
+          "blockNumber": "0xa",
+          "transactionIndex": "0x0",
+          "logIndex": "0x0",
+          "transactionHash": "0xabc",
+          "data": "0x",
+      }
+      self.server.store_log_result(info, [log])
+
+      covered = self.server.cached_log_result({
+          "address": "0xpool",
+          "topic0": "0xtopic",
+          "from_block": 10,
+          "to_block": 12,
+      })
+      self.assertEqual([item["transactionHash"] for item in covered], ["0xabc"])
+
+      partial = self.server.cached_log_result({
+          "address": "0xpool",
+          "topic0": "0xtopic",
+          "from_block": 9,
+          "to_block": 12,
+      })
+      self.assertIsNone(partial)
+
+    def test_log_parsing_rejects_invalid_ranges(self):
+      payload = {
+          "method": "eth_getLogs",
+          "params": [{
+              "address": "0xpool",
+              "fromBlock": "0x20",
+              "toBlock": "0x10",
+              "topics": ["0xtopic"],
+          }],
+      }
+      self.assertIsNone(self.server.parse_supported_logs_filter(payload))
+
+    def test_fetch_logs_chunks_orders_and_deduplicates(self):
+      payload = {
+          "id": 1,
+          "method": "eth_getLogs",
+          "params": [{
+              "address": "0xpool",
+              "fromBlock": "0x1",
+              "toBlock": "0x4",
+              "topics": ["0xtopic"],
+          }],
+      }
+      info = {
+          "address": "0xpool",
+          "topic0": "0xtopic",
+          "from_block": 1,
+          "to_block": 4,
+      }
+      self.server.MAX_LOG_BLOCK_SPAN = 2
+      calls = []
+
+      def fake_upstream(chunk):
+        calls.append((chunk["params"][0]["fromBlock"], chunk["params"][0]["toBlock"]))
+        if chunk["params"][0]["fromBlock"] == "0x1":
+          return {"result": [
+              {"address": "0xpool", "topics": ["0xtopic"], "blockNumber": "0x2", "transactionIndex": "0x0", "logIndex": "0x1", "transactionHash": "0xbbb", "data": "0x"},
+              {"address": "0xpool", "topics": ["0xtopic"], "blockNumber": "0x1", "transactionIndex": "0x0", "logIndex": "0x0", "transactionHash": "0xaaa", "data": "0x"},
+          ]}
+        return {"result": [
+            {"address": "0xpool", "topics": ["0xtopic"], "blockNumber": "0x2", "transactionIndex": "0x0", "logIndex": "0x1", "transactionHash": "0xbbb", "data": "0x"},
+            {"address": "0xpool", "topics": ["0xtopic"], "blockNumber": "0x4", "transactionIndex": "0x0", "logIndex": "0x0", "transactionHash": "0xccc", "data": "0x"},
+        ]}
+
+      self.server.upstream_post = fake_upstream
+      logs = self.server.fetch_logs_in_chunks(payload, info)
+      self.assertEqual(calls, [("0x1", "0x2"), ("0x3", "0x4")])
+      self.assertEqual([log["transactionHash"] for log in logs], ["0xaaa", "0xbbb", "0xccc"])
 
 
 if __name__ == "__main__":

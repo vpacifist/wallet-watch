@@ -39,7 +39,7 @@ async function runCase(testCase) {
     end: testCase.end,
     deposit: "10000",
     rangePct: testCase.rangePct ?? 1,
-    timeoutSeconds: 300,
+    timeoutSeconds: testCase.timeoutSeconds ?? 300,
     progressEverySeconds: 2,
   }, (event) => events.push(event));
 
@@ -61,9 +61,17 @@ async function runCase(testCase) {
   assert.equal(typeof lastRaw.value, "number", `${testCase.name} raw value`);
   assert.equal(typeof lastRaw.lpFeesUsdcValue, "number", `${testCase.name} raw LP fee estimate`);
   assert.equal(typeof lastRaw.valueWithLpFees, "number", `${testCase.name} raw value with LP fees`);
-  assert.equal(lastRaw.aeroModel, "conservative", `${testCase.name} should expose conservative AERO model`);
-  assert.equal(lastRaw.aeroSource, "gauge-rewardInside-estimate", `${testCase.name} should expose AERO source`);
+  assert.equal(lastRaw.aeroModel, "conservative-scenario", `${testCase.name} should expose conservative AERO model`);
+  assert.equal(lastRaw.aeroSource, "gauge-rewardInside-reconstructed", `${testCase.name} should expose AERO source`);
+  assert.equal(lastRaw.aeroSourceLabel, "counterfactual-adjusted", `${testCase.name} should expose AERO source label`);
+  assert.equal(typeof lastRaw.aeroBase, "number", `${testCase.name} should expose base AERO scenario`);
+  assert.equal(typeof lastRaw.aeroConservative, "number", `${testCase.name} should expose conservative AERO scenario`);
+  assert.equal(typeof lastRaw.aeroImpactHaircut, "number", `${testCase.name} should expose AERO impact haircut`);
+  assert.equal(lastRaw.aeroImpactModel, "counterfactual-conservative-haircut", `${testCase.name} should expose AERO impact model`);
   assert.equal(typeof lastRaw.aeroReliability, "number", `${testCase.name} should expose AERO reliability`);
+  assert.ok(Array.isArray(lastRaw.sourceLabels), `${testCase.name} should expose source labels`);
+  assert.ok(lastRaw.sourceLabels.includes("exact-onchain"), `${testCase.name} should include exact source label`);
+  assert.equal(typeof lastRaw.csvOnchainDivergenceBps, "number", `${testCase.name} should expose CSV/on-chain divergence`);
   assert.equal(lastRaw.missingCandle, false, `${testCase.name} should not mark fixture rows missing`);
   assert.ok(final.dataQuality && typeof final.dataQuality.rowCount === "number", `${testCase.name} should include data quality`);
   assert.equal(final.dataQuality.source, "./weth_usdc_1m_2026_feb_mar_apr.csv", `${testCase.name} should include CSV source`);
@@ -74,6 +82,12 @@ async function runCase(testCase) {
     assert.ok(rebalanceRow, `${testCase.name} should include raw rebalance data`);
     assert.equal(typeof rebalanceRow.rebalance.swapIsFallback, "boolean", `${testCase.name} should mark swap fallback state`);
     assert.equal(rebalanceRow.rebalance.fallbackSlippageBps, 5, `${testCase.name} should expose fallback slippage bps`);
+    assert.equal(rebalanceRow.rebalance.swapSourceLabel, rebalanceRow.rebalance.swapIsFallback ? "fallback" : "reconstructed-onchain", `${testCase.name} should expose swap source label`);
+    assert.equal(typeof rebalanceRow.rebalance.gasSource, "string", `${testCase.name} should expose gas source`);
+    assert.equal(typeof rebalanceRow.rebalance.l2GasFeeUsdc, "number", `${testCase.name} should expose L2 gas fee`);
+    assert.equal(typeof rebalanceRow.rebalance.l1DataFeeUsdc, "number", `${testCase.name} should expose L1 data fee`);
+    assert.equal(typeof rebalanceRow.rebalance.gasReliability, "number", `${testCase.name} should expose gas reliability`);
+    assert.ok(Array.isArray(rebalanceRow.rebalance.gasAssumptions), `${testCase.name} should expose gas assumptions`);
     assert.equal(rebalanceRow.rebalance.automationFeeBps, 1, `${testCase.name} should expose automation fee bps`);
   }
 }
@@ -88,7 +102,7 @@ async function main() {
     rows: 3,
     currentValue: "$9,976.64",
     currentAero: "$0.78",
-    lastRow: "2026-02-01 00:02\trebalance -$6.03 · swap fallback\t$9,976.64\t$2,445.37\t0.02531485\t9,914.74\t$0.78\t$0.07\t76.00%",
+    lastRow: "2026-02-01 00:02\trebalance -$6.03 · swap fallback\t$9,976.64\t$2,445.37\t0.02531485\t9,914.74\t$0.78\t$0.07\t68.00%",
     lastEvent: "rebalance -$6.03",
     hasRebalance: true,
   });
@@ -100,7 +114,7 @@ async function main() {
     rows: 6,
     currentValue: "$9,957.96",
     currentAero: "$1.26",
-    lastRow: "2026-02-01 00:05\trebalance -$6.04 · swap fallback\t$9,957.96\t$2,445.61\t4.05712502\t35.83\t$0.00\t$0.00\t76.00%",
+    lastRow: "2026-02-01 00:05\trebalance -$6.04 · swap fallback\t$9,957.96\t$2,445.61\t4.05712502\t35.83\t$0.00\t$0.00\t68.00%",
     lastEvent: "rebalance -$6.04",
     hasRebalance: true,
   });
@@ -110,10 +124,11 @@ async function main() {
     start: "2026-02-01 00:00",
     end: "2026-02-01 00:20",
     rangePct: 0.1,
+    timeoutSeconds: 600,
     rows: 21,
     currentValue: "$9,863.42",
     currentAero: "$1.26",
-    lastRow: "2026-02-01 00:20\trebalance -$5.99 · swap fallback\t$9,863.42\t$2,445.47\t0.00764595\t9,844.72\t$0.00\t$0.00\t76.00%",
+    lastRow: "2026-02-01 00:20\trebalance -$5.99 · swap fallback\t$9,863.42\t$2,445.47\t0.00764595\t9,844.72\t$0.00\t$0.00\t68.00%",
     lastEvent: "rebalance -$5.99",
     hasRebalance: true,
   });

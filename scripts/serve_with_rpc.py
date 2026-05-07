@@ -372,6 +372,7 @@ def normalize_simulation_params(payload):
         "rebalanceGasUnits": int(payload.get("rebalanceGasUnits", os.environ.get("REBALANCE_GAS_UNITS", "1450000"))),
         "rebalanceL1DataFeeEth": float(payload.get("rebalanceL1DataFeeEth", os.environ.get("REBALANCE_L1_DATA_FEE_ETH", "0.000012"))),
         "rebalanceFallbackSlippageBps": float(payload.get("rebalanceFallbackSlippageBps", os.environ.get("REBALANCE_FALLBACK_SLIPPAGE_BPS", "5"))),
+        "aeroImpactHaircutMax": float(payload.get("aeroImpactHaircutMax", os.environ.get("AERO_IMPACT_HAIRCUT_MAX", "0.5"))),
         "lpFeeRate": float(payload.get("lpFeeRate", os.environ.get("LP_FEE_RATE", "0.0005"))),
     }
 
@@ -835,7 +836,7 @@ def upstream_post(payload):
 
 
 def fetch_logs_in_chunks(payload, info):
-    all_logs = []
+    all_logs_by_key = {}
     current = info["from_block"]
     while current <= info["to_block"]:
         end = min(info["to_block"], current + MAX_LOG_BLOCK_SPAN - 1)
@@ -854,10 +855,17 @@ def fetch_logs_in_chunks(payload, info):
             logs = parsed.get("result", [])
         chunk_info = dict(info, from_block=current, to_block=end)
         store_log_result(chunk_info, logs)
-        all_logs.extend(logs or [])
+        for log in logs or []:
+            key = (
+                hex_to_int(log.get("blockNumber", "0x0")),
+                hex_to_int(log.get("transactionIndex", "0x0")),
+                hex_to_int(log.get("logIndex", "0x0")),
+                (log.get("transactionHash") or "").lower(),
+            )
+            all_logs_by_key[key] = log
         current = end + 1
     return sorted(
-        all_logs,
+        all_logs_by_key.values(),
         key=lambda log: (
             hex_to_int(log.get("blockNumber", "0x0")),
             hex_to_int(log.get("transactionIndex", "0x0")),

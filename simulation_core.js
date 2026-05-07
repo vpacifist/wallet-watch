@@ -492,6 +492,53 @@
       return { raw, dilutionShare: dilution.share };
     }
 
+    function normalizeSourceLabel(label) {
+      const allowed = new Set([
+        "exact-onchain",
+        "reconstructed-onchain",
+        "counterfactual-adjusted",
+        "estimated",
+        "heuristic",
+        "fallback",
+      ]);
+      return allowed.has(label) ? label : "estimated";
+    }
+
+    async function findBlockAtOrAfterWithGetter({ timestampSeconds, afterBlock = 1, anchor, secondsPerBlock = 2, getBlock, cache = null }) {
+      const cacheKey = `${timestampSeconds}:${afterBlock}`;
+      if (cache?.has(cacheKey)) return cache.get(cacheKey);
+      let estimate = anchor.number + Math.round((timestampSeconds - anchor.timestamp) / secondsPerBlock);
+      estimate = Math.max(1, estimate);
+      const estimatedBlock = await getBlock(estimate);
+      let low = Math.max(1, estimate - 240);
+      let high = estimate + 240;
+      if (estimatedBlock.timestamp < timestampSeconds) {
+        low = estimate + 1;
+        high = estimate + 240;
+        while ((await getBlock(high)).timestamp < timestampSeconds) {
+          low = high + 1;
+          high += 240;
+        }
+      } else {
+        high = estimate;
+        low = Math.max(1, estimate - 240);
+        while (low > 1 && (await getBlock(low)).timestamp >= timestampSeconds) {
+          high = low;
+          low = Math.max(1, low - 240);
+        }
+      }
+      low = Math.max(low, afterBlock);
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        const block = await getBlock(mid);
+        if (block.timestamp < timestampSeconds) low = mid + 1;
+        else high = mid;
+      }
+      const result = await getBlock(low);
+      if (cache) cache.set(cacheKey, result);
+      return result;
+    }
+
     function aeroPriceReliability(ageSeconds) {
       return scoreFromThresholds(ageSeconds, [
         [60, 92],
@@ -555,6 +602,8 @@
       growthDeltaIn256,
       liquidityDilutionFactor,
       applyGrowthDelta,
+      normalizeSourceLabel,
+      findBlockAtOrAfterWithGetter,
       aeroPriceReliability,
     };
   }
