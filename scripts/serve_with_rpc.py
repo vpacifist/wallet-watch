@@ -47,6 +47,7 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8003"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", f"http://127.0.0.1:{PORT}")
 MAX_UPSTREAM_BATCH_SIZE = int(os.environ.get("MAX_UPSTREAM_BATCH_SIZE", "3"))
+MAX_LOG_BLOCK_SPAN = int(os.environ.get("MAX_LOG_BLOCK_SPAN", "2000"))
 MAX_EXACT_RESULT_BYTES = int(os.environ.get("MAX_EXACT_RESULT_BYTES", str(512 * 1024)))
 DEBUG_RPC_ERRORS = os.environ.get("DEBUG_RPC_ERRORS", "").lower() in {"1", "true", "yes", "on"}
 ADMIN_API_TOKEN = os.environ.get("ADMIN_API_TOKEN", "").strip()
@@ -624,11 +625,15 @@ def parse_supported_logs_filter(payload):
         return None
     if not (is_historical_block_tag(from_block) and is_historical_block_tag(to_block)):
         return None
+    from_int = hex_to_int(from_block)
+    to_int = hex_to_int(to_block)
+    if to_int < from_int:
+        return None
     return {
         "address": address.lower(),
         "topic0": topics[0].lower(),
-        "from_block": hex_to_int(from_block),
-        "to_block": hex_to_int(to_block),
+        "from_block": from_int,
+        "to_block": to_int,
     }
 
 
@@ -829,6 +834,38 @@ def upstream_post(payload):
     raise RuntimeError(json.dumps(last_error or {"message": "RPC proxy error"}))
 
 
+def fetch_logs_in_chunks(payload, info):
+    all_logs = []
+    current = info["from_block"]
+    while current <= info["to_block"]:
+        end = min(info["to_block"], current + MAX_LOG_BLOCK_SPAN - 1)
+        chunk_payload = json.loads(json.dumps(payload))
+        chunk_payload["params"][0]["fromBlock"] = int_to_block_tag(current)
+        chunk_payload["params"][0]["toBlock"] = int_to_block_tag(end)
+        parsed = upstream_post(chunk_payload)
+        if isinstance(parsed, list):
+            item = parsed[0] if parsed else {}
+            if "error" in item:
+                raise RuntimeError(json.dumps(item["error"]))
+            logs = item.get("result", [])
+        else:
+            if "error" in parsed:
+                raise RuntimeError(json.dumps(parsed["error"]))
+            logs = parsed.get("result", [])
+        chunk_info = dict(info, from_block=current, to_block=end)
+        store_log_result(chunk_info, logs)
+        all_logs.extend(logs or [])
+        current = end + 1
+    return sorted(
+        all_logs,
+        key=lambda log: (
+            hex_to_int(log.get("blockNumber", "0x0")),
+            hex_to_int(log.get("transactionIndex", "0x0")),
+            hex_to_int(log.get("logIndex", "0x0")),
+        ),
+    )
+
+
 def classify_payload(payload):
     log_info = parse_supported_logs_filter(payload)
     if log_info:
@@ -866,6 +903,25 @@ def post_rpc_batch(payloads):
                 results[index] = response_from_result(payload, result)
         else:
             misses.append((index, kind, None, None, payload))
+
+    if misses:
+        deferred_misses = []
+        for index, kind, log_info, key, payload in misses:
+            if kind == "logs" and log_info and (log_info["to_block"] - log_info["from_block"] + 1) > MAX_LOG_BLOCK_SPAN:
+                try:
+                    result = fetch_logs_in_chunks(payload, log_info)
+                    results[index] = response_from_result(payload, result)
+                    record_stat("upstream_items", len(result))
+                except RuntimeError as exc:
+                    record_stat("errors")
+                    try:
+                        error = json.loads(str(exc))
+                    except json.JSONDecodeError:
+                        error = {"message": str(exc)}
+                    results[index] = response_from_error(payload, error)
+            else:
+                deferred_misses.append((index, kind, log_info, key, payload))
+        misses = deferred_misses
 
     if misses:
         upstream_payload = []

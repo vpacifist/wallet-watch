@@ -48,6 +48,10 @@
         liquidityHuman: state.sim.liquidityHuman,
         rewardStart: state.sim.rewardStart,
         rewardLast: state.sim.rewardLast,
+        feeGrowthInside0Last: state.sim.feeGrowthInside0Last,
+        feeGrowthInside1Last: state.sim.feeGrowthInside1Last,
+        feeDilutionLiquidityLast: state.sim.feeDilutionLiquidityLast,
+        rewardDilutionLiquidityLast: state.sim.rewardDilutionLiquidityLast,
         aeroUnharvested: state.sim.aeroUnharvested,
         aeroBaseUnharvested: state.sim.aeroBaseUnharvested,
         aeroHaircutUnharvested: state.sim.aeroHaircutUnharvested,
@@ -74,6 +78,10 @@
       state.sim.liquidityHuman = snapshot.liquidityHuman;
       state.sim.rewardStart = snapshot.rewardStart;
       state.sim.rewardLast = snapshot.rewardLast || snapshot.rewardStart || 0n;
+      state.sim.feeGrowthInside0Last = snapshot.feeGrowthInside0Last || 0n;
+      state.sim.feeGrowthInside1Last = snapshot.feeGrowthInside1Last || 0n;
+      state.sim.feeDilutionLiquidityLast = snapshot.feeDilutionLiquidityLast || 0n;
+      state.sim.rewardDilutionLiquidityLast = snapshot.rewardDilutionLiquidityLast || 0n;
       state.sim.aeroUnharvested = snapshot.aeroUnharvested || 0;
       state.sim.aeroBaseUnharvested = snapshot.aeroBaseUnharvested || snapshot.aeroUnharvested || 0;
       state.sim.aeroHaircutUnharvested = snapshot.aeroHaircutUnharvested || 0;
@@ -111,9 +119,20 @@
       return rewardState.tick >= state.sim.tickLower && rewardState.tick < state.sim.tickUpper;
     }
 
-    function rangeAwareBaseLiquidity(rewardState) {
+    function averageLiquidity(a, b) {
+      const left = BigInt(a || 0n);
+      const right = BigInt(b || 0n);
+      if (left > 0n && right > 0n) return (left + right) / 2n;
+      return left > 0n ? left : right;
+    }
+
+    function activeBaseLiquidity(rewardState) {
       if (isPositionActiveAtTick(rewardState) && rewardState.activeLiquidity > 0n) return rewardState.activeLiquidity;
-      return rewardState.stakedLiquidity;
+      return 0n;
+    }
+
+    function rangeAwareBaseLiquidity(rewardState) {
+      return activeBaseLiquidity(rewardState) || rewardState.stakedLiquidity;
     }
 
     function impactShare(rewardState) {
@@ -124,10 +143,11 @@
 
     function dilutedAeroRaw(rewardState) {
       if (rewardState.rewardInside <= state.sim.rewardLast || state.sim.liquidityRaw <= 0n) return 0n;
-      const totalLiquidity = rewardState.stakedLiquidity + state.sim.liquidityRaw;
-      if (totalLiquidity <= 0n) return 0n;
       const growthDelta = rewardState.rewardInside - state.sim.rewardLast;
-      return state.sim.liquidityRaw * growthDelta * rewardState.stakedLiquidity / totalLiquidity / Q128;
+      const baseLiquidity = averageLiquidity(state.sim.rewardDilutionLiquidityLast, activeBaseLiquidity(rewardState) || rewardState.stakedLiquidity);
+      const totalLiquidity = baseLiquidity + state.sim.liquidityRaw;
+      if (totalLiquidity <= 0n) return 0n;
+      return state.sim.liquidityRaw * growthDelta * baseLiquidity / totalLiquidity / Q128;
     }
 
     function accrueAeroRewards(rewardState) {
@@ -141,6 +161,7 @@
         state.sim.aeroUnharvested += conservativeAero;
       }
       if (rewardState.rewardInside > state.sim.rewardLast) state.sim.rewardLast = rewardState.rewardInside;
+      state.sim.rewardDilutionLiquidityLast = activeBaseLiquidity(rewardState) || rewardState.stakedLiquidity;
       return state.sim.aeroUnharvested;
     }
 
@@ -373,6 +394,10 @@
       state.sim.liquidityRaw = newPlan.liquidityRaw;
       state.sim.rewardStart = nextRewardState.rewardInside;
       state.sim.rewardLast = nextRewardState.rewardInside;
+      state.sim.feeGrowthInside0Last = nextRewardState.feeGrowthInside0X128 || state.sim.feeGrowthInside0Last || 0n;
+      state.sim.feeGrowthInside1Last = nextRewardState.feeGrowthInside1X128 || state.sim.feeGrowthInside1Last || 0n;
+      state.sim.feeDilutionLiquidityLast = activeBaseLiquidity(nextRewardState);
+      state.sim.rewardDilutionLiquidityLast = activeBaseLiquidity(nextRewardState) || nextRewardState.stakedLiquidity;
       state.sim.aeroUnharvested = 0;
       state.sim.aeroBaseUnharvested = 0;
       state.sim.aeroHaircutUnharvested = 0;
