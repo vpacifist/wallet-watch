@@ -1368,7 +1368,7 @@ function updateSimulationControls() {
       runSimulation.title = "Пауза серверной симуляции";
       runSimulation.disabled = false;
     } else {
-      runSimulation.textContent = "START";
+      runSimulation.textContent = serverSimulation.paused ? "RESUME" : "START";
       runSimulation.title = serverSimulation.paused ? "Продолжить серверную симуляцию" : "Запустить серверную симуляцию";
       runSimulation.disabled = false;
     }
@@ -1389,7 +1389,7 @@ function updateSimulationControls() {
     runSimulation.textContent = "START";
     runSimulation.title = "Старт симуляции";
   } else {
-    runSimulation.textContent = "START";
+    runSimulation.textContent = "RESUME";
     runSimulation.title = "Продолжить симуляцию";
   }
   if (resetSimulationButton) {
