@@ -115,6 +115,14 @@ class ServerContractTests(unittest.TestCase):
       self.assertFalse(handler.require_admin_token())
       self.assertEqual(sent[-1][0], 401)
 
+    def test_admin_token_accepts_query_for_sse(self):
+      self.server.ADMIN_API_TOKEN = "secret-token"
+      handler = object.__new__(self.server.Handler)
+      handler.send_json = lambda status, payload: None
+      handler.headers = FakeHeaders({})
+      handler.path = "/api/simulations/sim-1/events?admin_token=secret-token"
+      self.assertTrue(handler.require_admin_token())
+
     def test_rate_limit_is_per_bucket_and_ip(self):
       self.server.RATE_LIMITS.clear()
       handler = object.__new__(self.server.Handler)
@@ -170,6 +178,13 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual(simulation["progress"]["rawRowCount"], 2)
       self.assertEqual([row["index"] for row in simulation["progress"]["rawRows"]], [0, 1])
       self.assertEqual(simulation["progress"]["latestRawRow"]["index"], 1)
+
+    def test_merge_progress_deduplicates_rows(self):
+      self.server.insert_simulation("sim-dedupe", {"start": "2026-02-01 00:00", "end": "2026-02-01 00:02"})
+      first = {"rows": 1, "newRawRows": [{"index": 1, "blockNumber": 10, "event": "tick"}]}
+      self.server.update_simulation("sim-dedupe", progress_json=json.dumps(first))
+      merged = self.server.merge_simulation_progress("sim-dedupe", {"rows": 2, "newRawRows": [{"index": 1, "blockNumber": 10, "event": "tick"}]})
+      self.assertEqual(merged["rawRowCount"], 1)
 
     def test_log_cache_requires_full_partial_range_coverage(self):
       info = {
