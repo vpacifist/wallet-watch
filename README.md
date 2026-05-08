@@ -14,7 +14,7 @@ Open:
 http://127.0.0.1:8003/index.html
 ```
 
-By default `START` creates a server-side simulation job through `/api/simulations`. The calculation runs in the Node worker, so the browser tab can be closed and reopened later.
+By default `START` creates a server-side simulation job through `/api/simulations`. The calculation runs in the Node worker, so the browser tab can be closed and reopened later. Live progress now uses SSE (`/api/simulations/:id/events`) for near-instant updates; periodic polling is only a fallback path.
 
 For the legacy in-browser simulation mode:
 
@@ -118,6 +118,9 @@ MAX_SIMULATION_DAYS=31
 RPC_RATE_LIMIT_PER_MINUTE=300
 API_RATE_LIMIT_PER_MINUTE=60
 SERVER_SIMULATION_POLL_MS=2500
+SSE_RATE_LIMIT_PER_MINUTE=180
+SSE_HEARTBEAT_SECONDS=20
+SSE_MAX_CONNECTIONS_PER_IP=6
 REBALANCE_MANUAL_FEE_BPS=1
 REBALANCE_GAS_UNITS=1450000
 REBALANCE_L1_DATA_FEE_ETH=0.000012
@@ -128,7 +131,20 @@ MAX_LOG_BLOCK_SPAN=2000
 
 Use a Railway Volume mounted at `/data` to persist market-data and simulation caches across restarts.
 
-For public deployments set `ADMIN_API_TOKEN`; create/cancel/delete simulation APIs then require the token. Do not commit real tokens, secrets, or private RPC URLs. Keep them in `.env`, local environment, or Railway Environment Variables.
+For public deployments set `ADMIN_API_TOKEN`; create/cancel/delete/read/event-stream simulation APIs then require the token. Do not commit real tokens, secrets, or private RPC URLs. Keep them in `.env`, local environment, or Railway Environment Variables.
+
+## Live Progress and Rate-Limit Behavior
+
+- Primary transport: SSE (`GET /api/simulations/:id/events`) with heartbeat every 15–30 seconds (default 20).
+- Stream emits updates only when simulation payload changes, plus heartbeat frames.
+- Stream auto-closes on terminal statuses: `completed`, `failed`, `cancelled`, `timeout`.
+- Fallback transport: adaptive polling with exponential backoff (base 5–10s), honoring `retryAfterSeconds` on `429`.
+- Simulation execution is server-side and continues if browser SSE/polling disconnects.
+- Duplicate progress rows are deduplicated by `(index, blockNumber, event)` before persistence/render.
+
+## Why GitHub Actions Node 24
+
+GitHub-hosted JavaScript actions are migrating away from Node 20. CI now pins Node-24-compatible action versions and sets `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` in workflow env to avoid Node 20 deprecation warnings while keeping runtime consistency with current project engines.
 
 RPC compatibility check:
 

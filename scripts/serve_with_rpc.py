@@ -55,6 +55,9 @@ MAX_RUNNING_SIMULATIONS = int(os.environ.get("MAX_RUNNING_SIMULATIONS", "1"))
 MAX_SIMULATION_DAYS = float(os.environ.get("MAX_SIMULATION_DAYS", "31"))
 RPC_RATE_LIMIT_PER_MINUTE = int(os.environ.get("RPC_RATE_LIMIT_PER_MINUTE", "300"))
 API_RATE_LIMIT_PER_MINUTE = int(os.environ.get("API_RATE_LIMIT_PER_MINUTE", "60"))
+SSE_RATE_LIMIT_PER_MINUTE = int(os.environ.get("SSE_RATE_LIMIT_PER_MINUTE", "180"))
+SSE_HEARTBEAT_SECONDS = int(os.environ.get("SSE_HEARTBEAT_SECONDS", "20"))
+SSE_MAX_CONNECTIONS_PER_IP = int(os.environ.get("SSE_MAX_CONNECTIONS_PER_IP", "6"))
 
 AERO_USDC_POOL = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1"
 AERO_PRICE_CACHE = {}
@@ -65,6 +68,7 @@ RUNNING_SIMULATIONS = {}
 STATS_LOCK = threading.Lock()
 RATE_LIMIT_LOCK = threading.Lock()
 RATE_LIMITS = defaultdict(deque)
+SSE_CONNECTIONS = defaultdict(int)
 STATS = {
     "requests": 0,
     "cache_hits": 0,
@@ -1014,12 +1018,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def check_api_rate_limit(self):
         return self.check_rate_limit("api", API_RATE_LIMIT_PER_MINUTE)
+    def check_sse_rate_limit(self):
+        return self.check_rate_limit("sse", SSE_RATE_LIMIT_PER_MINUTE)
 
     def check_rpc_rate_limit(self):
         return self.check_rate_limit("rpc", RPC_RATE_LIMIT_PER_MINUTE)
 
     def do_POST(self):
-        parsed = urllib.parse.urlparse(self.path)
+        parsed = urllib.parse.urlparse(getattr(self, "path", ""))
         if parsed.path == "/api/simulations":
             if not self.check_api_rate_limit():
                 return
@@ -1077,10 +1083,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def require_admin_token(self):
         if not ADMIN_API_TOKEN:
             return True
+        parsed = urllib.parse.urlparse(getattr(self, "path", ""))
+        query_token = urllib.parse.parse_qs(parsed.query).get("admin_token", [""])[0].strip()
         header_token = self.headers.get("X-Admin-API-Token", "").strip()
         auth = self.headers.get("Authorization", "").strip()
         bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        if header_token == ADMIN_API_TOKEN or bearer == ADMIN_API_TOKEN:
+        if header_token == ADMIN_API_TOKEN or bearer == ADMIN_API_TOKEN or query_token == ADMIN_API_TOKEN:
             return True
         self.send_json(401, {"error": "admin token required"})
         return False
@@ -1089,6 +1097,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/health":
             self.send_json(200, {"ok": True, "status": "healthy", "time": now_int()})
+            return
+        if parsed.path.startswith("/api/simulations/") and parsed.path.endswith("/events"):
+            if not self.check_sse_rate_limit():
+                return
+            if not self.require_admin_token():
+                return
+            simulation_id = parsed.path.split("/")[-2]
+            self.handle_simulation_events(simulation_id)
             return
         if parsed.path == "/api/simulations":
             if not self.check_api_rate_limit():
@@ -1147,6 +1163,49 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.send_json(404, {"error": "simulation not found"})
             return
         self.send_error(404)
+
+    def send_sse(self, event_name, payload):
+        message = f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        self.wfile.write(message.encode("utf-8"))
+        self.wfile.flush()
+
+    def handle_simulation_events(self, simulation_id):
+        client_ip = self.client_ip()
+        with RATE_LIMIT_LOCK:
+            if SSE_CONNECTIONS[client_ip] >= SSE_MAX_CONNECTIONS_PER_IP:
+                self.send_json(429, {"error": "too many SSE connections", "code": "sse_connection_limit"})
+                return
+            SSE_CONNECTIONS[client_ip] += 1
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            last_snapshot = None
+            last_heartbeat = 0.0
+            while True:
+                simulation = get_simulation(simulation_id)
+                if not simulation:
+                    self.send_sse("error", {"error": "simulation not found"})
+                    break
+                snapshot = json.dumps(simulation, sort_keys=True, ensure_ascii=False)
+                if snapshot != last_snapshot:
+                    self.send_sse("simulation", simulation)
+                    last_snapshot = snapshot
+                now = time.time()
+                if now - last_heartbeat >= max(15, min(30, SSE_HEARTBEAT_SECONDS)):
+                    self.send_sse("heartbeat", {"ts": now_int()})
+                    last_heartbeat = now
+                if simulation.get("status") in {"completed", "failed", "cancelled", "timeout"}:
+                    self.send_sse("terminal", {"status": simulation.get("status"), "id": simulation_id})
+                    break
+                time.sleep(1)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+        finally:
+            with RATE_LIMIT_LOCK:
+                SSE_CONNECTIONS[client_ip] = max(0, SSE_CONNECTIONS[client_ip] - 1)
 
 
 def get_aero_price(timestamp):

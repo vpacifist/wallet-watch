@@ -162,6 +162,8 @@ let aeroUsdcTokenOrder = null;
 const serverSimulation = {
   id: null,
   pollTimer: null,
+  pollBackoffMs: 0,
+  eventSource: null,
   running: false,
   paused: false,
   available: SERVER_SIMULATION_MODE,
@@ -2127,8 +2129,12 @@ function renderServerSimulation(simulation) {
 }
 
 function stopServerSimulationPolling() {
-  if (serverSimulation.pollTimer) clearInterval(serverSimulation.pollTimer);
+  if (serverSimulation.pollTimer) clearTimeout(serverSimulation.pollTimer);
   serverSimulation.pollTimer = null;
+}
+function stopServerSimulationEvents() {
+  if (serverSimulation.eventSource) serverSimulation.eventSource.close();
+  serverSimulation.eventSource = null;
 }
 
 async function pollServerSimulation(id) {
@@ -2141,15 +2147,15 @@ async function pollServerSimulation(id) {
       loadServerJobs();
     }
   } catch (error) {
-    if (error.status === 429 && serverSimulation.running) {
-      const retryMs = Math.max(5000, (error.retryAfterSeconds || 5) * 1000);
-      stopServerSimulationPolling();
+    if ((error.status === 429 || error.retryAfterSeconds) && serverSimulation.running) {
+      const retryMs = Math.max(5000, error.retryAfterSeconds ? error.retryAfterSeconds * 1000 : (serverSimulation.pollBackoffMs || SERVER_SIMULATION_POLL_MS) * 2);
+      serverSimulation.pollBackoffMs = Math.min(60000, retryMs);
       setSimulationNotice({
         status: "Сервер ограничил частоту чтения прогресса.",
         details: `Следующая попытка через ${Math.ceil(retryMs / 1000)}s. Симуляция продолжает считаться на сервере.`,
         estimate: "",
       });
-      serverSimulation.pollTimer = setTimeout(() => watchServerSimulation(id), retryMs);
+      serverSimulation.pollTimer = setTimeout(() => pollServerSimulation(id), retryMs);
       return;
     }
     serverSimulation.running = false;
@@ -2161,14 +2167,44 @@ async function pollServerSimulation(id) {
 
 function watchServerSimulation(id) {
   stopServerSimulationPolling();
+  stopServerSimulationEvents();
   serverSimulation.paused = false;
+  serverSimulation.pollBackoffMs = Math.max(5000, SERVER_SIMULATION_POLL_MS);
   pollServerSimulation(id);
-  serverSimulation.pollTimer = setInterval(() => pollServerSimulation(id), Math.max(1500, SERVER_SIMULATION_POLL_MS));
+  const adminToken = typeof localStorage !== "undefined" ? localStorage.getItem("walletWatchAdminToken") : "";
+  const eventUrl = adminToken
+    ? `/api/simulations/${id}/events?admin_token=${encodeURIComponent(adminToken)}`
+    : `/api/simulations/${id}/events`;
+  const source = new EventSource(eventUrl);
+  source.addEventListener("simulation", (event) => {
+    try {
+      const simulation = JSON.parse(event.data);
+      renderServerSimulation(simulation);
+      if (isServerSimulationTerminal(simulation.status)) {
+        stopServerSimulationEvents();
+        stopServerSimulationPolling();
+      }
+      serverSimulation.pollBackoffMs = Math.max(5000, SERVER_SIMULATION_POLL_MS);
+    } catch (_) {}
+  });
+  source.addEventListener("terminal", () => {
+    stopServerSimulationEvents();
+    stopServerSimulationPolling();
+    loadServerJobs();
+  });
+  source.onerror = () => {
+    stopServerSimulationEvents();
+    const delayMs = Math.max(5000, serverSimulation.pollBackoffMs || SERVER_SIMULATION_POLL_MS);
+    serverSimulation.pollBackoffMs = Math.min(60000, delayMs * 2);
+    serverSimulation.pollTimer = setTimeout(() => pollServerSimulation(id), delayMs);
+  };
+  serverSimulation.eventSource = source;
 }
 
 function pauseServerSimulation() {
   if (!SERVER_SIMULATION_MODE || !serverSimulation.id || !serverSimulation.running) return;
   stopServerSimulationPolling();
+  stopServerSimulationEvents();
   serverSimulation.running = false;
   serverSimulation.paused = true;
   setSimulationNotice({ status: "Пауза.", details: "Серверная симуляция поставлена на паузу.", estimate: "" });
