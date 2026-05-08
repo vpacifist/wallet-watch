@@ -63,6 +63,13 @@
             <span>Диапазон, %</span>
             <input id="rangePercentInput" type="text" value="1" />
           </label>
+          <label class="field">
+            <span>Simulation mode</span>
+            <select id="simulationModeSelect">
+              <option value="staked">Staked LP (AERO emissions)</option>
+              <option value="unstaked">Unstaked LP (LP trading fees)</option>
+            </select>
+          </label>
           <div class="simButtons" aria-label="Управление симуляцией">
             <div class="playbackButtons">
               <button id="runSimulation" class="startButton" type="button" title="Старт симуляции">START</button>
@@ -76,9 +83,13 @@
               <span>Стоимость позиции</span>
               <strong id="currentPositionValue">$0.00</strong>
             </div>
+            <div id="currentRewardDiv">
+              <span id="currentRewardLabel">AERO earned, USDC</span>
+              <strong id="currentRewardValue">$0.00</strong>
+            </div>
             <div>
-              <span>AERO earned, USDC</span>
-              <strong id="currentAeroEarned">$0.00</strong>
+              <span>Total return, USDC</span>
+              <strong id="currentTotalValue">$0.00</strong>
             </div>
           </div>
         </div>
@@ -104,8 +115,8 @@
                 <th>Цена WETH</th>
                 <th>WETH</th>
                 <th>USDC</th>
-                <th>AERO, USDC</th>
-                <th>LP fees est.</th>
+                <th id="aeroTh">AERO, USDC</th>
+                <th id="lpFeesTh">LP fees est.</th>
                 <th>Достоверность</th>
               </tr>
             </thead>

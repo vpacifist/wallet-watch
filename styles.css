@@ -353,7 +353,7 @@ canvas {
 }
 
 .simControls .rangePercentField {
-  flex-basis: 86px;
+  flex-basis: 70px;
 }
 
 .field {
@@ -417,7 +417,7 @@ canvas {
 }
 
 .simButtons .startButton {
-  width: 74px;
+  width: 88px;
   padding: 0 12px;
   font-size: 13px;
   font-weight: 700;
@@ -492,6 +492,16 @@ canvas {
   line-height: 1.2;
 }
 
+.skeletonText {
+  width: 92px;
+  max-width: 100%;
+  color: transparent !important;
+  border-radius: 5px;
+  background: linear-gradient(90deg, #edf1f5 0%, #f8fafc 45%, #edf1f5 90%);
+  background-size: 220% 100%;
+  animation: skeletonPulse 1.2s ease-in-out infinite;
+}
+
 .simNotice {
   margin-top: 12px;
   display: grid;
@@ -502,6 +512,50 @@ canvas {
   font-size: 13px;
   line-height: 1.35;
   min-height: 40px;
+}
+
+.simNotice.simProgressNotice {
+  grid-template-columns: minmax(80px, 0.9fr) minmax(72px, 0.7fr) minmax(126px, 1fr) minmax(82px, 0.75fr) minmax(64px, 0.6fr);
+  gap: 0;
+  align-items: stretch;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.simProgressCell {
+  min-width: 0;
+  padding: 8px 10px;
+  border-left: 1px solid var(--line);
+}
+
+.simProgressCell:first-child {
+  border-left: 0;
+}
+
+.simProgressCell span,
+.simProgressCell strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.simProgressCell span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.simProgressCell strong {
+  margin-top: 2px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.25;
+  font-weight: 700;
 }
 
 .simNotice:empty {
@@ -526,6 +580,17 @@ canvas {
 .simNoticeDetails,
 .simNoticeEstimate {
   color: var(--ink);
+}
+
+@media (max-width: 760px) {
+  .simNotice.simProgressNotice {
+    grid-template-columns: repeat(5, minmax(72px, 1fr));
+    overflow-x: auto;
+  }
+
+  .simProgressCell {
+    min-width: 72px;
+  }
 }
 
 .serverJobs {
@@ -842,6 +907,43 @@ canvas {
 .simTable tbody tr:hover,
 .simTable tbody tr.activeRow {
   background: rgba(15, 139, 141, 0.07);
+}
+
+.simTable .skeletonRow {
+  pointer-events: none;
+}
+
+.simTable .skeletonRow:hover {
+  background: transparent;
+}
+
+.skeletonLine {
+  display: block;
+  width: 100%;
+  height: 13px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #edf1f5 0%, #f8fafc 45%, #edf1f5 90%);
+  background-size: 220% 100%;
+  animation: skeletonPulse 1.2s ease-in-out infinite;
+}
+
+.skeletonRow td:nth-child(2) .skeletonLine {
+  width: 74%;
+}
+
+.skeletonRow td:nth-child(7) .skeletonLine,
+.skeletonRow td:nth-child(8) .skeletonLine,
+.skeletonRow td:nth-child(9) .skeletonLine {
+  width: 62%;
+}
+
+@keyframes skeletonPulse {
+  0% {
+    background-position: 110% 0;
+  }
+  100% {
+    background-position: -110% 0;
+  }
 }
 
 .simMarker {

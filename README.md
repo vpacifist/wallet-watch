@@ -86,6 +86,26 @@ Every raw row can expose these labels:
 - If historical `feeGrowthInside` reads fail, LP fees fall back to swap-log estimation and the row exposes the lower-reliability source.
 - Missing CSV candles are filled only to preserve the minute grid. Filled rows are marked `missing-candle`; economics still use on-chain state.
 
+## Simulation Modes
+
+The simulator supports two economic models to reflect the difference between staked and unstaked LP positions on Aerodrome Slipstream:
+
+### Staked LP (Default, AERO Emissions)
+- Includes AERO rewards from staked gauge emissions.
+- Excludes direct LP trading fees from total return, as staked positions do not receive direct feeGrowthInside. Fees flow through: CLPool -> CLGauge -> FeesVotingReward -> veNFT voters.
+- Total return = position value + AERO rewards - rebalance costs.
+- UI shows Position value, AERO earned, Total.
+- Table shows AERO column, hides LP fees column.
+
+### Unstaked LP (LP Trading Fees)
+- Includes direct LP trading fees from feeGrowthInside.
+- Excludes AERO rewards, as unstaked positions do not receive gauge emissions.
+- Total return = position value + LP fees - rebalance costs.
+- UI shows Position value, LP fees earned, Total.
+- Table shows LP fees column, hides AERO column.
+
+The default mode is Staked LP to avoid double-counting fees that are not claimable by staked LPs. Audit revealed that staked positions receive fees indirectly through voting rewards, not directly from the pool.
+
 ## RPC And Cache
 
 `scripts/serve_with_rpc.py` proxies Base RPC and caches only historical calls:

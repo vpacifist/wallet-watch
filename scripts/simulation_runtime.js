@@ -21,6 +21,20 @@ class FakeClassList {
     this.element.className = Array.from(this.values).join(" ");
     return enabled;
   }
+
+  add(...names) {
+    names.forEach((name) => this.values.add(name));
+    this.element.className = Array.from(this.values).join(" ");
+  }
+
+  remove(...names) {
+    names.forEach((name) => this.values.delete(name));
+    this.element.className = Array.from(this.values).join(" ");
+  }
+
+  contains(name) {
+    return this.values.has(name);
+  }
 }
 
 class FakeElement {
@@ -63,6 +77,8 @@ class FakeElement {
       const row = new FakeElement("", "tr");
       const indexMatch = match[1].match(/data-index="([^"]+)"/);
       if (indexMatch) row.dataset.index = indexMatch[1];
+      const classMatch = match[1].match(/class="([^"]+)"/);
+      if (classMatch) row.className = classMatch[1];
       const cells = [];
       const cellPattern = /<td\b[^>]*>([\s\S]*?)<\/td>/g;
       let cellMatch;
@@ -97,6 +113,10 @@ class FakeElement {
     this.children.push(...children);
   }
 
+  remove() {
+    this.removed = true;
+  }
+
   replaceChildren(...children) {
     this.children = [...children];
   }
@@ -115,6 +135,7 @@ class FakeElement {
 
   querySelectorAll(selector) {
     if (selector === "tr" || selector === "tr[data-index]") return this._rows;
+    if (selector === ".skeletonRow") return this._rows.filter((row) => row.className.includes("skeletonRow"));
     return [];
   }
 
@@ -167,9 +188,31 @@ function makeDocument() {
     "stepForward",
     "currentPositionValue",
     "currentAeroEarned",
+    "currentTotalValue",
+    "currentRewardValue",
+    "currentRewardLabel",
+    "simulationModeSelect",
     "simNotice",
     "simTableWrap",
     "simTableBody",
+    "serverJobs",
+    "serverJobsList",
+    "refreshServerJobs",
+    "refreshDoneCheck",
+    "appTabNew",
+    "appTabHistory",
+    "resultTabs",
+    "chartView",
+    "newSimulationView",
+    "historyView",
+    "simulationResultView",
+    "resultTitle",
+    "resultSubtitle",
+    "resultSummary",
+    "resultLastRow",
+    "resultTableWrap",
+    "resultTableBody",
+    "resultEmpty",
   ];
   const elements = new Map(ids.map((id) => [id, new FakeElement(id, id === "priceChart" ? "canvas" : "div")]));
   elements.get("simStartInput").value = "2026-02-01 00:00";
@@ -225,7 +268,7 @@ function readUi(document) {
     lastRow,
     button: document.getElementById("runSimulation").textContent || "",
     currentValue: document.getElementById("currentPositionValue").textContent || "",
-    currentAero: document.getElementById("currentAeroEarned").textContent || "",
+    currentReward: document.getElementById("currentRewardValue").textContent || "",
   };
 }
 
@@ -239,7 +282,13 @@ function readRawRows(sandbox) {
   return sandbox.getSimulationRawRows();
 }
 
-function progressEvent(config, startedAt, state, rawRows, newRawRows, reason = "heartbeat") {
+function readStartupState(sandbox) {
+  if (typeof sandbox.getSimulationStartupState !== "function") return {};
+  return sandbox.getSimulationStartupState() || {};
+}
+
+function progressEvent(config, startedAt, state, rawRows, newRawRows, reason = "heartbeat", sandbox = null) {
+  const startup = readStartupState(sandbox || {});
   return {
     type: "progress",
     id: config.id,
@@ -250,9 +299,12 @@ function progressEvent(config, startedAt, state, rawRows, newRawRows, reason = "
     notice: state.notice,
     lastRow: state.lastRow,
     currentValue: state.currentValue,
-    currentAero: state.currentAero,
+    currentReward: state.currentReward,
     latestRawRow: rawRows.at(-1) || null,
     newRawRows,
+    stage: startup.stage || "",
+    skeletonVisible: Boolean(startup.skeletonVisible),
+    initialRange: startup.initialRange || null,
   };
 }
 
@@ -349,7 +401,7 @@ async function runSimulation(config, emit = () => {}) {
     const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
     if (elapsedSeconds - lastStartHeartbeatAt >= progressEverySeconds) {
       lastStartHeartbeatAt = elapsedSeconds;
-      emit(progressEvent(config, startedAt, state, readRawRows(sandbox), [], "initializing"));
+      emit(progressEvent(config, startedAt, state, readRawRows(sandbox), [], "initializing", sandbox));
     }
   }
   await startPromise;
@@ -367,10 +419,10 @@ async function runSimulation(config, emit = () => {}) {
     if (rawRows.length > lastEmittedRawCount) {
       const newRawRows = rawRows.slice(lastEmittedRawCount);
       lastEmittedRawCount = rawRows.length;
-      emit(progressEvent(config, startedAt, state, rawRows, newRawRows, "new_rows"));
+      emit(progressEvent(config, startedAt, state, rawRows, newRawRows, "new_rows", sandbox));
     } else if (elapsedSeconds - lastHeartbeatAt >= progressEverySeconds) {
       lastHeartbeatAt = elapsedSeconds;
-      emit(progressEvent(config, startedAt, state, rawRows, [], "heartbeat"));
+      emit(progressEvent(config, startedAt, state, rawRows, [], "heartbeat", sandbox));
     }
     if (state.notice.includes("Симуляция дошла до конца") || state.notice.includes("Симуляция дошла до даты конца")) {
       emit({
@@ -382,7 +434,7 @@ async function runSimulation(config, emit = () => {}) {
         notice: state.notice,
         lastRow: state.lastRow,
         currentValue: state.currentValue,
-        currentAero: state.currentAero,
+        currentReward: state.currentReward,
         rawRows: readRawRows(sandbox),
         dataQuality: readDataQuality(sandbox),
       });
