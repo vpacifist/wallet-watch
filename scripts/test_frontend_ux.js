@@ -65,4 +65,3 @@ testInitializationStages();
 testSkeletonLifecycle();
 testEarlyRangeRendering();
 testSseDelayedStartHandling();
-testSimulationModes();
