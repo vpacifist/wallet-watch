@@ -373,6 +373,7 @@ def normalize_simulation_params(payload):
         "rebalanceL1DataFeeEth": float(payload.get("rebalanceL1DataFeeEth", os.environ.get("REBALANCE_L1_DATA_FEE_ETH", "0.000012"))),
         "rebalanceFallbackSlippageBps": float(payload.get("rebalanceFallbackSlippageBps", os.environ.get("REBALANCE_FALLBACK_SLIPPAGE_BPS", "5"))),
         "aeroImpactHaircutMax": float(payload.get("aeroImpactHaircutMax", os.environ.get("AERO_IMPACT_HAIRCUT_MAX", "0.5"))),
+        "serverSimulationPollMs": int(payload.get("serverSimulationPollMs", os.environ.get("SERVER_SIMULATION_POLL_MS", "2500"))),
         "lpFeeRate": float(payload.get("lpFeeRate", os.environ.get("LP_FEE_RATE", "0.0005"))),
     }
 

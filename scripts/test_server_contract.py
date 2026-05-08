@@ -79,6 +79,7 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual(params["progressEverySeconds"], 2)
       self.assertIn("rebalanceFallbackSlippageBps", params)
       self.assertIn("aeroImpactHaircutMax", params)
+      self.assertEqual(params["serverSimulationPollMs"], 2500)
       self.assertIn("lpFeeRate", params)
 
     def test_normalize_rejects_invalid_range(self):
