@@ -188,6 +188,10 @@ function makeDocument() {
     "stepForward",
     "currentPositionValue",
     "currentAeroEarned",
+    "currentTotalValue",
+    "currentRewardValue",
+    "currentRewardLabel",
+    "simulationModeSelect",
     "simNotice",
     "simTableWrap",
     "simTableBody",
@@ -264,7 +268,7 @@ function readUi(document) {
     lastRow,
     button: document.getElementById("runSimulation").textContent || "",
     currentValue: document.getElementById("currentPositionValue").textContent || "",
-    currentAero: document.getElementById("currentAeroEarned").textContent || "",
+    currentReward: document.getElementById("currentRewardValue").textContent || "",
   };
 }
 
@@ -295,7 +299,7 @@ function progressEvent(config, startedAt, state, rawRows, newRawRows, reason = "
     notice: state.notice,
     lastRow: state.lastRow,
     currentValue: state.currentValue,
-    currentAero: state.currentAero,
+    currentReward: state.currentReward,
     latestRawRow: rawRows.at(-1) || null,
     newRawRows,
     stage: startup.stage || "",
@@ -430,7 +434,7 @@ async function runSimulation(config, emit = () => {}) {
         notice: state.notice,
         lastRow: state.lastRow,
         currentValue: state.currentValue,
-        currentAero: state.currentAero,
+        currentReward: state.currentReward,
         rawRows: readRawRows(sandbox),
         dataQuality: readDataQuality(sandbox),
       });

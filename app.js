@@ -2746,7 +2746,7 @@ async function startSimulation() {
   } catch (error) {
     if (runToken !== state.sim.runToken) return;
     resetSimulationRows();
-    setSimulationNotice(`Симуляция остановлена: ${error.message}`);
+    console.error(error); setSimulationNotice(`Симуляция остановлена: ${error.stack || error.message}`);
   }
 }
 async function stepSimulationForward(options = {}) {

@@ -43,6 +43,9 @@ async function runCase(testCase) {
     progressEverySeconds: 2,
   }, (event) => events.push(event));
 
+  if (result.exitCode !== 0) {
+    console.error("FULL_RESULT", JSON.stringify(result, null, 2));
+  }
   assert.equal(result.exitCode, 0, `${testCase.name} should exit successfully`);
   const final = events.findLast((event) => event.type === "result");
   assert.ok(final, `${testCase.name} should emit a result event`);
@@ -51,7 +54,7 @@ async function runCase(testCase) {
   assert.ok(Array.isArray(final.rawRows), `${testCase.name} should include raw rows`);
   assert.equal(final.rawRows.length, testCase.rows, `${testCase.name} raw row count`);
   assert.equal(final.currentValue, testCase.currentValue, `${testCase.name} current value`);
-  assert.equal(final.currentAero, testCase.currentAero, `${testCase.name} current AERO`);
+  assert.equal(final.currentReward, testCase.currentReward, `${testCase.name} current AERO`);
   assert.equal(final.lastRow, testCase.lastRow, `${testCase.name} last row`);
   const lastRaw = final.rawRows.at(-1);
   assert.equal(lastRaw.time, testCase.start.slice(0, 10) === "2026-02-01" ? `${testCase.end.replace(" ", "T")}:00Z` : lastRaw.time, `${testCase.name} last raw timestamp`);
@@ -101,7 +104,7 @@ async function main() {
     end: "2026-02-01 00:02",
     rows: 3,
     currentValue: "$9,976.64",
-    currentAero: "$0.78",
+    currentReward: "$0.78",
     lastRow: "2026-02-01 00:02\trebalance -$6.03 · swap fallback\t$9,976.64\t$2,445.37\t0.02531485\t9,914.74\t$0.78\t$0.07\t68.00%",
     lastEvent: "rebalance -$6.03",
     hasRebalance: true,
@@ -113,7 +116,7 @@ async function main() {
     end: "2026-02-01 00:05",
     rows: 6,
     currentValue: "$9,957.96",
-    currentAero: "$1.26",
+    currentReward: "$1.26",
     lastRow: "2026-02-01 00:05\trebalance -$6.04 · swap fallback\t$9,957.96\t$2,445.61\t4.05712502\t35.83\t$0.00\t$0.00\t68.00%",
     lastEvent: "rebalance -$6.04",
     hasRebalance: true,
@@ -127,7 +130,7 @@ async function main() {
     timeoutSeconds: 600,
     rows: 21,
     currentValue: "$9,863.42",
-    currentAero: "$1.26",
+    currentReward: "$1.26",
     lastRow: "2026-02-01 00:20\trebalance -$5.99 · swap fallback\t$9,863.42\t$2,445.47\t0.00764595\t9,844.72\t$0.00\t$0.00\t68.00%",
     lastEvent: "rebalance -$5.99",
     hasRebalance: true,
