@@ -1274,6 +1274,73 @@ function simulationProgressText() {
   return `${done} / ${total} свечей (${doneMinutes} / ${totalMinutes} мин) · ${simulationEstimateText()}`;
 }
 
+function formatCompactDurationSeconds(seconds, { approximate = false } = {}) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const prefix = approximate ? "~" : "";
+  if (total < 60) return `${prefix}${total}s`;
+  const minutes = Math.round(total / 60);
+  if (minutes < 60) return `${prefix}${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes ? `${prefix}${hours}h ${restMinutes}m` : `${prefix}${hours}h`;
+}
+
+function formatProgressTimestamp(value) {
+  const timestamp = typeof value === "number" ? value * 1000 : Date.parse(value || "");
+  if (!Number.isFinite(timestamp)) return "";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(timestamp)).replace(",", "");
+}
+
+function estimateServerTotalRows(simulation) {
+  const params = simulation?.params || {};
+  const start = parseInputTime(params.start || "");
+  const end = parseInputTime(params.end || "");
+  if (Number.isNaN(start) || Number.isNaN(end) || end <= start) return 0;
+  return Math.max(0, Math.round((end - start) / (60 * 1000)) + 1);
+}
+
+function serverProcessingTimestamp(simulation) {
+  const progress = simulation?.progress || {};
+  const result = simulation?.result || {};
+  const latest = result.latestRawRow || progress.latestRawRow || serverSimulation.rawRows.at(-1) || null;
+  return formatProgressTimestamp(latest?.time || latest?.timestamp || "");
+}
+
+function serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows) {
+  if (!serverSimulation.running || rowsDone <= 0 || totalRows <= rowsDone || elapsedSeconds <= 0) return "—";
+  const remainingSeconds = (elapsedSeconds / rowsDone) * (totalRows - rowsDone);
+  if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return "—";
+  return formatCompactDurationSeconds(remainingSeconds, { approximate: true });
+}
+
+function setServerSimulationProgressNotice({ status, elapsed, processing, rows, eta }) {
+  simNotice.replaceChildren();
+  simNotice.classList.add("simProgressNotice");
+  const columns = [
+    ["Status", status || "unknown"],
+    ["Elapsed", elapsed || "—"],
+    ["Processing", processing || "—"],
+    ["Rows", rows || "—"],
+    ["ETA", eta || "—"],
+  ];
+  for (const [label, value] of columns) {
+    const item = document.createElement("div");
+    item.className = "simProgressCell";
+    const labelEl = document.createElement("span");
+    labelEl.textContent = label;
+    const valueEl = document.createElement("strong");
+    valueEl.textContent = value;
+    item.append(labelEl, valueEl);
+    simNotice.append(item);
+  }
+}
+
 function recordSimulationStepDuration(startedAt) {
   state.sim.stepDurations.push(performance.now() - startedAt);
   if (state.sim.stepDurations.length > 120) state.sim.stepDurations.shift();
@@ -1626,6 +1693,7 @@ function renderSimulationTable(scrollToLatest = false) {
 }
 
 function setSimulationNotice(message) {
+  if (simNotice.classList?.remove) simNotice.classList.remove("simProgressNotice");
   const notice = typeof message === "string" ? { status: message, details: "" } : message;
   let statusEl = simNotice.querySelector(".simNoticeStatus");
   let detailsEl = simNotice.querySelector(".simNoticeDetails");
@@ -1725,12 +1793,10 @@ function serverSimulationText(simulation) {
   const payload = Object.keys(result).length ? result : progress;
   const rows = payload.rows || 0;
   const elapsed = payload.elapsedSeconds ? formatDuration(payload.elapsedSeconds * 1000) : "";
-  const lastRow = payload.lastRow ? payload.lastRow.replace(/\s+/g, " ").trim() : "";
   const notice = (payload.notice || simulation?.error || "").replace(/до даты конца/g, "до конца");
   return {
     rows,
     elapsed,
-    lastRow,
     currentValue: payload.currentValue || "",
     currentAero: payload.currentAero || "",
     notice,
@@ -1754,16 +1820,6 @@ function serverElapsedSeconds(simulation) {
     serverSimulation.startedAtMs = simulation.created_at * 1000;
   }
   return serverSimulation.startedAtMs ? Math.floor((Date.now() - serverSimulation.startedAtMs) / 1000) : 0;
-}
-
-function serverProgressStage(simulation, info) {
-  const progress = simulation?.progress || {};
-  const rows = Number(info.rows || 0);
-  if (progress.type === "retry_wait") return `RPC временно недоступен, жду ${progress.waitSeconds || "?"} сек перед повтором`;
-  if (progress.type === "retry_resume") return "возобновляю расчет после RPC retry";
-  if (progress.type === "started") return "воркер открыл локальную страницу и запустил расчет";
-  if (rows <= 0) return info.notice || "инициализация: читаю historical state Base RPC, slot0, reward state и цену AERO";
-  return info.lastRow ? `последняя строка: ${info.lastRow}` : (info.notice || "считаю следующую строку");
 }
 
 function applyServerRawProgress(simulation) {
@@ -2111,13 +2167,16 @@ function renderServerSimulation(simulation) {
   applyServerRawProgress(simulation);
   const info = serverSimulationText(simulation);
   const elapsedSeconds = serverElapsedSeconds(simulation);
-  const stage = serverProgressStage(simulation, info);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
   if (info.currentAero) currentAeroEarned.textContent = info.currentAero;
-  setSimulationNotice({
-    status: `[${formatStopwatch(elapsedSeconds)}] ${serverSimulation.running ? "Симуляция считается на сервере." : `Серверная симуляция: ${simulation.status}.`}`,
-    details: [`rows ${info.rows}`, info.elapsed || formatDuration(elapsedSeconds * 1000), stage].filter(Boolean).join(" — "),
-    estimate: "",
+  const rowsDone = Number(info.rows || 0);
+  const totalRows = estimateServerTotalRows(simulation);
+  setServerSimulationProgressNotice({
+    status: serverSimulation.paused ? "paused" : (simulation.status || (serverSimulation.running ? "running" : "unknown")),
+    elapsed: formatCompactDurationSeconds(elapsedSeconds),
+    processing: serverProcessingTimestamp(simulation),
+    rows: totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / —` : "—"),
+    eta: serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows),
   });
   const index = serverSimulation.jobs.findIndex((item) => item.id === simulation.id);
   if (index >= 0) serverSimulation.jobs[index] = simulation;
@@ -2337,10 +2396,13 @@ async function startServerSimulation() {
     draw();
   }
   updateSimulationControls();
-  setSimulationNotice({
-    status: "[00:00] Запускаю серверную симуляцию...",
-    details: "Передаю период на сервер и подготавливаю live-обновление строк.",
-    estimate: "",
+  const totalRows = Math.max(0, state.sim.endIndex - state.sim.startIndex + 1);
+  setServerSimulationProgressNotice({
+    status: "starting",
+    elapsed: "0s",
+    processing: "—",
+    rows: totalRows > 0 ? `0 / ${totalRows}` : "0 / —",
+    eta: "—",
   });
   try {
     const simulation = await fetchJson("/api/simulations", {
