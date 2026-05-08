@@ -123,6 +123,7 @@ const REBALANCE_GAS_UNITS = BigInt(RUNTIME_CONFIG.rebalanceGasUnits ?? 1450000);
 const REBALANCE_L1_DATA_FEE_ETH = Number(RUNTIME_CONFIG.rebalanceL1DataFeeEth ?? 0.000012);
 const REBALANCE_FALLBACK_SLIPPAGE_BPS = Number(RUNTIME_CONFIG.rebalanceFallbackSlippageBps ?? 5);
 const AERO_IMPACT_HAIRCUT_MAX = Number(RUNTIME_CONFIG.aeroImpactHaircutMax ?? 0.5);
+const SERVER_SIMULATION_POLL_MS = Number(RUNTIME_CONFIG.serverSimulationPollMs ?? 2500);
 const BASE_RPC_URLS = ["/rpc"];
 const SERVER_SIMULATION_MODE = !new URLSearchParams(window.location.search).has("local-sim");
 let baseRpcIndex = 0;
@@ -2140,6 +2141,17 @@ async function pollServerSimulation(id) {
       loadServerJobs();
     }
   } catch (error) {
+    if (error.status === 429 && serverSimulation.running) {
+      const retryMs = Math.max(5000, (error.retryAfterSeconds || 5) * 1000);
+      stopServerSimulationPolling();
+      setSimulationNotice({
+        status: "Сервер ограничил частоту чтения прогресса.",
+        details: `Следующая попытка через ${Math.ceil(retryMs / 1000)}s. Симуляция продолжает считаться на сервере.`,
+        estimate: "",
+      });
+      serverSimulation.pollTimer = setTimeout(() => watchServerSimulation(id), retryMs);
+      return;
+    }
     serverSimulation.running = false;
     stopServerSimulationPolling();
     setSimulationNotice(`Не могу прочитать серверную симуляцию: ${error.message}`);
@@ -2151,7 +2163,7 @@ function watchServerSimulation(id) {
   stopServerSimulationPolling();
   serverSimulation.paused = false;
   pollServerSimulation(id);
-  serverSimulation.pollTimer = setInterval(() => pollServerSimulation(id), 1000);
+  serverSimulation.pollTimer = setInterval(() => pollServerSimulation(id), Math.max(1500, SERVER_SIMULATION_POLL_MS));
 }
 
 function pauseServerSimulation() {
