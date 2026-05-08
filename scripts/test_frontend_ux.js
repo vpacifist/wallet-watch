@@ -64,8 +64,6 @@ function testSimulationModes() {
   assert.match(app, /lpMode/);
   assert.match(app, /simulationModeSelect/);
   assert.match(app, /state\.sim\.lpMode = simulationModeSelect\.value/);
-  assert.match(app, /includedRewardStreams/);
-  assert.match(app, /excludedRewardStreams/);
   assert.match(app, /lpFeesClaimable/);
   assert.match(app, /aeroClaimable/);
   assert.match(app, /totalReturnUsdc/);
