@@ -492,6 +492,16 @@ canvas {
   line-height: 1.2;
 }
 
+.skeletonText {
+  width: 92px;
+  max-width: 100%;
+  color: transparent !important;
+  border-radius: 5px;
+  background: linear-gradient(90deg, #edf1f5 0%, #f8fafc 45%, #edf1f5 90%);
+  background-size: 220% 100%;
+  animation: skeletonPulse 1.2s ease-in-out infinite;
+}
+
 .simNotice {
   margin-top: 12px;
   display: grid;
@@ -897,6 +907,43 @@ canvas {
 .simTable tbody tr:hover,
 .simTable tbody tr.activeRow {
   background: rgba(15, 139, 141, 0.07);
+}
+
+.simTable .skeletonRow {
+  pointer-events: none;
+}
+
+.simTable .skeletonRow:hover {
+  background: transparent;
+}
+
+.skeletonLine {
+  display: block;
+  width: 100%;
+  height: 13px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #edf1f5 0%, #f8fafc 45%, #edf1f5 90%);
+  background-size: 220% 100%;
+  animation: skeletonPulse 1.2s ease-in-out infinite;
+}
+
+.skeletonRow td:nth-child(2) .skeletonLine {
+  width: 74%;
+}
+
+.skeletonRow td:nth-child(7) .skeletonLine,
+.skeletonRow td:nth-child(8) .skeletonLine,
+.skeletonRow td:nth-child(9) .skeletonLine {
+  width: 62%;
+}
+
+@keyframes skeletonPulse {
+  0% {
+    background-position: 110% 0;
+  }
+  100% {
+    background-position: -110% 0;
+  }
 }
 
 .simMarker {

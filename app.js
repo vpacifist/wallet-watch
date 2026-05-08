@@ -68,6 +68,11 @@ const state = {
     aeroPriceAgeSeconds: 0,
     tableHoverIndex: -1,
     activeRowIndex: -1,
+    startupStage: "",
+    elapsedStartedAtMs: 0,
+    elapsedTimer: null,
+    initialRangeReady: false,
+    skeletonVisible: false,
   },
 };
 
@@ -170,6 +175,7 @@ const serverSimulation = {
   jobs: [],
   rawRows: [],
   startedAtMs: 0,
+  lastSimulation: null,
 };
 const appTabs = {
   active: "new",
@@ -695,12 +701,13 @@ function simRangePrices() {
 }
 
 function simRangeText() {
+  if (!state.sim.initialRangeReady && !state.sim.rangeStepTicks) return "Range: calculating...";
   const prices = simRangePrices();
   return `Диапазон ${fmtPercent(state.sim.rangeWidth * 100)}%: ${fmtPrice(prices.lower)} — ${fmtPrice(prices.upper)} (ticks ${Math.abs(state.sim.tickLower)} — ${Math.abs(state.sim.tickUpper)})`;
 }
 
 function simulationRangeGridPrices(min, max) {
-  if (!state.sim.started || !state.sim.rangeStepTicks) return [];
+  if ((!state.sim.started && !state.sim.initialRangeReady) || !state.sim.rangeStepTicks) return [];
   const start = state.sim.startGridTick || state.sim.tickLower;
   const step = Math.max(AERODROME_TICK_SPACING, state.sim.rangeStepTicks);
   const minTick = tickForPrice(min);
@@ -874,6 +881,7 @@ function draw() {
   const height = canvas.clientHeight;
   const pad = { top: 22, right: 72, bottom: 38, left: 72 };
   ctx.clearRect(0, 0, width, height);
+  const showChartSkeleton = state.sim.skeletonVisible && !state.sim.initialRangeReady && !state.sim.rows.length;
 
   const visibleRows = getVisibleRows();
   const isDragRender = state.isDragging && state.dragSamples.length > 1;
@@ -888,6 +896,24 @@ function draw() {
   const span = max - min || 1;
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
+  if (showChartSkeleton) {
+    ctx.save();
+    ctx.fillStyle = "rgba(248, 250, 252, 0.74)";
+    ctx.fillRect(pad.left, pad.top, plotW, plotH);
+    ctx.strokeStyle = "rgba(15, 139, 141, 0.16)";
+    ctx.lineWidth = 1.2;
+    for (let i = 0; i < 5; i += 1) {
+      const y = pad.top + ((i + 1) / 6) * plotH;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(width - pad.right, y);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "#647087";
+    ctx.font = "13px Inter, system-ui, sans-serif";
+    ctx.fillText("Range: calculating...", pad.left + 12, pad.top + 24);
+    ctx.restore();
+  }
   const firstTime = new Date(visibleRows[0].time).getTime();
   const lastTime = new Date(visibleRows[visibleRows.length - 1].time).getTime();
   const rangeRows = getRangeRows();
@@ -981,7 +1007,7 @@ function draw() {
       ctx.fillText(fmtPrice(price), width - pad.right + 12, y + 4);
     }
   });
-  if (state.sim.started) {
+  if (state.sim.started || state.sim.initialRangeReady) {
     const activeBounds = [
       { label: "lower", tick: state.sim.tickLower, price: priceForTick(state.sim.tickLower), color: "rgba(242, 95, 92, 0.9)" },
       { label: "upper", tick: state.sim.tickUpper, price: priceForTick(state.sim.tickUpper), color: "rgba(242, 95, 92, 0.9)" },
@@ -1341,6 +1367,86 @@ function setServerSimulationProgressNotice({ status, elapsed, processing, rows, 
   }
 }
 
+function localElapsedSeconds(startedAtMs) {
+  return startedAtMs ? Math.max(0, Math.floor((Date.now() - startedAtMs) / 1000)) : 0;
+}
+
+function stopSimulationElapsedTimer() {
+  if (state.sim.elapsedTimer) clearInterval(state.sim.elapsedTimer);
+  state.sim.elapsedTimer = null;
+}
+
+function startSimulationElapsedTimer(startedAtMs = Date.now()) {
+  state.sim.elapsedStartedAtMs = startedAtMs;
+  stopSimulationElapsedTimer();
+  state.sim.elapsedTimer = setInterval(() => {
+    if (SERVER_SIMULATION_MODE && serverSimulation.running && serverSimulation.lastSimulation) {
+      renderServerSimulation(serverSimulation.lastSimulation, { fromTimer: true });
+      return;
+    }
+    if (state.sim.initializing && !SERVER_SIMULATION_MODE) {
+      renderStartupNotice();
+    }
+  }, 1000);
+}
+
+function setSimulationStartupStage(stage) {
+  state.sim.startupStage = stage || "";
+  renderStartupNotice();
+}
+
+function renderStartupNotice(extra = "") {
+  const stage = state.sim.startupStage || "Initializing simulation...";
+  const elapsed = formatStopwatch(localElapsedSeconds(state.sim.elapsedStartedAtMs));
+  setSimulationNotice({
+    status: stage,
+    details: simRangeText(),
+    estimate: [extra, `Elapsed ${elapsed}`].filter(Boolean).join(" · "),
+  });
+}
+
+function setSimulationSkeletonVisible(visible) {
+  state.sim.skeletonVisible = Boolean(visible);
+  document.body?.classList?.toggle("simSkeletonActive", state.sim.skeletonVisible);
+  currentPositionValue.classList.toggle("skeletonText", state.sim.skeletonVisible);
+  currentAeroEarned.classList.toggle("skeletonText", state.sim.skeletonVisible);
+  if (state.sim.skeletonVisible) {
+    currentPositionValue.textContent = "Calculating";
+    currentAeroEarned.textContent = "Calculating";
+    renderSimulationTable();
+  } else {
+    simTableBody.querySelectorAll(".skeletonRow").forEach((row) => row.remove?.());
+    simTableWrap.hidden = state.sim.rows.length === 0 && !serverSimulation.rawRows.length;
+  }
+  draw();
+}
+
+function renderSimulationTableSkeleton() {
+  const columns = 9;
+  simTableBody.innerHTML = Array.from({ length: 4 }, (_, rowIndex) => `
+    <tr class="skeletonRow" data-index="skeleton-${rowIndex}">
+      ${Array.from({ length: columns }, () => "<td><span class=\"skeletonLine\"></span></td>").join("")}
+    </tr>
+  `).join("");
+  simTableWrap.hidden = false;
+}
+
+function applyInitialRange(range) {
+  if (!range || !Number.isFinite(Number(range.tickLower)) || !Number.isFinite(Number(range.tickUpper))) return false;
+  state.sim.tickLower = Number(range.tickLower);
+  state.sim.tickUpper = Number(range.tickUpper);
+  state.sim.anchorTick = Number(range.anchorTick || range.tickLower);
+  state.sim.startGridTick = Number(range.startGridTick || range.tickLower);
+  state.sim.rangeStepTicks = Math.max(
+    AERODROME_TICK_SPACING,
+    Number(range.rangeStepTicks || Math.round(Math.abs(state.sim.tickUpper - state.sim.tickLower) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING),
+  );
+  if (Number.isFinite(Number(range.rangeWidth))) state.sim.rangeWidth = Number(range.rangeWidth);
+  state.sim.initialRangeReady = true;
+  draw();
+  return true;
+}
+
 function recordSimulationStepDuration(startedAt) {
   state.sim.stepDurations.push(performance.now() - startedAt);
   if (state.sim.stepDurations.length > 120) state.sim.stepDurations.shift();
@@ -1469,6 +1575,7 @@ function updateSimulationControls() {
 }
 
 function resetSimulationRows() {
+  stopSimulationElapsedTimer();
   state.sim.initializing = false;
   state.sim.autoRunning = false;
   state.sim.stepInProgress = false;
@@ -1500,6 +1607,11 @@ function resetSimulationRows() {
   state.sim.aeroPriceAgeSeconds = 0;
   state.sim.tableHoverIndex = -1;
   state.sim.activeRowIndex = -1;
+  state.sim.startupStage = "";
+  state.sim.elapsedStartedAtMs = 0;
+  state.sim.initialRangeReady = false;
+  state.sim.skeletonVisible = false;
+  document.body?.classList?.toggle("simSkeletonActive", false);
   simTableBody.innerHTML = "";
   simTableWrap.hidden = true;
   currentPositionValue.textContent = "$0.00";
@@ -1629,6 +1741,22 @@ function getSimulationDataQuality() {
   return state.dataQuality || null;
 }
 
+function getSimulationStartupState() {
+  return {
+    stage: state.sim.startupStage || "",
+    elapsedSeconds: localElapsedSeconds(state.sim.elapsedStartedAtMs),
+    skeletonVisible: Boolean(state.sim.skeletonVisible),
+    initialRange: state.sim.initialRangeReady ? {
+      tickLower: state.sim.tickLower,
+      tickUpper: state.sim.tickUpper,
+      anchorTick: state.sim.anchorTick,
+      startGridTick: state.sim.startGridTick,
+      rangeStepTicks: state.sim.rangeStepTicks,
+      rangeWidth: state.sim.rangeWidth,
+    } : null,
+  };
+}
+
 function simulationRawRowToCells(row) {
   if (!row || typeof row !== "object") return [];
   const eventParts = [row.missingCandle ? `${row.event} · missing candle` : row.event];
@@ -1647,6 +1775,12 @@ function simulationRawRowToCells(row) {
 }
 
 function renderSimulationTable(scrollToLatest = false) {
+  if (!state.sim.rows.length && state.sim.skeletonVisible) {
+    renderSimulationTableSkeleton();
+    updateSimulationControls();
+    draw();
+    return;
+  }
   simTableBody.innerHTML = state.sim.rows.map((row) => `
     <tr data-index="${row.index}" class="${row.index === state.sim.activeRowIndex ? "activeRow" : ""}" title="${simulationRowTitle(row)}">
       <td>${fmtInputTime(state.rows[row.index]?.time || "")}</td>
@@ -1673,6 +1807,7 @@ function renderSimulationTable(scrollToLatest = false) {
   simTableWrap.hidden = state.sim.rows.length === 0;
   const last = state.sim.rows[state.sim.rows.length - 1];
   if (last) {
+    setSimulationSkeletonVisible(false);
     currentPositionValue.textContent = fmtUsdc(last.value);
     currentAeroEarned.textContent = fmtUsdc(last.aeroTotalUsdc ?? last.aeroUsdc);
   }
@@ -1814,12 +1949,10 @@ function formatStopwatch(seconds) {
 }
 
 function serverElapsedSeconds(simulation) {
-  const progressElapsed = Number(simulation?.progress?.elapsedSeconds || simulation?.result?.elapsedSeconds || 0);
-  if (Number.isFinite(progressElapsed) && progressElapsed > 0) return Math.floor(progressElapsed);
   if (!serverSimulation.startedAtMs && simulation?.created_at) {
     serverSimulation.startedAtMs = simulation.created_at * 1000;
   }
-  return serverSimulation.startedAtMs ? Math.floor((Date.now() - serverSimulation.startedAtMs) / 1000) : 0;
+  return localElapsedSeconds(serverSimulation.startedAtMs);
 }
 
 function applyServerRawProgress(simulation) {
@@ -1827,6 +1960,9 @@ function applyServerRawProgress(simulation) {
   const progress = simulation?.progress || {};
   const resultRows = simulation?.result?.rawRows;
   const progressRows = progress.rawRows;
+  if (!serverSimulation.rawRows.length && progress.initialRange) {
+    applyInitialRange(progress.initialRange);
+  }
   if (Array.isArray(resultRows)) {
     serverSimulation.rawRows = resultRows;
   } else if (Array.isArray(progressRows)) {
@@ -1838,7 +1974,10 @@ function applyServerRawProgress(simulation) {
   }
   const latest = (Array.isArray(resultRows) && resultRows.at(-1)) || progress.latestRawRow || serverSimulation.rawRows.at(-1);
   if (!latest) return;
+  setSimulationSkeletonVisible(false);
   state.sim.started = true;
+  state.sim.initializing = false;
+  state.sim.initialRangeReady = true;
   state.sim.currentIndex = latest.index;
   state.sim.activeRowIndex = latest.index;
   state.sim.tickLower = latest.tickLower;
@@ -2158,12 +2297,26 @@ async function loadServerJobs(options = {}) {
   }
 }
 
-function renderServerSimulation(simulation) {
+function serverInitializationStage(simulation) {
+  const progress = simulation?.progress || {};
+  const notice = String(progress.notice || "");
+  if (progress.initialRange) return "Starting live simulation...";
+  if (notice.includes("Building LP position") || notice.includes("LP")) return "Building LP position...";
+  if (notice.includes("Reading pool state") || notice.includes("pool") || notice.includes("slot0")) return "Reading pool state...";
+  if (notice.includes("Resolving historical block") || notice.includes("historical block")) return "Resolving historical block...";
+  if (serverSimulation.startedAtMs && localElapsedSeconds(serverSimulation.startedAtMs) >= 1) return "Resolving historical block...";
+  return "Initializing simulation...";
+}
+
+function renderServerSimulation(simulation, options = {}) {
   if (!SERVER_SIMULATION_MODE || !simulation?.id) return;
   serverSimulation.id = simulation.id;
+  serverSimulation.lastSimulation = simulation;
   serverSimulation.running = !isServerSimulationTerminal(simulation.status);
   if (!serverSimulation.running) serverSimulation.paused = false;
   if (!serverSimulation.startedAtMs && simulation.created_at) serverSimulation.startedAtMs = simulation.created_at * 1000;
+  if (serverSimulation.running && !state.sim.elapsedTimer) startSimulationElapsedTimer(serverSimulation.startedAtMs || Date.now());
+  if (!serverSimulation.running) stopSimulationElapsedTimer();
   applyServerRawProgress(simulation);
   const info = serverSimulationText(simulation);
   const elapsedSeconds = serverElapsedSeconds(simulation);
@@ -2172,9 +2325,11 @@ function renderServerSimulation(simulation) {
   const rowsDone = Number(info.rows || 0);
   const totalRows = estimateServerTotalRows(simulation);
   setServerSimulationProgressNotice({
-    status: serverSimulation.paused ? "paused" : (simulation.status || (serverSimulation.running ? "running" : "unknown")),
+    status: serverSimulation.paused
+      ? "paused"
+      : (rowsDone > 0 ? (simulation.status || "running") : serverInitializationStage(simulation)),
     elapsed: formatCompactDurationSeconds(elapsedSeconds),
-    processing: serverProcessingTimestamp(simulation),
+    processing: serverProcessingTimestamp(simulation) || (state.sim.initialRangeReady ? simRangeText() : "Range: calculating..."),
     rows: totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / —` : "—"),
     eta: serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows),
   });
@@ -2184,7 +2339,8 @@ function renderServerSimulation(simulation) {
   renderServerJobsList(serverSimulation.jobs);
   syncOpenedSimulation(simulation);
   renderServerResultTable(simulation);
-  updateSimulationControls();
+  if (!rowsDone && serverSimulation.running && !state.sim.skeletonVisible) setSimulationSkeletonVisible(true);
+  if (!options.fromTimer) updateSimulationControls();
 }
 
 function stopServerSimulationPolling() {
@@ -2266,6 +2422,7 @@ function pauseServerSimulation() {
   stopServerSimulationEvents();
   serverSimulation.running = false;
   serverSimulation.paused = true;
+  stopSimulationElapsedTimer();
   setSimulationNotice({ status: "Пауза.", details: "Серверная симуляция поставлена на паузу.", estimate: "" });
   updateSimulationControls();
 }
@@ -2275,6 +2432,7 @@ function resumeServerSimulation() {
   serverSimulation.running = true;
   serverSimulation.paused = false;
   serverSimulation.rawRows = [];
+  startSimulationElapsedTimer(serverSimulation.startedAtMs || Date.now());
   updateSimulationControls();
   watchServerSimulation(serverSimulation.id);
 }
@@ -2321,7 +2479,10 @@ async function deleteServerSimulation(id, row = null) {
       serverSimulation.running = false;
       serverSimulation.paused = false;
       serverSimulation.rawRows = [];
+      serverSimulation.lastSimulation = null;
       stopServerSimulationPolling();
+      stopSimulationElapsedTimer();
+      setSimulationSkeletonVisible(false);
       setSimulationNotice("Server simulation deleted.");
       currentPositionValue.textContent = "$0.00";
       currentAeroEarned.textContent = "$0.00";
@@ -2377,6 +2538,7 @@ async function startServerSimulation() {
   serverSimulation.running = true;
   serverSimulation.paused = false;
   serverSimulation.startedAtMs = Date.now();
+  serverSimulation.lastSimulation = null;
   serverSimulation.rawRows = [];
   if (state.rows.length) {
     const startIndex = rowIndexForTimestamp(inputTimestamp, "atOrAfter");
@@ -2396,6 +2558,11 @@ async function startServerSimulation() {
     draw();
   }
   updateSimulationControls();
+  state.sim.initializing = true;
+  state.sim.startupStage = "Initializing simulation...";
+  state.sim.elapsedStartedAtMs = serverSimulation.startedAtMs;
+  setSimulationSkeletonVisible(true);
+  startSimulationElapsedTimer(serverSimulation.startedAtMs);
   const totalRows = Math.max(0, state.sim.endIndex - state.sim.startIndex + 1);
   setServerSimulationProgressNotice({
     status: "starting",
@@ -2421,6 +2588,8 @@ async function startServerSimulation() {
   } catch (error) {
     serverSimulation.running = false;
     serverSimulation.paused = false;
+    stopSimulationElapsedTimer();
+    setSimulationSkeletonVisible(false);
     setSimulationNotice(`Не удалось запустить серверную симуляцию: ${error.message}`);
     updateSimulationControls();
   }
@@ -2503,16 +2672,23 @@ async function startSimulation() {
   zoomToSimulationRange(startIndex, endIndex);
   state.sim.initializing = true;
   state.sim.autoRunning = true;
+  state.sim.elapsedStartedAtMs = Date.now();
+  state.sim.startupStage = "Initializing simulation...";
   const runToken = state.sim.runToken;
   updateSimulationControls();
+  setSimulationSkeletonVisible(true);
+  startSimulationElapsedTimer(state.sim.elapsedStartedAtMs);
   draw();
 
-  setSimulationNotice("Читаю historical state Base RPC и цену AERO...");
+  setSimulationStartupStage("Initializing simulation...");
   try {
+    setSimulationStartupStage("Resolving historical block...");
     const block = await findBlockAtOrAfter(Math.floor(new Date(startRow.time).getTime() / 1000), 1);
     ensureActiveSimulation(runToken, false);
+    setSimulationStartupStage("Reading pool state...");
     const slot = await readPoolSlot0(POOL_ADDRESS, block.number);
     ensureActiveSimulation(runToken, false);
+    setSimulationStartupStage("Building LP position...");
     const startPrice = priceFromSqrtX96(slot.sqrtPriceX96);
     const plan = computePositionPlan(depositUsdc, startPrice, state.sim.rangeWidth);
     state.sim.tickLower = plan.tickLower;
@@ -2523,8 +2699,12 @@ async function startSimulation() {
       AERODROME_TICK_SPACING,
       Math.round((plan.tickUpper - plan.tickLower) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING,
     );
+    state.sim.initialRangeReady = true;
+    renderStartupNotice();
+    draw();
     state.sim.liquidityRaw = plan.liquidityRaw;
     state.sim.liquidityHuman = plan.liquidityHuman;
+    setSimulationStartupStage("Starting live simulation...");
     const rewardState = await readRewardInside(block.number, state.sim.tickLower, state.sim.tickUpper);
     ensureActiveSimulation(runToken, false);
     state.sim.rewardStart = rewardState.rewardInside;
@@ -2537,11 +2717,13 @@ async function startSimulation() {
     state.sim.aeroUnharvested = 0;
     state.sim.aeroBaseUnharvested = 0;
     state.sim.aeroHaircutUnharvested = 0;
-    state.sim.started = true;
-    state.sim.initializing = false;
-    state.sim.rows = [await buildSimulationRow(startIndex, "deposit", block, runToken)];
-    ensureActiveSimulation(runToken);
-    setSimulationNotice({ status: "Симуляция запущена.", details: simulationProgressText(), estimate: "" });
+  state.sim.started = true;
+  state.sim.initializing = false;
+  state.sim.rows = [await buildSimulationRow(startIndex, "deposit", block, runToken)];
+  ensureActiveSimulation(runToken);
+  setSimulationSkeletonVisible(false);
+  stopSimulationElapsedTimer();
+  setSimulationNotice({ status: "Симуляция запущена.", details: simulationProgressText(), estimate: "" });
     renderSimulationTable(true);
     state.sim.autoLoopId += 1;
     runAutoSimulationLoop(state.sim.runToken, state.sim.autoLoopId);
