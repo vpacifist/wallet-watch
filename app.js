@@ -61,6 +61,7 @@ const state = {
     lpFeesWeth: 0,
     lpFeesUsdc: 0,
     lpFeesUsdcValue: 0,
+    lpMode: "staked",
     rows: [],
     blockCache: new Map(),
     aeroPriceCache: new Map(),
@@ -95,6 +96,11 @@ const stepBack = document.getElementById("stepBack");
 const stepForward = document.getElementById("stepForward");
 const currentPositionValue = document.getElementById("currentPositionValue");
 const currentAeroEarned = document.getElementById("currentAeroEarned");
+const currentRewardDiv = document.getElementById("currentRewardDiv");
+const currentRewardLabel = document.getElementById("currentRewardLabel");
+const currentRewardValue = document.getElementById("currentRewardValue");
+const currentTotalValue = document.getElementById("currentTotalValue");
+const simulationModeSelect = document.getElementById("simulationModeSelect");
 const simNotice = document.getElementById("simNotice");
 const simTableWrap = document.getElementById("simTableWrap");
 const simTableBody = document.getElementById("simTableBody");
@@ -1535,6 +1541,7 @@ function zoomToSimulationRange(startIndex, endIndex) {
 }
 
 function updateSimulationControls() {
+  if (simulationModeSelect) simulationModeSelect.value = state.sim.lpMode;
   if (SERVER_SIMULATION_MODE) {
     if (serverSimulation.running && !serverSimulation.paused) {
       runSimulation.textContent = "PAUSE";
@@ -1789,11 +1796,15 @@ function renderSimulationTable(scrollToLatest = false) {
       <td>${fmtPrice(row.price)}</td>
       <td>${fmtNumber(row.weth, 8)}</td>
       <td>${fmtNumber(row.usdc, 2)}</td>
-      <td>${fmtUsdc(row.aeroUsdc)}</td>
-      <td>${fmtUsdc(row.lpFeesUsdcValue || 0)}</td>
+      <td style="display: ${state.sim.lpMode === "staked" ? "" : "none"}">${fmtUsdc(row.aeroUsdc)}</td>
+      <td style="display: ${state.sim.lpMode === "unstaked" ? "" : "none"}">${fmtUsdc(row.lpFeesUsdcValue || 0)}</td>
       <td>${fmtReliability(row.reliability)}</td>
     </tr>
   `).join("");
+  const aeroTh = document.getElementById("aeroTh");
+  const lpFeesTh = document.getElementById("lpFeesTh");
+  if (aeroTh) aeroTh.style.display = state.sim.lpMode === "staked" ? "" : "none";
+  if (lpFeesTh) lpFeesTh.style.display = state.sim.lpMode === "unstaked" ? "" : "none";
   simTableBody.querySelectorAll("tr").forEach((row) => {
     row.addEventListener("mouseenter", () => {
       state.sim.tableHoverIndex = Number(row.dataset.index);
@@ -1809,7 +1820,12 @@ function renderSimulationTable(scrollToLatest = false) {
   if (last) {
     setSimulationSkeletonVisible(false);
     currentPositionValue.textContent = fmtUsdc(last.value);
-    currentAeroEarned.textContent = fmtUsdc(last.aeroTotalUsdc ?? last.aeroUsdc);
+    const isStaked = state.sim.lpMode === "staked";
+    const rewardValue = isStaked ? last.aeroTotalUsdc ?? last.aeroUsdc : last.lpFeesTotalUsdc ?? 0;
+    const rewardLabel = isStaked ? "AERO earned, USDC" : "LP fees earned, USDC";
+    currentRewardLabel.textContent = rewardLabel;
+    currentRewardValue.textContent = fmtUsdc(rewardValue);
+    currentTotalValue.textContent = fmtUsdc(last.value + rewardValue);
   }
   updateSimulationControls();
   if (scrollToLatest && last) {
@@ -2979,6 +2995,11 @@ rangePercentInput.addEventListener("change", () => {
     rangePercentInput.value = fmtPercent(rangePercent);
   }
   resetSimulationRows();
+});
+simulationModeSelect.addEventListener("change", () => {
+  state.sim.lpMode = simulationModeSelect.value;
+  resetSimulationRows();
+  updateSimulationControls();
 });
 runSimulation.addEventListener("click", startServerSimulation);
 if (resetSimulationButton) resetSimulationButton.addEventListener("click", resetOrStopSimulation);

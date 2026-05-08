@@ -60,8 +60,25 @@ function testSseDelayedStartHandling() {
   assert.match(app, /Range: calculating\.\.\./);
 }
 
+function testSimulationModes() {
+  assert.match(app, /lpMode/);
+  assert.match(app, /simulationModeSelect/);
+  assert.match(app, /state\.sim\.lpMode = simulationModeSelect\.value/);
+  assert.match(app, /includedRewardStreams/);
+  assert.match(app, /excludedRewardStreams/);
+  assert.match(app, /lpFeesClaimable/);
+  assert.match(app, /aeroClaimable/);
+  assert.match(app, /totalReturnUsdc/);
+  assert.match(app, /currentRewardLabel/);
+  assert.match(app, /currentRewardValue/);
+  assert.match(app, /currentTotalValue/);
+  assert.match(app, /aeroTh/);
+  assert.match(app, /lpFeesTh/);
+}
+
 testLocalElapsedTimer();
 testInitializationStages();
 testSkeletonLifecycle();
 testEarlyRangeRendering();
 testSseDelayedStartHandling();
+testSimulationModes();

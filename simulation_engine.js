@@ -63,6 +63,7 @@
         lpFeesWeth: state.sim.lpFeesWeth,
         lpFeesUsdc: state.sim.lpFeesUsdc,
         lpFeesUsdcValue: state.sim.lpFeesUsdcValue,
+        lpMode: state.sim.lpMode,
         aeroPriceReliability: state.sim.aeroPriceReliability,
         aeroPriceAgeSeconds: state.sim.aeroPriceAgeSeconds,
       };
@@ -93,6 +94,7 @@
       state.sim.lpFeesWeth = snapshot.lpFeesWeth || 0;
       state.sim.lpFeesUsdc = snapshot.lpFeesUsdc || 0;
       state.sim.lpFeesUsdcValue = snapshot.lpFeesUsdcValue || 0;
+      state.sim.lpMode = snapshot.lpMode || "staked";
       state.sim.aeroPriceReliability = snapshot.aeroPriceReliability;
       state.sim.aeroPriceAgeSeconds = snapshot.aeroPriceAgeSeconds || 0;
     }
@@ -348,6 +350,12 @@
         reliability: reliability.score,
         reliabilityDetails: reliabilityDetailsText(reliability.parts),
         impactDetails: impactRiskDetails(rewardState, aeroPrice, aeroEvent),
+        simulationMode: state.sim.lpMode,
+        includedRewardStreams: state.sim.lpMode === "staked" ? ["aero"] : ["lpFees"],
+        excludedRewardStreams: state.sim.lpMode === "staked" ? ["lpFees"] : ["aero"],
+        lpFeesClaimable: state.sim.lpMode === "unstaked",
+        aeroClaimable: state.sim.lpMode === "staked",
+        totalReturnUsdc: state.sim.lpMode === "staked" ? aeroTotals.conservative : lpFeeTotalsAfter.usdcValue,
         stateAfter: snapshotState(),
       };
     }
@@ -471,8 +479,15 @@
         lpFeesSwapCount: lpFeeEstimate.swapCount,
         lpFeesRangeCrossed: Boolean(lpFeeEstimate.rangeCrossed),
         reliability: reliability.score,
+        reliability: reliability.score,
         reliabilityDetails: reliabilityDetailsText(reliability.parts),
         impactDetails,
+        simulationMode: state.sim.lpMode,
+        includedRewardStreams: state.sim.lpMode === "staked" ? ["aero"] : ["lpFees"],
+        excludedRewardStreams: state.sim.lpMode === "staked" ? ["lpFees"] : ["aero"],
+        lpFeesClaimable: state.sim.lpMode === "unstaked",
+        aeroClaimable: state.sim.lpMode === "staked",
+        totalReturnUsdc: state.sim.lpMode === "staked" ? harvestedAeroUsdc : lpFeeTotalsAfter.usdcValue,
         stateAfter: snapshotState(),
         rebalance: {
           oldTickLower,
