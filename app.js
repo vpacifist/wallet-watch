@@ -1,4 +1,4 @@
-﻿const CSV_FILE = "./weth_usdc_1m_2026_feb_mar_apr.csv";
+const CSV_FILE = "./weth_usdc_1m_2026_feb_mar_apr.csv";
 
 const state = {
   rows: [],
@@ -95,7 +95,6 @@ const resetSimulationButton = document.getElementById("resetSimulation");
 const stepBack = document.getElementById("stepBack");
 const stepForward = document.getElementById("stepForward");
 const currentPositionValue = document.getElementById("currentPositionValue");
-const currentAeroEarned = document.getElementById("currentAeroEarned");
 const currentRewardDiv = document.getElementById("currentRewardDiv");
 const currentRewardLabel = document.getElementById("currentRewardLabel");
 const currentRewardValue = document.getElementById("currentRewardValue");
@@ -1415,10 +1414,10 @@ function setSimulationSkeletonVisible(visible) {
   state.sim.skeletonVisible = Boolean(visible);
   document.body?.classList?.toggle("simSkeletonActive", state.sim.skeletonVisible);
   currentPositionValue.classList.toggle("skeletonText", state.sim.skeletonVisible);
-  currentAeroEarned.classList.toggle("skeletonText", state.sim.skeletonVisible);
+  currentRewardValue.classList.toggle("skeletonText", state.sim.skeletonVisible);
   if (state.sim.skeletonVisible) {
     currentPositionValue.textContent = "Calculating";
-    currentAeroEarned.textContent = "Calculating";
+    currentRewardValue.textContent = "Calculating";
     renderSimulationTable();
   } else {
     simTableBody.querySelectorAll(".skeletonRow").forEach((row) => row.remove?.());
@@ -1622,7 +1621,7 @@ function resetSimulationRows() {
   simTableBody.innerHTML = "";
   simTableWrap.hidden = true;
   currentPositionValue.textContent = "$0.00";
-  currentAeroEarned.textContent = "$0.00";
+  currentRewardValue.textContent = "$0.00";
   updateSimulationControls();
   draw();
 }
@@ -1843,9 +1842,18 @@ function renderSimulationTable(scrollToLatest = false) {
   draw();
 }
 
-function setSimulationNotice(message) {
-  if (simNotice.classList?.remove) simNotice.classList.remove("simProgressNotice");
-  const notice = typeof message === "string" ? { status: message, details: "" } : message;
+function setSimulationNotice(message, isError = false) {
+  if (simNotice.classList?.remove) {
+    simNotice.classList.remove("simProgressNotice", "simNoticeError");
+  }
+  const notice = typeof message === "string" ? { status: message, details: "", isError } : message;
+  
+  if (typeof message === "string" && !isError) {
+    if (message.includes("ошибка") || message.includes("Не удалось") || message.includes("Не могу") || message.includes("остановлена") || message.includes("недоступен") || message.includes("должна быть") || message.includes("должен быть")) {
+      notice.isError = true;
+    }
+  }
+
   let statusEl = simNotice.querySelector(".simNoticeStatus");
   let detailsEl = simNotice.querySelector(".simNoticeDetails");
   let estimateEl = simNotice.querySelector(".simNoticeEstimate");
@@ -1868,6 +1876,10 @@ function setSimulationNotice(message) {
   if (statusEl.textContent !== nextStatus) statusEl.textContent = nextStatus;
   if (detailsEl.textContent !== nextDetails) detailsEl.textContent = nextDetails;
   if (estimateEl.textContent !== nextEstimate) estimateEl.textContent = nextEstimate;
+
+  if (notice.isError) {
+    simNotice.classList.add("simNoticeError");
+  }
 }
 
 const simulationEngine = WalletWatchSimulationEngine.create({
@@ -1908,6 +1920,42 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   updateSimulationControls,
 });
 
+function showTokenPrompt() {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;';
+    const content = document.createElement('div');
+    content.style.cssText = 'background:white;padding:20px;border-radius:5px;max-width:400px;width:90%;';
+    content.innerHTML = `
+      <p style="margin:0 0 10px 0;">Введите ADMIN_API_TOKEN для серверной операции:</p>
+      <input type="password" id="tokenInput" style="width:100%;padding:8px;margin:0 0 10px 0;border:1px solid #ccc;border-radius:3px;">
+      <div style="text-align:right;">
+        <button id="cancelBtn" style="margin-right:10px;padding:8px 16px;border:1px solid #ccc;border-radius:3px;background:#f5f5f5;">Отмена</button>
+        <button id="okBtn" style="padding:8px 16px;border:1px solid #007bff;border-radius:3px;background:#007bff;color:white;">OK</button>
+      </div>
+    `;
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    const input = content.querySelector('#tokenInput');
+    const okBtn = content.querySelector('#okBtn');
+    const cancelBtn = content.querySelector('#cancelBtn');
+    okBtn.onclick = () => {
+      const token = input.value.trim();
+      document.body.removeChild(modal);
+      resolve(token);
+    };
+    cancelBtn.onclick = () => {
+      document.body.removeChild(modal);
+      resolve('');
+    };
+    input.focus();
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') okBtn.click();
+      if (e.key === 'Escape') cancelBtn.click();
+    };
+  });
+}
+
 async function fetchJson(url, options = {}) {
   const adminToken = typeof localStorage !== "undefined" ? localStorage.getItem("walletWatchAdminToken") : "";
   const adminHeaders = adminToken ? { "X-Admin-API-Token": adminToken } : {};
@@ -1915,16 +1963,21 @@ async function fetchJson(url, options = {}) {
     headers: { "Content-Type": "application/json", ...adminHeaders, ...(options.headers || {}) },
     ...options,
   });
-  if (response.status === 401 && typeof prompt === "function" && typeof localStorage !== "undefined") {
-    const token = prompt("Введите ADMIN_API_TOKEN для серверной операции");
+  if (response.status === 401 && typeof localStorage !== "undefined" && typeof document !== "undefined") {
+    const token = await showTokenPrompt();
     if (token) {
       localStorage.setItem("walletWatchAdminToken", token);
       return await fetchJson(url, options);
+    } else {
+      throw new Error("Admin token required. Please enter it in the dialog or set 'walletWatchAdminToken' in localStorage.");
     }
   }
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = payload?.error || payload?.message || `HTTP ${response.status}`;
+    if (response.status === 401 && detail === "admin token required") {
+      throw new Error("Admin token required. Please enter it when prompted or set 'walletWatchAdminToken' in localStorage and retry.");
+    }
     const error = new Error(detail);
     error.status = response.status;
     error.code = payload?.code || "";
@@ -2337,7 +2390,7 @@ function renderServerSimulation(simulation, options = {}) {
   const info = serverSimulationText(simulation);
   const elapsedSeconds = serverElapsedSeconds(simulation);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
-  if (info.currentAero) currentAeroEarned.textContent = info.currentAero;
+  if (info.currentAero) currentRewardValue.textContent = info.currentAero;
   const rowsDone = Number(info.rows || 0);
   const totalRows = estimateServerTotalRows(simulation);
   setServerSimulationProgressNotice({
@@ -2501,7 +2554,7 @@ async function deleteServerSimulation(id, row = null) {
       setSimulationSkeletonVisible(false);
       setSimulationNotice("Server simulation deleted.");
       currentPositionValue.textContent = "$0.00";
-      currentAeroEarned.textContent = "$0.00";
+      currentRewardValue.textContent = "$0.00";
       updateSimulationControls();
     }
     await deleteAnimation;
@@ -2606,7 +2659,7 @@ async function startServerSimulation() {
     serverSimulation.paused = false;
     stopSimulationElapsedTimer();
     setSimulationSkeletonVisible(false);
-    setSimulationNotice(`Не удалось запустить серверную симуляцию: ${error.message}`);
+    setSimulationNotice(`Не удалось запустить серверную симуляцию: ${error.message}`, true);
     updateSimulationControls();
   }
 }
@@ -2746,7 +2799,7 @@ async function startSimulation() {
   } catch (error) {
     if (runToken !== state.sim.runToken) return;
     resetSimulationRows();
-    console.error(error); setSimulationNotice(`Симуляция остановлена: ${error.stack || error.message}`);
+    console.error(error); setSimulationNotice(`Симуляция остановлена: ${error.stack || error.message}`, true);
   }
 }
 async function stepSimulationForward(options = {}) {

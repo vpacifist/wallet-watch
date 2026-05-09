@@ -187,7 +187,6 @@ function makeDocument() {
     "stepBack",
     "stepForward",
     "currentPositionValue",
-    "currentAeroEarned",
     "currentTotalValue",
     "currentRewardValue",
     "currentRewardLabel",
@@ -221,7 +220,6 @@ function makeDocument() {
   elements.get("rangePercentInput").value = "1";
   elements.get("runSimulation").textContent = "START";
   elements.get("currentPositionValue").textContent = "$0.00";
-  elements.get("currentAeroEarned").textContent = "$0.00";
   elements.get("simNotice").textContent = "";
 
   const filterButtons = ["all", "2026-02", "2026-03", "2026-04"].map((range) => {

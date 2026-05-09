@@ -4,6 +4,7 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
 const app = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
+const engine = fs.readFileSync(path.join(ROOT, "simulation_engine.js"), "utf8");
 const runtime = fs.readFileSync(path.join(ROOT, "scripts", "simulation_runtime.js"), "utf8");
 const styles = fs.readFileSync(path.join(ROOT, "styles.css"), "utf8");
 
@@ -59,6 +60,27 @@ function testSseDelayedStartHandling() {
   assert.match(runtime, /skeletonVisible: Boolean\(startup\.skeletonVisible\)/);
   assert.match(app, /Range: calculating\.\.\./);
 }
+
+
+function testSimulationModes() {
+  // UI mode controls in app.js
+  assert.match(app, /lpMode/);
+  assert.match(app, /simulationModeSelect/);
+  assert.match(app, /state\.sim\.lpMode = simulationModeSelect\.value/);
+  assert.match(app, /currentRewardLabel/);
+  assert.match(app, /currentRewardValue/);
+  assert.match(app, /currentTotalValue/);
+  assert.match(app, /aeroTh/);
+  assert.match(app, /lpFeesTh/);
+
+  // Economic model metadata in simulation_engine.js
+  assert.match(engine, /includedRewardStreams/);
+  assert.match(engine, /excludedRewardStreams/);
+  assert.match(engine, /lpFeesClaimable/);
+  assert.match(engine, /aeroClaimable/);
+  assert.match(engine, /totalReturnUsdc/);
+}
+
 
 testLocalElapsedTimer();
 testInitializationStages();
