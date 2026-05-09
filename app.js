@@ -2444,6 +2444,8 @@ function stopServerSimulationPolling() {
 function stopServerSimulationEvents() {
   if (serverSimulation.eventSource) serverSimulation.eventSource.close();
   serverSimulation.eventSource = null;
+  if (serverSimulation.eventSourceTimer) clearTimeout(serverSimulation.eventSourceTimer);
+  serverSimulation.eventSourceTimer = null;
 }
 
 async function pollServerSimulation(id) {
@@ -2513,6 +2515,12 @@ function watchServerSimulation(id) {
       errorMessage = "SSE соединение закрыто. Возможно, неверный токен (401/403) или сервер недоступен.";
     }
     setSimulationNotice({ status: "SSE Error", details: errorMessage, isError: true });
+
+    // Automatic reconnect attempt if still running
+    if (serverSimulation.running && !isServerSimulationTerminal(serverSimulation.lastSimulation?.status)) {
+      console.log(`SSE connection lost. Reconnecting in ${delayMs}ms...`);
+      serverSimulation.eventSourceTimer = setTimeout(() => watchServerSimulation(id), delayMs);
+    }
   };
   serverSimulation.eventSource = source;
 }
