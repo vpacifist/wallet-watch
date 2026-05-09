@@ -2517,6 +2517,19 @@ async function loadInitialServerSimulations() {
   if (!SERVER_SIMULATION_MODE) return;
   try {
     await loadServerJobs();
+
+    // Check for active simulation at startup to avoid 409 Conflict and resume observation
+    const latest = await fetchJson("/api/simulations/latest");
+    if (latest && latest.id && !isServerSimulationTerminal(latest.status)) {
+      const params = latest.params || {};
+      if (params.start) simStartInput.value = params.start;
+      if (params.end) simEndInput.value = params.end;
+      if (params.deposit) depositInput.value = fmtDeposit(parseNumericInput(params.deposit));
+      if (params.rangePct) rangePercentInput.value = fmtPercent(params.rangePct);
+
+      watchServerSimulation(latest.id);
+    }
+
     updateSimulationControls();
   } catch (_) {
     serverSimulation.available = false;
