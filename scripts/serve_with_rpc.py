@@ -1083,14 +1083,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def require_admin_token(self):
         if not ADMIN_API_TOKEN:
             return True
-        parsed = urllib.parse.urlparse(getattr(self, "path", ""))
-        query_token = urllib.parse.parse_qs(parsed.query).get("admin_token", [""])[0].strip()
-        header_token = self.headers.get("X-Admin-API-Token", "").strip()
+        # Using self.path directly as it contains the full request path including query
+        path_str = getattr(self, "path", "")
+        parsed = urllib.parse.urlparse(path_str)
+        params = urllib.parse.parse_qs(parsed.query)
+
+        # Extract tokens from various sources, stripping whitespace and optional quotes
+        query_token = params.get("admin_token", [""])[0].strip().strip('"').strip("'")
+        header_token = self.headers.get("X-Admin-API-Token", "").strip().strip('"').strip("'")
         auth = self.headers.get("Authorization", "").strip()
-        bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        bearer = auth[7:].strip().strip('"').strip("'") if auth.lower().startswith("bearer ") else ""
+
         if header_token == ADMIN_API_TOKEN or bearer == ADMIN_API_TOKEN or query_token == ADMIN_API_TOKEN:
             return True
-        self.send_json(401, {"error": "admin token required"})
+
+        # Log failed attempt for debugging (without revealing the full token)
+        client_ip = self.client_ip()
+        masked_query = (query_token[:3] + "...") if len(query_token) > 3 else ("***" if query_token else "none")
+        print(f"[{time.strftime('%H:%M:%S')}] 401 Unauthorized: {client_ip} {self.command} {path_str} (query_token={masked_query})", file=sys.stderr, flush=True)
+
+        self.send_json(401, {"error": "admin token required", "code": "unauthorized"})
         return False
 
     def do_GET(self):
