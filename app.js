@@ -2508,6 +2508,7 @@ function watchServerSimulation(id) {
   source.addEventListener("simulation", (event) => {
     try {
       const simulation = JSON.parse(event.data);
+      serverSimulation.sseRetryCount = 0;
       renderServerSimulation(simulation);
       if (isServerSimulationTerminal(simulation.status)) {
         stopServerSimulationEvents();
@@ -2536,8 +2537,16 @@ function watchServerSimulation(id) {
 
     // Automatic reconnect attempt if still running
     if (serverSimulation.running && !isServerSimulationTerminal(serverSimulation.lastSimulation?.status)) {
-      console.log(`SSE connection lost. Reconnecting in ${delayMs}ms...`);
-      serverSimulation.eventSourceTimer = setTimeout(() => watchServerSimulation(id), delayMs);
+      serverSimulation.sseRetryCount = (serverSimulation.sseRetryCount || 0) + 1;
+      
+      if (serverSimulation.sseRetryCount > 3 && (adminToken || source.readyState !== EventSource.CLOSED)) {
+        console.log(`SSE reconnect failed ${serverSimulation.sseRetryCount} times. Starting fallback polling (30s)...`);
+        serverSimulation.pollBackoffMs = 30000;
+        pollServerSimulation(id);
+      } else {
+        console.log(`SSE connection lost (attempt ${serverSimulation.sseRetryCount}). Reconnecting in ${delayMs}ms...`);
+        serverSimulation.eventSourceTimer = setTimeout(() => watchServerSimulation(id), delayMs);
+      }
     }
   };
   serverSimulation.eventSource = source;
