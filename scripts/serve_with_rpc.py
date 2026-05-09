@@ -35,6 +35,8 @@ def load_dotenv(path):
         value = value.strip().strip('"').strip("'")
         if key:
             os.environ[key] = value
+            masked = (value[:3] + "...") if len(value) > 3 else "***"
+            print(f"Loaded from .env: {key}={masked}", file=sys.stderr, flush=True)
 
 
 load_dotenv(ROOT / ".env")
@@ -830,9 +832,17 @@ def upstream_post(payload):
         summary += f", ... +{len(payloads) - 8}"
     
     attempted_errors = []
-    # Use parallelism for retries and multiple providers
+    # Try providers one by one first to save limits
+    for url in RPC_URLS:
+        success, result = try_one_provider(url, body, summary)
+        if success:
+            return result
+        last_error = result
+        attempted_errors.append((url, last_error))
+
+    # If all failed once, use parallelism for retries to find a working one fast
     with ThreadPoolExecutor(max_workers=min(len(RPC_URLS), 8)) as executor:
-        for attempt in range(4):
+        for attempt in range(3):
             futures = {executor.submit(try_one_provider, url, body, summary): url for url in RPC_URLS}
             for future in as_completed(futures):
                 url = futures[future]
@@ -856,15 +866,13 @@ def upstream_post(payload):
                         print(f"Action: Consider upgrading plan or reducing request range.\n", file=sys.stderr, flush=True)
                     elif DEBUG_RPC_ERRORS:
                         print(f"RPC error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
-                    else:
-                        print(f"[{time.strftime('%H:%M:%S')}] RPC Error from {redact_url(url)}: {err_msg[:200]}", file=sys.stderr, flush=True)
                 except Exception as exc:
                     last_error = {"message": str(exc)}
                     attempted_errors.append((url, last_error))
                     print(f"[{time.strftime('%H:%M:%S')}] RPC Exception from {redact_url(url)}: {exc}", file=sys.stderr, flush=True)
             
-            if attempt < 3:
-                time.sleep(1.2 * (attempt + 1))
+            if attempt < 2:
+                time.sleep(2.0 * (attempt + 1))
     
     if attempted_errors:
         providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(RPC_URLS):])
@@ -1057,6 +1065,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return self.check_rate_limit("rpc", RPC_RATE_LIMIT_PER_MINUTE)
 
     def do_POST(self):
+        print(f"[{time.strftime('%H:%M:%S')}] POST {self.path}", file=sys.stderr, flush=True)
         parsed = urllib.parse.urlparse(getattr(self, "path", ""))
         if parsed.path == "/api/simulations":
             if not self.check_api_rate_limit():
@@ -1149,6 +1158,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return False
 
     def do_GET(self):
+        print(f"[{time.strftime('%H:%M:%S')}] GET {self.path}", file=sys.stderr, flush=True)
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/health":
             self.send_json(200, {"ok": True, "status": "healthy", "time": now_int()})
