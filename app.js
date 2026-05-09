@@ -1900,6 +1900,24 @@ function setSimulationNotice(message, isError = false) {
   if (detailsEl.textContent !== nextDetails) detailsEl.textContent = nextDetails;
   if (estimateEl.textContent !== nextEstimate) estimateEl.textContent = nextEstimate;
 
+  // Add "Update Token" button if it's an auth error
+  if (notice.isError && (String(notice.status).includes("SSE") || String(notice.details).includes("токен") || String(notice.details).includes("авторизац"))) {
+    const btn = document.createElement("button");
+    btn.textContent = "Обновить токен";
+    btn.style.cssText = "margin-top:8px;padding:4px 12px;font-size:12px;border:1px solid #ccc;border-radius:4px;background:white;cursor:pointer;";
+    btn.onclick = async () => {
+      const token = await showTokenPrompt();
+      if (token && typeof localStorage !== "undefined") {
+        localStorage.setItem("walletWatchAdminToken", token);
+        if (serverSimulation.id) {
+          stopServerSimulationEvents();
+          watchServerSimulation(serverSimulation.id);
+        }
+      }
+    };
+    estimateEl.append(document.createElement("br"), btn);
+  }
+
   if (notice.isError) {
     simNotice.classList.add("simNoticeError");
   } else if (notice.isWarning) {
