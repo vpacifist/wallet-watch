@@ -1325,6 +1325,7 @@ function formatProgressTimestamp(value) {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    timeZone: "UTC",
   }).format(new Date(timestamp)).replace(",", "");
 }
 
@@ -2067,7 +2068,7 @@ function serverJobLabel(simulation) {
 
 function serverJobMeta(simulation) {
   const info = serverSimulationText(simulation);
-  const created = simulation?.created_at ? new Date(simulation.created_at * 1000).toLocaleString() : "";
+  const created = simulation?.created_at ? fmtTime(simulation.created_at * 1000) : "";
   return [
     simulation?.status || "unknown",
     info.rows ? `${info.rows} rows` : "",
@@ -2193,8 +2194,8 @@ function renderSimulationResultView(simulation) {
     return;
   }
   const info = serverSimulationText(simulation);
-  const created = simulation.created_at ? new Date(simulation.created_at * 1000).toLocaleString() : "";
-  const finished = simulation.finished_at ? new Date(simulation.finished_at * 1000).toLocaleString() : "";
+  const created = simulation.created_at ? fmtTime(simulation.created_at * 1000) : "";
+  const finished = simulation.finished_at ? fmtTime(simulation.finished_at * 1000) : "";
   if (resultTitle) resultTitle.textContent = serverJobLabel(simulation) || simulation.id;
   if (resultSubtitle) {
     resultSubtitle.textContent = [
