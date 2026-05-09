@@ -32,7 +32,7 @@ def load_dotenv(path):
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if key:
             os.environ[key] = value
 
 
@@ -1117,13 +1117,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         auth = self.headers.get("Authorization", "").strip()
         bearer = auth[7:].strip().strip('"').strip("'") if auth.lower().startswith("bearer ") else ""
 
-        if header_token == ADMIN_API_TOKEN or bearer == ADMIN_API_TOKEN or query_token == ADMIN_API_TOKEN:
+        # Ensure tokens are clean for comparison
+        target = (ADMIN_API_TOKEN or "").strip().strip('"').strip("'")
+        
+        if header_token == target or bearer == target or query_token == target:
             return True
 
         # Log failed attempt for debugging (without revealing the full token)
         client_ip = self.client_ip()
         masked_query = (query_token[:3] + "...") if len(query_token) > 3 else ("***" if query_token else "none")
-        print(f"[{time.strftime('%H:%M:%S')}] 401 Unauthorized: {client_ip} {self.command} {path_str} (query_token={masked_query})", file=sys.stderr, flush=True)
+        expected_len = len(target)
+        received_len = len(query_token)
+        print(f"[{time.strftime('%H:%M:%S')}] 401 Unauthorized: {client_ip} {self.command} {path_str} (query_token={masked_query}, len_expected={expected_len}, len_received={received_len})", file=sys.stderr, flush=True)
 
         self.send_json(401, {"error": "admin token required", "code": "unauthorized"})
         return False
