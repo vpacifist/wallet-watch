@@ -114,7 +114,7 @@ async function readState(page) {
     const lastRow = rows.length ? rows[rows.length - 1].innerText : "";
     const button = document.getElementById("runSimulation")?.innerText || "";
     const currentValue = document.getElementById("currentPositionValue")?.innerText || "";
-    const currentAero = document.getElementById("currentAeroEarned")?.innerText || "";
+    const currentAero = document.getElementById("currentRewardValue")?.innerText || "";
     return { notice, rowCount: rows.length, lastRow, button, currentValue, currentAero };
   });
 }

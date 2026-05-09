@@ -1,4 +1,4 @@
-﻿const CSV_FILE = "./weth_usdc_1m_2026_feb_mar_apr.csv";
+const CSV_FILE = "./weth_usdc_1m_2026_feb_mar_apr.csv";
 
 const state = {
   rows: [],
@@ -95,7 +95,6 @@ const resetSimulationButton = document.getElementById("resetSimulation");
 const stepBack = document.getElementById("stepBack");
 const stepForward = document.getElementById("stepForward");
 const currentPositionValue = document.getElementById("currentPositionValue");
-const currentAeroEarned = document.getElementById("currentAeroEarned");
 const currentRewardDiv = document.getElementById("currentRewardDiv");
 const currentRewardLabel = document.getElementById("currentRewardLabel");
 const currentRewardValue = document.getElementById("currentRewardValue");
@@ -1415,10 +1414,10 @@ function setSimulationSkeletonVisible(visible) {
   state.sim.skeletonVisible = Boolean(visible);
   document.body?.classList?.toggle("simSkeletonActive", state.sim.skeletonVisible);
   currentPositionValue.classList.toggle("skeletonText", state.sim.skeletonVisible);
-  currentAeroEarned.classList.toggle("skeletonText", state.sim.skeletonVisible);
+  currentRewardValue.classList.toggle("skeletonText", state.sim.skeletonVisible);
   if (state.sim.skeletonVisible) {
     currentPositionValue.textContent = "Calculating";
-    currentAeroEarned.textContent = "Calculating";
+    currentRewardValue.textContent = "Calculating";
     renderSimulationTable();
   } else {
     simTableBody.querySelectorAll(".skeletonRow").forEach((row) => row.remove?.());
@@ -1622,7 +1621,7 @@ function resetSimulationRows() {
   simTableBody.innerHTML = "";
   simTableWrap.hidden = true;
   currentPositionValue.textContent = "$0.00";
-  currentAeroEarned.textContent = "$0.00";
+  currentRewardValue.textContent = "$0.00";
   updateSimulationControls();
   draw();
 }
@@ -2337,7 +2336,7 @@ function renderServerSimulation(simulation, options = {}) {
   const info = serverSimulationText(simulation);
   const elapsedSeconds = serverElapsedSeconds(simulation);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
-  if (info.currentAero) currentAeroEarned.textContent = info.currentAero;
+  if (info.currentAero) currentRewardValue.textContent = info.currentAero;
   const rowsDone = Number(info.rows || 0);
   const totalRows = estimateServerTotalRows(simulation);
   setServerSimulationProgressNotice({
@@ -2501,7 +2500,7 @@ async function deleteServerSimulation(id, row = null) {
       setSimulationSkeletonVisible(false);
       setSimulationNotice("Server simulation deleted.");
       currentPositionValue.textContent = "$0.00";
-      currentAeroEarned.textContent = "$0.00";
+      currentRewardValue.textContent = "$0.00";
       updateSimulationControls();
     }
     await deleteAnimation;
