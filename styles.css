@@ -514,13 +514,23 @@ canvas {
   min-height: 40px;
 }
 
+.simNotice.simNoticeError,
+.simNotice.simNoticeWarning {
+  padding: 12px 16px;
+  border-radius: 8px;
+  grid-template-columns: 1fr;
+}
+
 .simNotice.simNoticeError {
   background: rgba(242, 95, 92, 0.1);
   border: 1px solid rgba(242, 95, 92, 0.4);
   color: #c92a2a;
-  padding: 12px 16px;
-  border-radius: 8px;
-  grid-template-columns: 1fr;
+}
+
+.simNotice.simNoticeWarning {
+  background: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.4);
+  color: #856404;
 }
 
 .simNotice.simNoticeError .simNoticeStatus {
@@ -529,8 +539,16 @@ canvas {
   font-size: 14px;
 }
 
-.simNotice.simNoticeError .simNoticeRight {
-  display: none;
+.simNotice.simNoticeWarning .simNoticeStatus {
+  color: #856404;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.simNotice.simNoticeError .simNoticeRight,
+.simNotice.simNoticeWarning .simNoticeRight {
+  display: block;
+  margin-top: 4px;
 }
 
 .simNotice.simProgressNotice {

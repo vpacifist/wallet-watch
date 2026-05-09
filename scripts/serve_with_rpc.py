@@ -815,24 +815,46 @@ def upstream_post(payload):
                 attempted_errors.append((url, last_error))
                 if DEBUG_RPC_ERRORS:
                     print(f"RPC invalid JSON from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
-                    continue
-                responses = parsed if isinstance(parsed, list) else [parsed]
-                if all("error" not in item for item in responses):
-                    return parsed
-                last_error = next((item["error"] for item in responses if "error" in item), None)
-                attempted_errors.append((url, last_error))
-                if DEBUG_RPC_ERRORS:
-                    print(f"RPC upstream error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
-            except urllib.error.HTTPError as exc:
-                last_error = {"code": exc.code, "message": exc.read().decode("utf-8", errors="replace")}
-                attempted_errors.append((url, last_error))
-                if DEBUG_RPC_ERRORS:
-                    print(f"RPC HTTP error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
-            except (urllib.error.URLError, TimeoutError) as exc:
-                last_error = {"message": str(exc)}
-                attempted_errors.append((url, last_error))
-                if DEBUG_RPC_ERRORS:
-                    print(f"RPC network error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+                else:
+                    # Always log at least a summary of JSON errors
+                    print(f"[{time.strftime('%H:%M:%S')}] RPC JSON Error from {redact_url(url)}: {last_error.get('message', 'unknown')}", file=sys.stderr, flush=True)
+                continue
+            responses = parsed if isinstance(parsed, list) else [parsed]
+            if all("error" not in item for item in responses):
+                return parsed
+            last_error = next((item["error"] for item in responses if "error" in item), None)
+            attempted_errors.append((url, last_error))
+            
+            # Detailed logging for upstream errors
+            err_msg = str(last_error.get("message", "")) if isinstance(last_error, dict) else str(last_error)
+            is_plan_error = any(token in err_msg.lower() for token in ["plan", "archive", "limit", "allowance", "method not allowed", "debug", "trace"])
+            
+            if is_plan_error:
+                print(f"\n!!! PLAN LIMIT DETECTED !!!", file=sys.stderr, flush=True)
+                print(f"Provider: {redact_url(url)}", file=sys.stderr, flush=True)
+                print(f"Methods: [{summary}]", file=sys.stderr, flush=True)
+                print(f"Error: {err_msg}", file=sys.stderr, flush=True)
+                print(f"Action: Consider upgrading plan or reducing request range.\n", file=sys.stderr, flush=True)
+            elif DEBUG_RPC_ERRORS:
+                print(f"RPC upstream error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+            else:
+                print(f"[{time.strftime('%H:%M:%S')}] RPC Error from {redact_url(url)}: {err_msg[:200]}", file=sys.stderr, flush=True)
+                
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except:
+                body = "unreadable body"
+            last_error = {"code": exc.code, "message": body}
+            attempted_errors.append((url, last_error))
+            print(f"[{time.strftime('%H:%M:%S')}] RPC HTTP {exc.code} from {redact_url(url)}: {body[:200]}", file=sys.stderr, flush=True)
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = {"message": str(exc)}
+            attempted_errors.append((url, last_error))
+            if DEBUG_RPC_ERRORS:
+                print(f"RPC network error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+            else:
+                print(f"[{time.strftime('%H:%M:%S')}] RPC Network Error: {str(exc)}", file=sys.stderr, flush=True)
         time.sleep(1.2)
     if attempted_errors:
         providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(RPC_URLS):])

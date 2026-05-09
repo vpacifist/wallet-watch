@@ -269,6 +269,11 @@ function updateMetrics(rows) {
   setMetric("priceRange", `${fmtPrice(bounds.min)} - ${fmtPrice(bounds.max)}`);
 }
 
+function isPlanLimitError(error) {
+  const msg = String(error?.message || error || "").toLowerCase();
+  return msg.includes("archive") || msg.includes("plan") || msg.includes("allowance") || msg.includes("limit") || msg.includes("method not allowed") || msg.includes("debug") || msg.includes("trace");
+}
+
 function chartPriceBounds(rows) {
   const bounds = priceBounds(rows);
   if (state.sim.started) {
@@ -291,10 +296,15 @@ async function rpcCall(method, params) {
       });
       if (!response.ok) throw new Error(`Base RPC HTTP ${response.status}`);
       const payload = await response.json();
-      if (payload.error) throw new Error(payload.error.message || "Base RPC error");
+      if (payload.error) {
+        const err = new Error(payload.error.message || "Base RPC error");
+        if (isPlanLimitError(err)) err.isPlanLimit = true;
+        throw err;
+      }
       return payload.result;
     } catch (error) {
       lastError = error;
+      if (error.isPlanLimit) break; // Don't retry on other providers if it's a plan limit (likely same for all if they are proxies)
       baseRpcIndex += 1;
     }
   }
@@ -316,11 +326,16 @@ async function rpcBatch(calls) {
       const byId = new Map(payload.map((item) => [item.id, item]));
       return calls.map((_, index) => {
         const item = byId.get(index + 1);
-        if (!item || item.error) throw new Error(item?.error?.message || "Base RPC batch error");
+        if (!item || item.error) {
+          const err = new Error(item?.error?.message || "Base RPC batch error");
+          if (isPlanLimitError(err)) err.isPlanLimit = true;
+          throw err;
+        }
         return item.result;
       });
     } catch (error) {
       lastError = error;
+      if (error.isPlanLimit) break;
       baseRpcIndex += 1;
     }
   }
@@ -1845,14 +1860,21 @@ function renderSimulationTable(scrollToLatest = false) {
 
 function setSimulationNotice(message, isError = false) {
   if (simNotice.classList?.remove) {
-    simNotice.classList.remove("simProgressNotice", "simNoticeError");
+    simNotice.classList.remove("simProgressNotice", "simNoticeError", "simNoticeWarning");
   }
-  const notice = typeof message === "string" ? { status: message, details: "", isError } : message;
+  let notice = typeof message === "string" ? { status: message, details: "", isError } : { ...message };
   
   if (typeof message === "string" && !isError) {
     if (message.includes("ошибка") || message.includes("Не удалось") || message.includes("Не могу") || message.includes("остановлена") || message.includes("недоступен") || message.includes("должна быть") || message.includes("должен быть")) {
       notice.isError = true;
     }
+  }
+
+  // Detect plan limits and upgrade to warning if it's a known RPC restriction
+  if (isPlanLimitError(notice.status) || isPlanLimitError(notice.details)) {
+    notice.isWarning = true;
+    notice.status = "⚠️ Ограничение RPC плана (Chainstack)";
+    notice.details = "Текущий план не поддерживает Archive/Debug запросы. Код пытается использовать кэш или упрощенные модели, но точность может пострадать или симуляция остановится.";
   }
 
   let statusEl = simNotice.querySelector(".simNoticeStatus");
@@ -1880,6 +1902,8 @@ function setSimulationNotice(message, isError = false) {
 
   if (notice.isError) {
     simNotice.classList.add("simNoticeError");
+  } else if (notice.isWarning) {
+    simNotice.classList.add("simNoticeWarning");
   }
 }
 
