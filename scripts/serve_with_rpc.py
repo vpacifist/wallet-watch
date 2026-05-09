@@ -13,6 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from pathlib import Path
@@ -783,6 +784,43 @@ def response_from_error(payload, error):
     return {"jsonrpc": "2.0", "id": payload.get("id"), "error": error or {"message": "RPC proxy error"}}
 
 
+def try_one_provider(url, body, summary):
+    try:
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "wallet-watch/1.0"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as response:
+            raw = response.read()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            preview = raw[:240].decode("utf-8", errors="replace")
+            return False, {
+                "message": f"Invalid JSON from RPC provider: {exc.msg}",
+                "position": exc.pos,
+                "responseBytes": len(raw),
+                "preview": preview,
+            }
+        
+        responses = parsed if isinstance(parsed, list) else [parsed]
+        if all("error" not in item for item in responses):
+            return True, parsed
+        
+        last_error = next((item["error"] for item in responses if "error" in item), None)
+        return False, last_error
+    except urllib.error.HTTPError as exc:
+        try:
+            body_text = exc.read().decode("utf-8", errors="replace")
+        except:
+            body_text = "unreadable body"
+        return False, {"code": exc.code, "message": body_text}
+    except (urllib.error.URLError, TimeoutError) as exc:
+        return False, {"message": str(exc)}
+
+
 def upstream_post(payload):
     body = json.dumps(payload).encode("utf-8")
     last_error = None
@@ -790,76 +828,47 @@ def upstream_post(payload):
     summary = ", ".join(item.get("method", "<unknown>") for item in payloads[:8])
     if len(payloads) > 8:
         summary += f", ... +{len(payloads) - 8}"
+    
     attempted_errors = []
-    for _ in range(4):
-        for url in RPC_URLS:
-            try:
-                req = urllib.request.Request(
-                    url,
-                    data=body,
-                    headers={"Content-Type": "application/json", "User-Agent": "wallet-watch/1.0"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=30) as response:
-                    raw = response.read()
+    # Use parallelism for retries and multiple providers
+    with ThreadPoolExecutor(max_workers=min(len(RPC_URLS), 8)) as executor:
+        for attempt in range(4):
+            futures = {executor.submit(try_one_provider, url, body, summary): url for url in RPC_URLS}
+            for future in as_completed(futures):
+                url = futures[future]
                 try:
-                    parsed = json.loads(raw)
-                except json.JSONDecodeError as exc:
-                    preview = raw[:240].decode("utf-8", errors="replace")
-                    last_error = {
-                        "message": f"Invalid JSON from RPC provider: {exc.msg}",
-                        "position": exc.pos,
-                        "responseBytes": len(raw),
-                        "preview": preview,
-                    }
+                    success, result = future.result()
+                    if success:
+                        return result
+                    
+                    last_error = result
                     attempted_errors.append((url, last_error))
-                    if DEBUG_RPC_ERRORS:
-                        print(f"RPC invalid JSON from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+                    
+                    # Detailed logging for specific error types
+                    err_msg = str(last_error.get("message", "")) if isinstance(last_error, dict) else str(last_error)
+                    is_plan_error = any(token in err_msg.lower() for token in ["plan", "archive", "limit", "allowance", "method not allowed", "debug", "trace"])
+                    
+                    if is_plan_error:
+                        print(f"\n!!! PLAN LIMIT DETECTED !!!", file=sys.stderr, flush=True)
+                        print(f"Provider: {redact_url(url)}", file=sys.stderr, flush=True)
+                        print(f"Methods: [{summary}]", file=sys.stderr, flush=True)
+                        print(f"Error: {err_msg}", file=sys.stderr, flush=True)
+                        print(f"Action: Consider upgrading plan or reducing request range.\n", file=sys.stderr, flush=True)
+                    elif DEBUG_RPC_ERRORS:
+                        print(f"RPC error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
                     else:
-                        # Always log at least a summary of JSON errors
-                        print(f"[{time.strftime('%H:%M:%S')}] RPC JSON Error from {redact_url(url)}: {last_error.get('message', 'unknown')}", file=sys.stderr, flush=True)
-                    continue
-
-                responses = parsed if isinstance(parsed, list) else [parsed]
-                if all("error" not in item for item in responses):
-                    return parsed
-                last_error = next((item["error"] for item in responses if "error" in item), None)
-                attempted_errors.append((url, last_error))
-                
-                # Detailed logging for upstream errors
-                err_msg = str(last_error.get("message", "")) if isinstance(last_error, dict) else str(last_error)
-                is_plan_error = any(token in err_msg.lower() for token in ["plan", "archive", "limit", "allowance", "method not allowed", "debug", "trace"])
-                
-                if is_plan_error:
-                    print(f"\n!!! PLAN LIMIT DETECTED !!!", file=sys.stderr, flush=True)
-                    print(f"Provider: {redact_url(url)}", file=sys.stderr, flush=True)
-                    print(f"Methods: [{summary}]", file=sys.stderr, flush=True)
-                    print(f"Error: {err_msg}", file=sys.stderr, flush=True)
-                    print(f"Action: Consider upgrading plan or reducing request range.\n", file=sys.stderr, flush=True)
-                elif DEBUG_RPC_ERRORS:
-                    print(f"RPC upstream error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
-                else:
-                    print(f"[{time.strftime('%H:%M:%S')}] RPC Error from {redact_url(url)}: {err_msg[:200]}", file=sys.stderr, flush=True)
-
-            except urllib.error.HTTPError as exc:
-                try:
-                    body = exc.read().decode("utf-8", errors="replace")
-                except:
-                    body = "unreadable body"
-                last_error = {"code": exc.code, "message": body}
-                attempted_errors.append((url, last_error))
-                print(f"[{time.strftime('%H:%M:%S')}] RPC HTTP {exc.code} from {redact_url(url)}: {body[:200]}", file=sys.stderr, flush=True)
-            except (urllib.error.URLError, TimeoutError) as exc:
-                last_error = {"message": str(exc)}
-                attempted_errors.append((url, last_error))
-                if DEBUG_RPC_ERRORS:
-                    print(f"RPC network error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
-                else:
-                    print(f"[{time.strftime('%H:%M:%S')}] RPC Network Error: {str(exc)}", file=sys.stderr, flush=True)
-        time.sleep(1.2)
+                        print(f"[{time.strftime('%H:%M:%S')}] RPC Error from {redact_url(url)}: {err_msg[:200]}", file=sys.stderr, flush=True)
+                except Exception as exc:
+                    last_error = {"message": str(exc)}
+                    attempted_errors.append((url, last_error))
+                    print(f"[{time.strftime('%H:%M:%S')}] RPC Exception from {redact_url(url)}: {exc}", file=sys.stderr, flush=True)
+            
+            if attempt < 3:
+                time.sleep(1.2 * (attempt + 1))
+    
     if attempted_errors:
         providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(RPC_URLS):])
-        print(f"RPC upstream failed for [{summary}] after retries; last providers: {providers}; last_error={last_error}", file=sys.stderr, flush=True)
+        print(f"RPC upstream failed for [{summary}] after parallel retries; last providers: {providers}; last_error={last_error}", file=sys.stderr, flush=True)
     raise RuntimeError(json.dumps(last_error or {"message": "RPC proxy error"}))
 
 
