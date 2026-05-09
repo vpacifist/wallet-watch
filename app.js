@@ -1920,6 +1920,42 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   updateSimulationControls,
 });
 
+function showTokenPrompt() {
+  return new Promise((resolve) => {
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;';
+    const content = document.createElement('div');
+    content.style.cssText = 'background:white;padding:20px;border-radius:5px;max-width:400px;width:90%;';
+    content.innerHTML = `
+      <p style="margin:0 0 10px 0;">Введите ADMIN_API_TOKEN для серверной операции:</p>
+      <input type="password" id="tokenInput" style="width:100%;padding:8px;margin:0 0 10px 0;border:1px solid #ccc;border-radius:3px;">
+      <div style="text-align:right;">
+        <button id="cancelBtn" style="margin-right:10px;padding:8px 16px;border:1px solid #ccc;border-radius:3px;background:#f5f5f5;">Отмена</button>
+        <button id="okBtn" style="padding:8px 16px;border:1px solid #007bff;border-radius:3px;background:#007bff;color:white;">OK</button>
+      </div>
+    `;
+    modal.appendChild(content);
+    document.body.appendChild(modal);
+    const input = content.querySelector('#tokenInput');
+    const okBtn = content.querySelector('#okBtn');
+    const cancelBtn = content.querySelector('#cancelBtn');
+    okBtn.onclick = () => {
+      const token = input.value.trim();
+      document.body.removeChild(modal);
+      resolve(token);
+    };
+    cancelBtn.onclick = () => {
+      document.body.removeChild(modal);
+      resolve('');
+    };
+    input.focus();
+    input.onkeydown = (e) => {
+      if (e.key === 'Enter') okBtn.click();
+      if (e.key === 'Escape') cancelBtn.click();
+    };
+  });
+}
+
 async function fetchJson(url, options = {}) {
   const adminToken = typeof localStorage !== "undefined" ? localStorage.getItem("walletWatchAdminToken") : "";
   const adminHeaders = adminToken ? { "X-Admin-API-Token": adminToken } : {};
@@ -1927,16 +1963,21 @@ async function fetchJson(url, options = {}) {
     headers: { "Content-Type": "application/json", ...adminHeaders, ...(options.headers || {}) },
     ...options,
   });
-  if (response.status === 401 && typeof prompt === "function" && typeof localStorage !== "undefined") {
-    const token = prompt("Введите ADMIN_API_TOKEN для серверной операции");
+  if (response.status === 401 && typeof localStorage !== "undefined" && typeof document !== "undefined") {
+    const token = await showTokenPrompt();
     if (token) {
       localStorage.setItem("walletWatchAdminToken", token);
       return await fetchJson(url, options);
+    } else {
+      throw new Error("Admin token required. Please enter it in the dialog or set 'walletWatchAdminToken' in localStorage.");
     }
   }
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     const detail = payload?.error || payload?.message || `HTTP ${response.status}`;
+    if (response.status === 401 && detail === "admin token required") {
+      throw new Error("Admin token required. Please enter it when prompted or set 'walletWatchAdminToken' in localStorage and retry.");
+    }
     const error = new Error(detail);
     error.status = response.status;
     error.code = payload?.code || "";
