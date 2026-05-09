@@ -483,6 +483,7 @@ def start_simulation_job(params):
         "retryInitialSeconds": 60,
         "retryMaxSeconds": 300,
         "maxRetries": 1000,
+        "timeoutSeconds": 86400,
     }
     env = os.environ.copy()
     env["SERVER_SIM_CONFIG"] = json.dumps(config, ensure_ascii=False)
