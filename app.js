@@ -1842,9 +1842,18 @@ function renderSimulationTable(scrollToLatest = false) {
   draw();
 }
 
-function setSimulationNotice(message) {
-  if (simNotice.classList?.remove) simNotice.classList.remove("simProgressNotice");
-  const notice = typeof message === "string" ? { status: message, details: "" } : message;
+function setSimulationNotice(message, isError = false) {
+  if (simNotice.classList?.remove) {
+    simNotice.classList.remove("simProgressNotice", "simNoticeError");
+  }
+  const notice = typeof message === "string" ? { status: message, details: "", isError } : message;
+  
+  if (typeof message === "string" && !isError) {
+    if (message.includes("ошибка") || message.includes("Не удалось") || message.includes("Не могу") || message.includes("остановлена") || message.includes("недоступен") || message.includes("должна быть") || message.includes("должен быть")) {
+      notice.isError = true;
+    }
+  }
+
   let statusEl = simNotice.querySelector(".simNoticeStatus");
   let detailsEl = simNotice.querySelector(".simNoticeDetails");
   let estimateEl = simNotice.querySelector(".simNoticeEstimate");
@@ -1867,6 +1876,10 @@ function setSimulationNotice(message) {
   if (statusEl.textContent !== nextStatus) statusEl.textContent = nextStatus;
   if (detailsEl.textContent !== nextDetails) detailsEl.textContent = nextDetails;
   if (estimateEl.textContent !== nextEstimate) estimateEl.textContent = nextEstimate;
+
+  if (notice.isError) {
+    simNotice.classList.add("simNoticeError");
+  }
 }
 
 const simulationEngine = WalletWatchSimulationEngine.create({
@@ -2605,7 +2618,7 @@ async function startServerSimulation() {
     serverSimulation.paused = false;
     stopSimulationElapsedTimer();
     setSimulationSkeletonVisible(false);
-    setSimulationNotice(`Не удалось запустить серверную симуляцию: ${error.message}`);
+    setSimulationNotice(`Не удалось запустить серверную симуляцию: ${error.message}`, true);
     updateSimulationControls();
   }
 }
@@ -2745,7 +2758,7 @@ async function startSimulation() {
   } catch (error) {
     if (runToken !== state.sim.runToken) return;
     resetSimulationRows();
-    console.error(error); setSimulationNotice(`Симуляция остановлена: ${error.stack || error.message}`);
+    console.error(error); setSimulationNotice(`Симуляция остановлена: ${error.stack || error.message}`, true);
   }
 }
 async function stepSimulationForward(options = {}) {
