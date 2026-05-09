@@ -2371,9 +2371,29 @@ function animateServerJobDelete(row) {
 
 function renderServerResultTable(simulation) {
   const tableRows = simulation?.result?.rawRows || simulation?.result?.tableRows || serverSimulation.rawRows || [];
-  if (!SERVER_SIMULATION_MODE || !simTableBody || !simTableWrap || !tableRows.length) return;
+  let rowsToRender = tableRows;
+  let truncated = false;
+  if (tableRows.length > 1000) {
+    rowsToRender = [...tableRows.slice(0, 500), null, ...tableRows.slice(-500)];
+    truncated = true;
+  }
+
   simTableBody.replaceChildren();
-  tableRows.forEach((rowItem, index) => {
+  rowsToRender.forEach((rowItem, i) => {
+    if (rowItem === null) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 15;
+      td.style.textAlign = "center";
+      td.style.padding = "20px";
+      td.style.color = "#888";
+      td.style.fontStyle = "italic";
+      td.textContent = `... ${tableRows.length - 1000} rows hidden to improve performance ...`;
+      tr.append(td);
+      simTableBody.append(tr);
+      return;
+    }
+    const index = truncated ? (i < 500 ? i : tableRows.length - 1000 + i) : i;
     const tr = document.createElement("tr");
     tr.dataset.index = String(index);
     const cells = typeof rowItem === "object" && rowItem !== null
