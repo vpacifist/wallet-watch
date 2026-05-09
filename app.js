@@ -2480,7 +2480,14 @@ function watchServerSimulation(id) {
     stopServerSimulationEvents();
     const delayMs = Math.max(5000, serverSimulation.pollBackoffMs || SERVER_SIMULATION_POLL_MS);
     serverSimulation.pollBackoffMs = Math.min(60000, delayMs * 2);
-    serverSimulation.pollTimer = setTimeout(() => pollServerSimulation(id), delayMs);
+    
+    let errorMessage = "Ошибка потока событий (SSE). Проверьте соединение или авторизацию.";
+    if (!adminToken) {
+      errorMessage = "SSE ошибка: отсутствует admin_token. Проверьте авторизацию.";
+    } else if (source.readyState === EventSource.CLOSED) {
+      errorMessage = "SSE соединение закрыто. Возможно, неверный токен (401/403) или сервер недоступен.";
+    }
+    setSimulationNotice({ status: "SSE Error", details: errorMessage, isError: true });
   };
   serverSimulation.eventSource = source;
 }
