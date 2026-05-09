@@ -1367,6 +1367,10 @@ function serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows) {
 }
 
 function setServerSimulationProgressNotice({ status, elapsed, processing, rows, eta }) {
+  // Do not overwrite critical transport or auth errors with normal progress
+  if (simNotice.classList.contains("simNoticeError") && simNotice.textContent.includes("SSE")) {
+    return;
+  }
   simNotice.replaceChildren();
   simNotice.classList.add("simProgressNotice");
   const columns = [
@@ -2494,12 +2498,21 @@ async function pollServerSimulation(id) {
   }
 }
 
-function watchServerSimulation(id) {
+async function watchServerSimulation(id) {
   stopServerSimulationPolling();
   stopServerSimulationEvents();
   serverSimulation.paused = false;
   serverSimulation.pollBackoffMs = Math.max(5000, SERVER_SIMULATION_POLL_MS);
-  pollServerSimulation(id);
+  
+  // Wait for initial poll to ensure UI has data before starting SSE
+  // This also validates the token via fetchJson
+  try {
+    await pollServerSimulation(id);
+  } catch (_) {
+    // If poll failed, it will set its own notice, we don't start SSE
+    return;
+  }
+  
   const adminToken = typeof localStorage !== "undefined" ? localStorage.getItem("walletWatchAdminToken") : "";
   const eventUrl = adminToken
     ? `/api/simulations/${id}/events?admin_token=${encodeURIComponent(adminToken)}`

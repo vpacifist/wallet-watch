@@ -1117,11 +1117,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return True
         # Using self.path directly as it contains the full request path including query
         path_str = getattr(self, "path", "")
-        parsed = urllib.parse.urlparse(path_str)
-        params = urllib.parse.parse_qs(parsed.query)
+        if "?" in path_str:
+            _, query = path_str.split("?", 1)
+        else:
+            query = ""
+        params = urllib.parse.parse_qs(query)
 
         # Extract tokens from various sources, stripping whitespace and optional quotes
-        query_token = params.get("admin_token", [""])[0].strip().strip('"').strip("'")
+        # Also handle potential double encoding from some proxies
+        raw_query_token = params.get("admin_token", [""])[0].strip().strip('"').strip("'")
+        query_token = urllib.parse.unquote(raw_query_token) if "%" in raw_query_token else raw_query_token
+        
         header_token = self.headers.get("X-Admin-API-Token", "").strip().strip('"').strip("'")
         auth = self.headers.get("Authorization", "").strip()
         bearer = auth[7:].strip().strip('"').strip("'") if auth.lower().startswith("bearer ") else ""
