@@ -340,7 +340,7 @@ async function runSimulation(config, emit = () => { }) {
     JSON,
     SERVER_SIM_CONFIG_CLIENT: config,
     window: {
-      location: { search: "?local-sim=1" },
+      location: { search: "" },
       devicePixelRatio: 1,
       addEventListener() { },
       setInterval,
@@ -371,6 +371,10 @@ async function runSimulation(config, emit = () => { }) {
   document.getElementById("simEndInput").value = config.end;
   document.getElementById("depositInput").value = String(config.deposit || "10000");
   document.getElementById("rangePercentInput").value = String(config.rangePct || 1);
+  if (config.lpMode && document.getElementById("simulationModeSelect")) {
+    document.getElementById("simulationModeSelect").value = String(config.lpMode);
+    document.getElementById("simulationModeSelect").dispatchEvent({ type: "change" });
+  }
 
   emit({
     type: "inputs",
@@ -379,6 +383,7 @@ async function runSimulation(config, emit = () => { }) {
     end: document.getElementById("simEndInput").value,
     deposit: document.getElementById("depositInput").value,
     rangePct: document.getElementById("rangePercentInput").value,
+    lpMode: document.getElementById("simulationModeSelect")?.value || "",
   });
 
   const startedAt = Date.now();

@@ -135,7 +135,8 @@ const REBALANCE_FALLBACK_SLIPPAGE_BPS = Number(RUNTIME_CONFIG.rebalanceFallbackS
 const AERO_IMPACT_HAIRCUT_MAX = Number(RUNTIME_CONFIG.aeroImpactHaircutMax ?? 0.5);
 const SERVER_SIMULATION_POLL_MS = Number(RUNTIME_CONFIG.serverSimulationPollMs ?? 2500);
 const BASE_RPC_URLS = ["/rpc"];
-const SERVER_SIMULATION_MODE = !new URLSearchParams(window.location.search).has("local-sim");
+const IS_SERVER_WORKER = Boolean(globalThis.SERVER_SIM_CONFIG_CLIENT && globalThis.SERVER_SIM_CONFIG_CLIENT.id);
+const SERVER_SIMULATION_MODE = !IS_SERVER_WORKER;
 let baseRpcIndex = 0;
 const POOL_ADDRESS = "0xb2cc224c1c9fee385f8ad6a55b4d94e92359dc59";
 const AERO_USDC_POOL_ADDRESS = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1";
@@ -2049,7 +2050,7 @@ function serverSimulationText(simulation) {
     rows,
     elapsed,
     currentValue: payload.currentValue || "",
-    currentAero: payload.currentAero || "",
+    currentReward: payload.currentReward || payload.currentAero || "",
     notice,
   };
 }
@@ -2119,7 +2120,7 @@ function serverJobMeta(simulation) {
     simulation?.status || "unknown",
     info.rows ? `${info.rows} rows` : "",
     info.currentValue || "",
-    info.currentAero ? `AERO ${info.currentAero}` : "",
+    info.currentReward ? info.currentReward : "",
     created,
   ].filter(Boolean).join(" · ");
 }
@@ -2240,6 +2241,9 @@ function renderSimulationResultView(simulation) {
     return;
   }
   const info = serverSimulationText(simulation);
+  const params = simulation?.params || {};
+  const lpMode = String(params.lpMode || state.sim.lpMode || "staked");
+  const isStaked = lpMode === "staked";
   const created = simulation.created_at ? fmtTime(simulation.created_at * 1000) : "";
   const finished = simulation.finished_at ? fmtTime(simulation.finished_at * 1000) : "";
   if (resultTitle) resultTitle.textContent = serverJobLabel(simulation) || simulation.id;
@@ -2258,7 +2262,7 @@ function renderSimulationResultView(simulation) {
       createResultMetric("Status", simulation.status || "unknown"),
       createResultMetric("Rows", info.rows ? String(info.rows) : ""),
       createResultMetric("Position value", info.currentValue),
-      createResultMetric("AERO earned", info.currentAero),
+      createResultMetric(isStaked ? "AERO earned" : "LP fees earned", info.currentReward || ""),
       createResultMetric("Elapsed", info.elapsed),
       createResultMetric("Warnings", warnings.length ? warnings.join("; ") : "none"),
     );
@@ -2455,9 +2459,15 @@ function renderServerSimulation(simulation, options = {}) {
   if (!serverSimulation.running) stopSimulationElapsedTimer();
   applyServerRawProgress(simulation);
   const info = serverSimulationText(simulation);
+  const params = simulation?.params || {};
+  if (params.lpMode && simulationModeSelect) {
+    state.sim.lpMode = String(params.lpMode);
+    simulationModeSelect.value = state.sim.lpMode;
+  }
   const elapsedSeconds = serverElapsedSeconds(simulation);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
-  if (info.currentAero) currentRewardValue.textContent = info.currentAero;
+  if (info.currentReward) currentRewardValue.textContent = info.currentReward;
+  if (currentRewardLabel) currentRewardLabel.textContent = state.sim.lpMode === "staked" ? "AERO earned, USDC" : "LP fees earned, USDC";
   const rowsDone = Number(info.rows || 0);
   const totalRows = estimateServerTotalRows(simulation);
   setServerSimulationProgressNotice({
@@ -2621,6 +2631,10 @@ async function loadInitialServerSimulations() {
       if (params.end) simEndInput.value = params.end;
       if (params.deposit) depositInput.value = fmtDeposit(parseNumericInput(params.deposit));
       if (params.rangePct) rangePercentInput.value = fmtPercent(params.rangePct);
+      if (params.lpMode) {
+        state.sim.lpMode = String(params.lpMode);
+        if (simulationModeSelect) simulationModeSelect.value = state.sim.lpMode;
+      }
 
       watchServerSimulation(latest.id);
     }
@@ -2763,6 +2777,7 @@ async function startServerSimulation() {
         end: fmtInputTime(endTimestamp),
         deposit: String(depositUsdc),
         rangePct: rangePercent,
+        lpMode: state.sim.lpMode,
         progressEverySeconds: 2,
       }),
     });

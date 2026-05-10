@@ -104,6 +104,9 @@ class ServerContractTests(unittest.TestCase):
       handler = object.__new__(self.server.Handler)
       sent = []
       handler.send_json = lambda status, payload: sent.append((status, payload))
+      handler.client_address = ("203.0.113.10", 12345)
+      handler.command = "GET"
+      handler.path = "/api/simulations"
 
       handler.headers = FakeHeaders({"X-Admin-API-Token": "secret-token"})
       self.assertTrue(handler.require_admin_token())

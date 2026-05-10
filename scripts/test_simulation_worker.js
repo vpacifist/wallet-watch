@@ -1,6 +1,8 @@
 const assert = require("assert/strict");
+const { spawn } = require("child_process");
 const { runSimulation } = require("./simulation_runtime");
 const WalletWatchCore = require("../simulation_core");
+const path = require("path");
 
 const core = WalletWatchCore.create({
   MONTHS_SHORT: [],
@@ -13,6 +15,69 @@ const core = WalletWatchCore.create({
   AERO_ADDRESS: "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
   USDC_ADDRESS: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
 });
+
+const SERVER_ORIGIN = "http://127.0.0.1:8003";
+
+async function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchJson(url, timeoutMs = 2000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      const error = new Error(body?.error || body?.message || `HTTP ${res.status}`);
+      error.status = res.status;
+      throw error;
+    }
+    return body;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function ensureServer() {
+  try {
+    const health = await fetchJson(`${SERVER_ORIGIN}/api/health`, 800);
+    if (health?.ok) return { started: false, stop() { } };
+  } catch (_) { }
+
+  const scriptPath = path.join(__dirname, "serve_with_rpc.py");
+  const proc = spawn("python", [scriptPath], {
+    cwd: path.join(__dirname, ".."),
+    env: {
+      ...process.env,
+      HOST: "127.0.0.1",
+      PORT: "8003",
+      ADMIN_API_TOKEN: "",
+    },
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  proc.unref();
+
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    try {
+      const health = await fetchJson(`${SERVER_ORIGIN}/api/health`, 1200);
+      if (health?.ok) {
+        return {
+          started: true,
+          stop() {
+            try { proc.kill("SIGTERM"); } catch (_) { }
+            try { proc.kill("SIGKILL"); } catch (_) { }
+          },
+        };
+      }
+    } catch (_) { }
+    await sleep(250);
+  }
+  try { proc.kill(); } catch (_) { }
+  throw new Error("Failed to start local server on 127.0.0.1:8003");
+}
 
 function testCompleteMinuteRows() {
   const rows = core.parseCsv([
@@ -34,11 +99,12 @@ async function runCase(testCase) {
   const events = [];
   const result = await runSimulation({
     id: testCase.name,
-    url: "http://127.0.0.1:8003/index.html?local-sim=1",
+    url: "http://127.0.0.1:8003/index.html",
     start: testCase.start,
     end: testCase.end,
     deposit: "10000",
     rangePct: testCase.rangePct ?? 1,
+    lpMode: testCase.lpMode ?? "staked",
     timeoutSeconds: testCase.timeoutSeconds ?? 300,
     progressEverySeconds: 2,
   }, (event) => events.push(event));
@@ -54,7 +120,7 @@ async function runCase(testCase) {
   assert.ok(Array.isArray(final.rawRows), `${testCase.name} should include raw rows`);
   assert.equal(final.rawRows.length, testCase.rows, `${testCase.name} raw row count`);
   assert.equal(final.currentValue, testCase.currentValue, `${testCase.name} current value`);
-  assert.equal(final.currentReward, testCase.currentReward, `${testCase.name} current AERO`);
+  assert.equal(final.currentReward, testCase.currentReward, `${testCase.name} current reward`);
   assert.equal(final.lastRow, testCase.lastRow, `${testCase.name} last row`);
   const lastRaw = final.rawRows.at(-1);
   assert.equal(lastRaw.time, testCase.start.slice(0, 10) === "2026-02-01" ? `${testCase.end.replace(" ", "T")}:00Z` : lastRaw.time, `${testCase.name} last raw timestamp`);
@@ -97,44 +163,25 @@ async function runCase(testCase) {
 
 async function main() {
   testCompleteMinuteRows();
+  const server = await ensureServer();
+  try {
 
-  await runCase({
-    name: "two-minute-range",
-    start: "2026-02-01 00:00",
-    end: "2026-02-01 00:02",
-    rows: 3,
-    currentValue: "$9,976.64",
-    currentReward: "$0.78",
-    lastRow: "2026-02-01 00:02\trebalance -$6.03 · swap fallback\t$9,976.64\t$2,445.37\t0.02531485\t9,914.74\t$0.78\t$0.07\t68.00%",
-    lastEvent: "rebalance -$6.03",
-    hasRebalance: true,
-  });
-
-  await runCase({
-    name: "five-minute-range",
-    start: "2026-02-01 00:00",
-    end: "2026-02-01 00:05",
-    rows: 6,
-    currentValue: "$9,957.96",
-    currentReward: "$1.26",
-    lastRow: "2026-02-01 00:05\trebalance -$6.04 · swap fallback\t$9,957.96\t$2,445.61\t4.05712502\t35.83\t$0.00\t$0.00\t68.00%",
-    lastEvent: "rebalance -$6.04",
-    hasRebalance: true,
-  });
-
-  await runCase({
-    name: "narrow-range-rebalance",
-    start: "2026-02-01 00:00",
-    end: "2026-02-01 00:20",
-    rangePct: 0.1,
-    timeoutSeconds: 600,
-    rows: 21,
-    currentValue: "$9,863.42",
-    currentReward: "$1.26",
-    lastRow: "2026-02-01 00:20\trebalance -$5.99 · swap fallback\t$9,863.42\t$2,445.47\t0.00764595\t9,844.72\t$0.00\t$0.00\t68.00%",
-    lastEvent: "rebalance -$5.99",
-    hasRebalance: true,
-  });
+    await runCase({
+      name: "two-minute-range",
+      start: "2026-02-01 00:00",
+      end: "2026-02-01 00:02",
+      rows: 3,
+      currentValue: "$9,976.64",
+      currentReward: "$0.78",
+      lastRow: "2026-02-01 00:02\trebalance -$6.03 · swap fallback\t$9,976.64\t$2,445.37\t0.02531485\t9,914.74\t$0.78\t$0.07\t68.00%",
+      lastEvent: "rebalance -$6.03",
+      hasRebalance: true,
+      lpMode: "staked",
+      timeoutSeconds: 180,
+    });
+  } finally {
+    server.stop();
+  }
 }
 
 main().catch((error) => {

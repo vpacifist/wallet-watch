@@ -13,8 +13,8 @@ async function readState(page) {
     const lastRow = rows.length ? rows[rows.length - 1].innerText : "";
     const button = document.getElementById("runSimulation")?.innerText || "";
     const currentValue = document.getElementById("currentPositionValue")?.innerText || "";
-    const currentAero = document.getElementById("currentRewardValue")?.innerText || "";
-    return { notice, rowCount: rows.length, lastRow, button, currentValue, currentAero };
+    const currentReward = document.getElementById("currentRewardValue")?.innerText || "";
+    return { notice, rowCount: rows.length, lastRow, button, currentValue, currentReward };
   });
 }
 
@@ -45,7 +45,7 @@ function progressEvent(startedAt, state, rawRows, newRawRows, reason = "heartbea
     notice: state.notice,
     lastRow: state.lastRow,
     currentValue: state.currentValue,
-    currentAero: state.currentAero,
+    currentReward: state.currentReward,
     latestRawRow: rawRows.at(-1) || null,
     newRawRows,
   };
@@ -103,6 +103,13 @@ function isTransientRpcStop(state) {
         input.value = value;
         input.dispatchEvent(new Event("input", { bubbles: true }));
         input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      if (nextConfig.lpMode) {
+        const select = document.getElementById("simulationModeSelect");
+        if (select) {
+          select.value = String(nextConfig.lpMode);
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
       }
     }, config);
     const appliedInputs = await page.evaluate(() => ({
@@ -175,7 +182,7 @@ function isTransientRpcStop(state) {
           notice: state.notice,
           lastRow: state.lastRow,
           currentValue: state.currentValue,
-          currentAero: state.currentAero,
+          currentReward: state.currentReward,
           rawRows,
           dataQuality: await readDataQuality(page),
         });

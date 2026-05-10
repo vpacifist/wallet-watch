@@ -367,12 +367,16 @@ def normalize_simulation_params(payload):
     range_pct = float(payload.get("rangePct", payload.get("range_pct", 1)))
     if range_pct <= 0 or range_pct >= 100:
         raise ApiError(400, "rangePct must be greater than 0 and less than 100", "invalid_range_pct")
+    lp_mode = str(payload.get("lpMode", payload.get("lp_mode", "staked"))).strip().lower() or "staked"
+    if lp_mode not in {"staked", "unstaked"}:
+        raise ApiError(400, "lpMode must be 'staked' or 'unstaked'", "invalid_lp_mode")
     timeout_seconds = int(payload.get("timeoutSeconds", 21600))
     return {
         "start": start,
         "end": end,
         "deposit": deposit,
         "rangePct": range_pct,
+        "lpMode": lp_mode,
         "timeoutSeconds": timeout_seconds,
         "progressEverySeconds": int(payload.get("progressEverySeconds", 2)),
         "rebalanceManualFeeBps": float(payload.get("rebalanceManualFeeBps", os.environ.get("REBALANCE_MANUAL_FEE_BPS", "1"))),
@@ -477,7 +481,7 @@ def start_simulation_job(params):
     insert_simulation(simulation_id, params)
     config = {
         "id": simulation_id,
-        "url": f"{PUBLIC_BASE_URL.rstrip('/')}/index.html?local-sim=1",
+        "url": f"{PUBLIC_BASE_URL.rstrip('/')}/index.html",
         **params,
         "headed": False,
         "retryInitialSeconds": 60,

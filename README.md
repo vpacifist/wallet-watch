@@ -16,11 +16,7 @@ http://127.0.0.1:8003/index.html
 
 By default `START` creates a server-side simulation job through `/api/simulations`. The calculation runs in the Node worker, so the browser tab can be closed and reopened later. Live progress now uses SSE (`/api/simulations/:id/events`) for near-instant updates; periodic polling is only a fallback path.
 
-For the legacy in-browser simulation mode:
-
-```text
-http://127.0.0.1:8003/index.html?local-sim=1
-```
+The UI always runs simulations server-side now (the browser only observes progress/results).
 
 ## Tests
 
