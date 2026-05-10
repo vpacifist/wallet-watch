@@ -158,8 +158,8 @@ class FakeElement {
 const fakeCanvasContext = new Proxy({}, {
   get(target, prop) {
     if (prop === "measureText") return (text) => ({ width: String(text || "").length * 7 });
-    if (prop === "createLinearGradient") return () => ({ addColorStop() {} });
-    if (!(prop in target)) target[prop] = () => {};
+    if (prop === "createLinearGradient") return () => ({ addColorStop() { } });
+    if (!(prop in target)) target[prop] = () => { };
     return target[prop];
   },
   set(target, prop, value) {
@@ -311,7 +311,7 @@ function readDataQuality(sandbox) {
   return sandbox.getSimulationDataQuality();
 }
 
-async function runSimulation(config, emit = () => {}) {
+async function runSimulation(config, emit = () => { }) {
   if (!config.start || !config.end) {
     emit({ type: "result", status: "error", message: "SERVER_SIM_CONFIG requires start and end" });
     return { exitCode: 4 };
@@ -342,7 +342,7 @@ async function runSimulation(config, emit = () => {}) {
     window: {
       location: { search: "?local-sim=1" },
       devicePixelRatio: 1,
-      addEventListener() {},
+      addEventListener() { },
       setInterval,
       clearInterval,
       setTimeout,
