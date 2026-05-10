@@ -554,7 +554,16 @@
         if (runToken !== state.sim.runToken || !state.sim.started) return false;
         state.sim.currentIndex = nextIndex;
 
-        if (exit) {
+        const closePrice = state.rows[nextIndex].close;
+        const lowerPrice = priceForTick(state.sim.tickLower);
+        const upperPrice = priceForTick(state.sim.tickUpper);
+        const exitConfirmed = exit && (closePrice < lowerPrice || closePrice >= upperPrice);
+        if (exit && !exitConfirmed) {
+          state.sim.lastExitBlockNumber = exit.blockNumber;
+          state.sim.lastExitLogIndex = exit.logIndex;
+        }
+
+        if (exitConfirmed) {
           const rebalanceBlock = await getBlock(exit.blockNumber);
           if (runToken !== state.sim.runToken || !state.sim.started) return false;
           const rebalanceRow = await buildRebalanceRow(nextIndex, exit, rebalanceBlock, runToken);
@@ -575,7 +584,7 @@
           if (shouldRender) setSimulationNotice({ status: "Свеча рассчитана.", details: simulationProgressText(), estimate: "" });
         }
 
-        if (exit) {
+        if (exitConfirmed) {
           recordSimulationStepDuration(stepStartedAt);
           if (shouldRender) setSimulationNotice({ status: "Rebalance рассчитан.", details: simulationProgressText(), estimate: "" });
         }

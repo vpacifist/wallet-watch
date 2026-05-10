@@ -733,6 +733,36 @@ function simRangeText() {
   return `Диапазон ${fmtPercent(state.sim.rangeWidth * 100)}%: ${fmtPrice(prices.lower)} — ${fmtPrice(prices.upper)} (ticks ${Math.abs(state.sim.tickLower)} — ${Math.abs(state.sim.tickUpper)})`;
 }
 
+function chartSimulationRows() {
+  if (serverSimulation.rawRows.length) return serverSimulation.rawRows;
+  return state.sim.rows.map(simulationRowToRaw).filter(Boolean);
+}
+
+function simulationRowForIndex(index) {
+  return chartSimulationRows().find((row) => row?.index === index) || null;
+}
+
+function activeChartSimulationRow() {
+  if (state.sim.tableHoverIndex >= 0) return simulationRowForIndex(state.sim.tableHoverIndex);
+  if (state.sim.activeRowIndex >= 0) return simulationRowForIndex(state.sim.activeRowIndex);
+  if (state.sim.currentIndex >= 0) return simulationRowForIndex(state.sim.currentIndex);
+  return null;
+}
+
+function simulationChartTooltip(row, marketRow) {
+  const lines = [
+    `${fmtTime(row?.time || marketRow?.time || "")}`,
+    `<strong>${fmtPrice(row?.price ?? marketRow?.close)}</strong>`,
+  ];
+  if (row?.event) lines.push(row.event);
+  if (row?.rebalance) {
+    const rb = row.rebalance;
+    lines.push(`range ${rb.oldTickLower}..${rb.oldTickUpper} → ${rb.newTickLower}..${rb.newTickUpper}`);
+    if (rb.swapIsFallback) lines.push(`swap fallback: ${summarizeFallbackReason(rb.quoteFailureReason)}`);
+  }
+  return lines.join("<br>");
+}
+
 function simulationRangeGridPrices(min, max) {
   if ((!state.sim.started && !state.sim.initialRangeReady) || !state.sim.rangeStepTicks) return [];
   const start = state.sim.startGridTick || state.sim.tickLower;
@@ -1034,27 +1064,23 @@ function draw() {
       ctx.fillText(fmtPrice(price), width - pad.right + 12, y + 4);
     }
   });
-  if (state.sim.started || state.sim.initialRangeReady) {
-    const activeBounds = [
-      { label: "lower", tick: state.sim.tickLower, price: priceForTick(state.sim.tickLower), color: "rgba(242, 95, 92, 0.9)" },
-      { label: "upper", tick: state.sim.tickUpper, price: priceForTick(state.sim.tickUpper), color: "rgba(242, 95, 92, 0.9)" },
-    ]
+  const drawRangeBounds = (bounds, segmentStartX = pad.left, segmentEndX = width - pad.right, labelSuffix = "") => {
+    const activeBounds = bounds
       .filter(({ price }) => price >= min && price <= max)
       .map((bound) => ({ ...bound, y: yFor(bound.price) }));
     const activeBoundsAreTight = activeBounds.length === 2 && Math.abs(activeBounds[0].y - activeBounds[1].y) < 34;
     activeBounds.forEach(({ label, price, color, y }) => {
-      if (price < min || price > max) return;
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
-      ctx.moveTo(pad.left, y);
-      ctx.lineTo(width - pad.right, y);
+      ctx.moveTo(segmentStartX, y);
+      ctx.lineTo(segmentEndX, y);
       ctx.stroke();
       ctx.setLineDash([]);
-      const text = `${label} ${fmtPrice(price)}`;
+      const text = `${label}${labelSuffix} ${fmtPrice(price)}`;
       const textWidth = ctx.measureText(text).width;
-      const labelX = width - pad.right - textWidth - 8;
+      const labelX = Math.max(segmentStartX + 4, segmentEndX - textWidth - 8);
       const preferredLabelY = activeBoundsAreTight && label === "lower" ? y + 16 : y - 6;
       const labelY = Math.max(pad.top + 13, Math.min(height - pad.bottom - 4, preferredLabelY));
       ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
@@ -1062,6 +1088,31 @@ function draw() {
       ctx.fillStyle = "#f25f5c";
       ctx.fillText(text, labelX, labelY);
     });
+  };
+  if (state.sim.started || state.sim.initialRangeReady || chartSimulationRows().length) {
+    const activeSimRow = activeChartSimulationRow();
+    if (activeSimRow?.rebalance) {
+      const timestamp = activeSimRow.timestamp ? activeSimRow.timestamp * 1000 : new Date(activeSimRow.time || state.rows[activeSimRow.index]?.time || "").getTime();
+      const markerX = Number.isFinite(timestamp) ? xForTime(timestamp) : null;
+      const rb = activeSimRow.rebalance;
+      if (Number.isFinite(markerX) && markerX >= pad.left && markerX <= width - pad.right) {
+        drawRangeBounds([
+          { label: "lower", price: priceForTick(rb.oldTickLower), color: "rgba(242, 95, 92, 0.72)" },
+          { label: "upper", price: priceForTick(rb.oldTickUpper), color: "rgba(242, 95, 92, 0.72)" },
+        ], pad.left, markerX, " old");
+        drawRangeBounds([
+          { label: "lower", price: priceForTick(rb.newTickLower), color: "rgba(242, 95, 92, 0.9)" },
+          { label: "upper", price: priceForTick(rb.newTickUpper), color: "rgba(242, 95, 92, 0.9)" },
+        ], markerX, width - pad.right, " new");
+      }
+    } else {
+      const tickLower = Number.isFinite(activeSimRow?.tickLower) ? activeSimRow.tickLower : state.sim.tickLower;
+      const tickUpper = Number.isFinite(activeSimRow?.tickUpper) ? activeSimRow.tickUpper : state.sim.tickUpper;
+      drawRangeBounds([
+        { label: "lower", price: priceForTick(tickLower), color: "rgba(242, 95, 92, 0.9)" },
+        { label: "upper", price: priceForTick(tickUpper), color: "rgba(242, 95, 92, 0.9)" },
+      ]);
+    }
   }
   const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
   gradient.addColorStop(0, "rgba(15, 139, 141, 0.18)");
@@ -1140,6 +1191,39 @@ function draw() {
     element.style.transform = "none";
   };
 
+  const drawRebalanceMarkers = () => {
+    const rebalanceRows = chartSimulationRows().filter((row) => row?.rebalance);
+    if (!rebalanceRows.length) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(pad.left, pad.top, plotW, plotH);
+    ctx.clip();
+    rebalanceRows.forEach((simRow) => {
+      const timestamp = simRow.timestamp ? simRow.timestamp * 1000 : new Date(simRow.time || state.rows[simRow.index]?.time || "").getTime();
+      if (!Number.isFinite(timestamp) || timestamp < firstTime || timestamp > lastTime) return;
+      const price = Number.isFinite(simRow.price) ? simRow.price : state.rows[simRow.index]?.close;
+      if (!Number.isFinite(price)) return;
+      const x = xForTime(timestamp);
+      const y = yFor(price);
+      ctx.strokeStyle = "rgba(245, 158, 11, 0.72)";
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, height - pad.bottom);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = simRow.rebalance?.swapIsFallback ? "#f59e0b" : "#16a34a";
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    });
+    ctx.restore();
+  };
+
   const drawTimeMarker = (rowIndex, color, label, element = null) => {
     const row = state.rows[rowIndex];
     if (!row) return false;
@@ -1159,12 +1243,15 @@ function draw() {
     ctx.fill();
     if (label) ctx.fillText(label, x + 6, pad.top + 14);
     if (element) {
+      const simRow = simulationRowForIndex(rowIndex);
       element.hidden = false;
-      element.innerHTML = `${fmtTime(row.time)}<br><strong>${fmtPrice(row.close)}</strong>`;
+      element.innerHTML = simRow ? simulationChartTooltip(simRow, row) : `${fmtTime(row.time)}<br><strong>${fmtPrice(row.close)}</strong>`;
       placeTooltip(element, x, y);
     }
     return true;
   };
+
+  drawRebalanceMarkers();
 
   const hasSimMarker = state.sim.started && drawTimeMarker(state.sim.currentIndex, "#f25f5c", "sim", simTooltip);
   if (!hasSimMarker) simTooltip.hidden = true;
