@@ -2374,7 +2374,16 @@ function animateServerJobDelete(row) {
 }
 
 function renderServerResultTable(simulation) {
-  const tableRows = simulation?.result?.rawRows || simulation?.result?.tableRows || serverSimulation.rawRows || [];
+  const resultRawRows = simulation?.result?.rawRows;
+  const resultTableRows = simulation?.result?.tableRows;
+  const progressRawRows = simulation?.progress?.rawRows;
+  const tableRows = Array.isArray(resultRawRows) && resultRawRows.length
+    ? resultRawRows
+    : Array.isArray(resultTableRows) && resultTableRows.length
+      ? resultTableRows
+      : Array.isArray(progressRawRows) && progressRawRows.length
+        ? progressRawRows
+        : serverSimulation.rawRows || [];
   let rowsToRender = tableRows;
   let truncated = false;
   if (tableRows.length > 1000) {
