@@ -946,7 +946,7 @@ canvas {
   width: 100%;
   border-collapse: collapse;
   table-layout: fixed;
-  min-width: 1040px;
+  min-width: 1120px;
   font-size: 13px;
 }
 
@@ -955,7 +955,7 @@ canvas {
 }
 
 .simTable .eventCol {
-  width: 115px;
+  width: 175px;
 }
 
 .simTable .valueCol {
@@ -977,7 +977,9 @@ canvas {
 .simTable td {
   border-bottom: 1px solid var(--line);
   padding: 10px 9px;
+  overflow: hidden;
   text-align: left;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
