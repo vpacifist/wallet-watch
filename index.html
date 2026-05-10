@@ -2,10 +2,16 @@
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=1200, initial-scale=1, user-scalable=yes" />
     <title>WETH/USDC Aerodrome Prices</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./styles.css" />
+    <style>
+      html, body {
+        min-width: 1200px !important;
+        width: 100%;
+      }
+    </style>
   </head>
   <body>
     <main class="shell">
@@ -183,5 +189,14 @@
     <script src="./simulation_core.js"></script>
     <script src="./simulation_engine.js"></script>
     <script src="./app.js"></script>
+    <script>
+      // Force desktop view - remove any mobile adaptations
+      document.documentElement.style.minWidth = '1200px';
+      document.body.style.minWidth = '1200px';
+      window.addEventListener('resize', function() {
+        document.documentElement.style.minWidth = '1200px';
+        document.body.style.minWidth = '1200px';
+      });
+    </script>
   </body>
 </html>
