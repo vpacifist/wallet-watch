@@ -509,8 +509,8 @@ canvas {
 
 .simTotals {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  flex: 1 1 260px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  flex: 1 1 100%;
   gap: 10px;
 }
 
