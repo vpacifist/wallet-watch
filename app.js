@@ -2978,7 +2978,8 @@ async function runAutoSimulationLoop(runToken, loopId) {
 canvas.addEventListener("wheel", (event) => {
   const scroller = document.scrollingElement || document.documentElement;
   const canScrollPage = scroller && scroller.scrollHeight > scroller.clientHeight + 1;
-  if (canScrollPage) {
+  const simulationActive = state.sim.started || state.sim.initializing || state.sim.autoRunning || serverSimulation.running || serverSimulation.paused;
+  if (canScrollPage && !simulationActive) {
     const atTop = scroller.scrollTop <= 0;
     const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
     const wantsScrollUp = event.deltaY < 0;
