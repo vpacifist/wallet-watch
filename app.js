@@ -46,6 +46,8 @@ const state = {
     anchorTick: 0,
     startGridTick: 0,
     rangeStepTicks: 0,
+    lastExitBlockNumber: 0,
+    lastExitLogIndex: -1,
     rewardStart: 0n,
     rewardLast: 0n,
     feeGrowthInside0Last: 0n,
@@ -507,15 +509,19 @@ async function getAeroPrice(blockNumber) {
   }
 }
 
-async function findSwapExit(fromBlock, toBlock, tickLower, tickUpper) {
+async function findSwapExit(fromBlock, toBlock, tickLower, tickUpper, after = null) {
   if (toBlock < fromBlock) return null;
   const logs = await getSwapLogs(fromBlock, toBlock);
   for (const log of logs) {
+    const blockNumber = Number(BigInt(log.blockNumber));
+    const logIndex = Number(BigInt(log.logIndex));
+    if (after && blockNumber === after.blockNumber && logIndex <= after.logIndex) continue;
+    if (after && blockNumber < after.blockNumber) continue;
     const tick = Number(toSignedWord(wordAt(log.data, 4)));
     if (tick < tickLower || tick >= tickUpper) {
       return {
-        blockNumber: Number(BigInt(log.blockNumber)),
-        logIndex: Number(BigInt(log.logIndex)),
+        blockNumber,
+        logIndex,
         tick,
         sqrtPriceX96: hexToBigInt(`0x${wordAt(log.data, 2)}`),
       };
@@ -1616,6 +1622,8 @@ function resetSimulationRows() {
   state.sim.rewardStart = 0n;
   state.sim.startGridTick = 0;
   state.sim.rangeStepTicks = 0;
+  state.sim.lastExitBlockNumber = 0;
+  state.sim.lastExitLogIndex = -1;
   state.sim.rewardLast = 0n;
   state.sim.feeGrowthInside0Last = 0n;
   state.sim.feeGrowthInside1Last = 0n;

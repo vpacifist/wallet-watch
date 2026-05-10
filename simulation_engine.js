@@ -46,6 +46,8 @@
         anchorTick: state.sim.anchorTick,
         startGridTick: state.sim.startGridTick,
         rangeStepTicks: state.sim.rangeStepTicks,
+        lastExitBlockNumber: state.sim.lastExitBlockNumber,
+        lastExitLogIndex: state.sim.lastExitLogIndex,
         liquidityRaw: state.sim.liquidityRaw,
         liquidityHuman: state.sim.liquidityHuman,
         rewardStart: state.sim.rewardStart,
@@ -77,6 +79,8 @@
       state.sim.anchorTick = snapshot.anchorTick;
       state.sim.startGridTick = snapshot.startGridTick || snapshot.tickLower || 0;
       state.sim.rangeStepTicks = snapshot.rangeStepTicks || 0;
+      state.sim.lastExitBlockNumber = snapshot.lastExitBlockNumber || 0;
+      state.sim.lastExitLogIndex = Number.isFinite(snapshot.lastExitLogIndex) ? snapshot.lastExitLogIndex : -1;
       state.sim.liquidityRaw = snapshot.liquidityRaw;
       state.sim.liquidityHuman = snapshot.liquidityHuman;
       state.sim.rewardStart = snapshot.rewardStart;
@@ -543,7 +547,10 @@
 
       try {
         const nextBlock = await findBlockAtOrAfter(nextTimestamp, previous.blockNumber);
-        const exit = await findSwapExit(previous.blockNumber, nextBlock.number, state.sim.tickLower, state.sim.tickUpper);
+        const lastExit = state.sim.lastExitBlockNumber > 0
+          ? { blockNumber: state.sim.lastExitBlockNumber, logIndex: state.sim.lastExitLogIndex }
+          : null;
+        const exit = await findSwapExit(previous.blockNumber, nextBlock.number, state.sim.tickLower, state.sim.tickUpper, lastExit);
         if (runToken !== state.sim.runToken || !state.sim.started) return false;
         state.sim.currentIndex = nextIndex;
 
@@ -552,6 +559,9 @@
           if (runToken !== state.sim.runToken || !state.sim.started) return false;
           const rebalanceRow = await buildRebalanceRow(nextIndex, exit, rebalanceBlock, runToken);
           if (runToken !== state.sim.runToken || !state.sim.started) return false;
+          state.sim.lastExitBlockNumber = exit.blockNumber;
+          state.sim.lastExitLogIndex = exit.logIndex;
+          rebalanceRow.stateAfter = snapshotState();
           state.sim.rows.push(rebalanceRow);
           state.sim.activeRowIndex = nextIndex;
           state.sim.stopped = false;
