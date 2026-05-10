@@ -76,6 +76,8 @@ const state = {
     elapsedTimer: null,
     initialRangeReady: false,
     skeletonVisible: false,
+    chartPriceMin: null,
+    chartPriceMax: null,
   },
 };
 
@@ -279,12 +281,36 @@ function isPlanLimitError(error) {
 
 function chartPriceBounds(rows) {
   const bounds = priceBounds(rows);
+  if (Number.isFinite(state.sim.chartPriceMin)) bounds.min = Math.min(bounds.min, state.sim.chartPriceMin);
+  if (Number.isFinite(state.sim.chartPriceMax)) bounds.max = Math.max(bounds.max, state.sim.chartPriceMax);
   if (state.sim.started) {
     const prices = simRangePrices();
     bounds.min = Math.min(bounds.min, prices.lower);
     bounds.max = Math.max(bounds.max, prices.upper);
   }
   return bounds;
+}
+
+function setSimulationChartPriceBounds(startIndex, endIndex) {
+  if (!Number.isFinite(state.sim.tickLower) || !Number.isFinite(state.sim.tickUpper)) return;
+  const start = Math.max(0, Math.min(startIndex, endIndex));
+  const end = Math.min(state.rows.length - 1, Math.max(startIndex, endIndex));
+  const rows = state.rows.slice(start, end + 1);
+  if (!rows.length) return;
+  const bounds = priceBounds(rows);
+  const spanTicks = Math.max(AERODROME_TICK_SPACING, state.sim.tickUpper - state.sim.tickLower);
+  let min = Math.min(bounds.min, priceForTick(state.sim.tickLower));
+  let max = Math.max(bounds.max, priceForTick(state.sim.tickUpper));
+  rows.forEach((row) => {
+    [row.low, row.high].forEach((price) => {
+      if (!Number.isFinite(price) || price <= 0) return;
+      const range = tickRangeAroundTick(tickForPrice(price), spanTicks);
+      min = Math.min(min, priceForTick(range.tickLower));
+      max = Math.max(max, priceForTick(range.tickUpper));
+    });
+  });
+  state.sim.chartPriceMin = min;
+  state.sim.chartPriceMax = max;
 }
 
 async function rpcCall(method, params) {
@@ -1562,6 +1588,7 @@ function applyInitialRange(range) {
   );
   if (Number.isFinite(Number(range.rangeWidth))) state.sim.rangeWidth = Number(range.rangeWidth);
   state.sim.initialRangeReady = true;
+  setSimulationChartPriceBounds(state.sim.startIndex, state.sim.endIndex);
   draw();
   return true;
 }
@@ -1733,6 +1760,8 @@ function resetSimulationRows() {
   state.sim.elapsedStartedAtMs = 0;
   state.sim.initialRangeReady = false;
   state.sim.skeletonVisible = false;
+  state.sim.chartPriceMin = null;
+  state.sim.chartPriceMax = null;
   document.body?.classList?.toggle("simSkeletonActive", false);
   simTableBody.innerHTML = "";
   simTableWrap.hidden = true;
@@ -3046,6 +3075,7 @@ async function startSimulation() {
       Math.round((plan.tickUpper - plan.tickLower) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING,
     );
     state.sim.initialRangeReady = true;
+    setSimulationChartPriceBounds(startIndex, endIndex);
     renderStartupNotice();
     draw();
     state.sim.liquidityRaw = plan.liquidityRaw;
