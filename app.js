@@ -1867,7 +1867,7 @@ function setSimulationNotice(message, isError = false) {
     simNotice.classList.remove("simProgressNotice", "simNoticeError", "simNoticeWarning");
   }
   let notice = typeof message === "string" ? { status: message, details: "", isError } : { ...message };
-  
+
   if (typeof message === "string" && !isError) {
     if (message.includes("ошибка") || message.includes("Не удалось") || message.includes("Не могу") || message.includes("остановлена") || message.includes("недоступен") || message.includes("должна быть") || message.includes("должен быть")) {
       notice.isError = true;
@@ -2466,7 +2466,9 @@ function renderServerSimulation(simulation, options = {}) {
       : (rowsDone > 0 ? (simulation.status || "running") : serverInitializationStage(simulation)),
     elapsed: formatCompactDurationSeconds(elapsedSeconds),
     processing: serverProcessingTimestamp(simulation) || (state.sim.initialRangeReady ? simRangeText() : "Range: calculating..."),
-    rows: totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / —` : "—"),
+    rows: (state.sim.skeletonVisible && !serverSimulation.rawRows.length)
+      ? (totalRows > 0 ? `— / ${totalRows}` : "—")
+      : (totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / —` : "—")),
     eta: serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows),
   });
   const index = serverSimulation.jobs.findIndex((item) => item.id === simulation.id);
@@ -2523,7 +2525,7 @@ async function watchServerSimulation(id) {
   stopServerSimulationEvents();
   serverSimulation.paused = false;
   serverSimulation.pollBackoffMs = Math.max(5000, SERVER_SIMULATION_POLL_MS);
-  
+
   // Wait for initial poll to ensure UI has data before starting SSE
   // This also validates the token via fetchJson
   try {
@@ -2532,7 +2534,7 @@ async function watchServerSimulation(id) {
     // If poll failed, it will set its own notice, we don't start SSE
     return;
   }
-  
+
   const adminToken = typeof localStorage !== "undefined" ? localStorage.getItem("walletWatchAdminToken") : "";
   const eventUrl = adminToken
     ? `/api/simulations/${id}/events?admin_token=${encodeURIComponent(adminToken)}`
@@ -2548,7 +2550,7 @@ async function watchServerSimulation(id) {
         stopServerSimulationPolling();
       }
       serverSimulation.pollBackoffMs = Math.max(5000, SERVER_SIMULATION_POLL_MS);
-    } catch (_) {}
+    } catch (_) { }
   });
   source.addEventListener("terminal", () => {
     stopServerSimulationEvents();
@@ -2559,7 +2561,7 @@ async function watchServerSimulation(id) {
     stopServerSimulationEvents();
     const delayMs = Math.max(5000, serverSimulation.pollBackoffMs || SERVER_SIMULATION_POLL_MS);
     serverSimulation.pollBackoffMs = Math.min(60000, delayMs * 2);
-    
+
     let errorMessage = "Ошибка потока событий (SSE). Проверьте соединение или авторизацию.";
     if (!adminToken) {
       errorMessage = "SSE ошибка: отсутствует admin_token. Проверьте авторизацию.";
@@ -2571,7 +2573,7 @@ async function watchServerSimulation(id) {
     // Automatic reconnect attempt if still running
     if (serverSimulation.running && !isServerSimulationTerminal(serverSimulation.lastSimulation?.status)) {
       serverSimulation.sseRetryCount = (serverSimulation.sseRetryCount || 0) + 1;
-      
+
       if (serverSimulation.sseRetryCount > 3 && (adminToken || source.readyState !== EventSource.CLOSED)) {
         console.log(`SSE reconnect failed ${serverSimulation.sseRetryCount} times. Starting fallback polling (30s)...`);
         serverSimulation.pollBackoffMs = 30000;
@@ -2899,13 +2901,13 @@ async function startSimulation() {
     state.sim.aeroUnharvested = 0;
     state.sim.aeroBaseUnharvested = 0;
     state.sim.aeroHaircutUnharvested = 0;
-  state.sim.started = true;
-  state.sim.initializing = false;
-  state.sim.rows = [await buildSimulationRow(startIndex, "deposit", block, runToken)];
-  ensureActiveSimulation(runToken);
-  setSimulationSkeletonVisible(false);
-  stopSimulationElapsedTimer();
-  setSimulationNotice({ status: "Симуляция запущена.", details: simulationProgressText(), estimate: "" });
+    state.sim.started = true;
+    state.sim.initializing = false;
+    state.sim.rows = [await buildSimulationRow(startIndex, "deposit", block, runToken)];
+    ensureActiveSimulation(runToken);
+    setSimulationSkeletonVisible(false);
+    stopSimulationElapsedTimer();
+    setSimulationNotice({ status: "Симуляция запущена.", details: simulationProgressText(), estimate: "" });
     renderSimulationTable(true);
     state.sim.autoLoopId += 1;
     runAutoSimulationLoop(state.sim.runToken, state.sim.autoLoopId);
