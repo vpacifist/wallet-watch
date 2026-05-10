@@ -1662,7 +1662,8 @@ function simulationRowTitle(row) {
   ].filter(Boolean).join("; ");
   if (!row.rebalance) return details;
   const rb = row.rebalance;
-  return `${details}; swap ${rb.swapDirection} via ${rb.swapSource}; swap loss ${fmtUsdc(rb.swapLossUsdc)}; gas ${fmtUsdc(rb.gasUsdc)}; fee ${fmtUsdc(rb.automationFeeUsdc)}; ticks ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}`;
+  const quoteFailure = rb.swapIsFallback && rb.quoteFailureReason ? `; fallback reason: ${summarizeFallbackReason(rb.quoteFailureReason)}` : "";
+  return `${details}; swap ${rb.swapDirection} via ${rb.swapSource}; swap loss ${fmtUsdc(rb.swapLossUsdc)}; gas ${fmtUsdc(rb.gasUsdc)}; fee ${fmtUsdc(rb.automationFeeUsdc)}; ticks ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}${quoteFailure}`;
 }
 
 function compactNumber(value, digits = 8) {
@@ -2192,22 +2193,55 @@ function setAppTab(tabId) {
   window.scrollTo(0, 0);
 }
 
-function createResultMetric(label, value) {
+function createResultMetric(label, value, title = "") {
   const metric = document.createElement("div");
   metric.className = "resultMetric";
   const labelEl = document.createElement("span");
   labelEl.textContent = label;
   const valueEl = document.createElement("strong");
   valueEl.textContent = value || "-";
+  if (title || value) metric.title = title || value;
   metric.append(labelEl, valueEl);
   return metric;
+}
+
+function summarizeFallbackReason(reason) {
+  const text = String(reason || "").trim();
+  const lower = text.toLowerCase();
+  if (!text) return "unknown";
+  if (lower.includes("free tier") || lower.includes("timeout")) return "RPC timeout/free tier";
+  if (lower.includes("historical state") && lower.includes("not available")) return "historical state unavailable";
+  if (lower.includes("execution reverted")) return "quoter reverted";
+  if (lower.includes("temporary internal error")) return "RPC temporary internal error";
+  if (lower.includes("archive") || lower.includes("plan") || lower.includes("limit")) return "RPC archive/plan limit";
+  return text.length > 96 ? `${text.slice(0, 93)}...` : text;
+}
+
+function swapFallbackSummary(rawRows = []) {
+  const rebalanceRows = rawRows.filter((row) => row?.rebalance);
+  const fallbackRows = rebalanceRows.filter((row) => row.rebalance?.swapIsFallback);
+  if (!rebalanceRows.length) return { label: "0 / 0", reasons: [] };
+  const reasonCounts = new Map();
+  fallbackRows.forEach((row) => {
+    const label = summarizeFallbackReason(row.rebalance?.quoteFailureReason);
+    reasonCounts.set(label, (reasonCounts.get(label) || 0) + 1);
+  });
+  const reasons = Array.from(reasonCounts.entries())
+    .sort((left, right) => right[1] - left[1])
+    .map(([reason, count]) => `${reason} ×${count}`);
+  return {
+    label: `${fallbackRows.length} / ${rebalanceRows.length}`,
+    reasons,
+    details: reasons.length ? `${fallbackRows.length} / ${rebalanceRows.length} · ${reasons.join("; ")}` : `${fallbackRows.length} / ${rebalanceRows.length}`,
+  };
 }
 
 function simulationWarnings(rawRows = [], dataQuality = null) {
   const warnings = new Set();
   if (dataQuality?.missingMinutes > 0) warnings.add(`${dataQuality.missingMinutes} missing CSV minute(s) filled`);
   if (rawRows.some((row) => row?.missingCandle)) warnings.add("missing candles present in raw rows");
-  if (rawRows.some((row) => row?.rebalance?.swapIsFallback)) warnings.add("rebalance swap fallback used");
+  const fallback = swapFallbackSummary(rawRows);
+  if (fallback.reasons.length) warnings.add(`rebalance swap fallback used: ${fallback.reasons.join("; ")}`);
   if (rawRows.some((row) => (row?.csvOnchainDivergenceBps || 0) > 100)) warnings.add("CSV/on-chain price divergence above 100 bps");
   if (rawRows.some((row) => row?.sourceLabels?.includes("estimated"))) warnings.add("estimated fields present");
   if (rawRows.some((row) => row?.sourceLabels?.includes("heuristic"))) warnings.add("heuristic quality fields present");
@@ -2225,6 +2259,9 @@ function renderResultTableRows(tableRows = []) {
   }
   for (const rowItem of tableRows) {
     const tr = document.createElement("tr");
+    if (typeof rowItem === "object" && rowItem !== null && rowItem.rebalance?.swapIsFallback) {
+      tr.title = `swap fallback: ${summarizeFallbackReason(rowItem.rebalance.quoteFailureReason)}`;
+    }
     const cells = typeof rowItem === "object" && rowItem !== null
       ? simulationRawRowToCells(rowItem)
       : String(rowItem).split("\t").map((cellText) => cellText.trim());
@@ -2265,14 +2302,17 @@ function renderSimulationResultView(simulation) {
   }
   if (resultSummary) {
     const rawRows = simulation?.result?.rawRows || simulation?.progress?.rawRows || [];
+    const fallback = swapFallbackSummary(rawRows);
     const warnings = simulationWarnings(rawRows, simulation?.result?.dataQuality || simulation?.progress?.dataQuality || null);
+    const warningsText = warnings.length ? warnings.join("; ") : "none";
     resultSummary.replaceChildren(
       createResultMetric("Status", simulation.status || "unknown"),
       createResultMetric("Rows", info.rows ? String(info.rows) : ""),
       createResultMetric("Position value", info.currentValue),
       createResultMetric(isStaked ? "AERO earned" : "LP fees earned", info.currentReward || ""),
+      createResultMetric("Swap fallback", fallback.details, fallback.details),
       createResultMetric("Elapsed", info.elapsed),
-      createResultMetric("Warnings", warnings.length ? warnings.join("; ") : "none"),
+      createResultMetric("Warnings", warningsText, warningsText),
     );
   }
   if (resultLastRow) {
@@ -2417,6 +2457,9 @@ function renderServerResultTable(simulation) {
     const index = truncated ? (i < 500 ? i : tableRows.length - 1000 + i) : i;
     const tr = document.createElement("tr");
     tr.dataset.index = String(index);
+    if (typeof rowItem === "object" && rowItem !== null && rowItem.rebalance?.swapIsFallback) {
+      tr.title = `swap fallback: ${summarizeFallbackReason(rowItem.rebalance.quoteFailureReason)}`;
+    }
     const cells = typeof rowItem === "object" && rowItem !== null
       ? simulationRawRowToCells(rowItem)
       : String(rowItem).split("\t").map((cellText) => cellText.trim());
