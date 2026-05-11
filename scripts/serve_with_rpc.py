@@ -422,7 +422,20 @@ def merge_simulation_progress(simulation_id, event):
         merged["rawRowCount"] = len(raw_rows)
         merged["latestRawRow"] = event.get("latestRawRow") or raw_rows[-1]
         merged["rows"] = max(int(event.get("rows") or 0), len(raw_rows))
+        if not merged.get("currentTotalReturn"):
+            total_return = merged["latestRawRow"].get("totalReturnUsdc") if isinstance(merged["latestRawRow"], dict) else None
+            if isinstance(total_return, (int, float)):
+                merged["currentTotalReturn"] = f"${total_return:,.2f}"
     return merged
+
+
+def finalize_simulation_result(simulation_id, event):
+    current = get_simulation(simulation_id) or {}
+    previous = current.get("progress") if isinstance(current.get("progress"), dict) else {}
+    result = merge_simulation_progress(simulation_id, event)
+    if not result.get("currentTotalReturn") and isinstance(previous, dict):
+        result["currentTotalReturn"] = previous.get("currentTotalReturn") or ""
+    return result
 
 
 def stream_simulation_stdout(simulation_id, pipe):
@@ -439,11 +452,12 @@ def stream_simulation_stdout(simulation_id, pipe):
         if event_type == "result":
             status = event.get("status") or "finished"
             terminal = "completed" if status == "completed" else status
+            result = finalize_simulation_result(simulation_id, event)
             update_simulation(
                 simulation_id,
                 status=terminal,
-                result_json=json.dumps(event, ensure_ascii=False),
-                progress_json=json.dumps(event, ensure_ascii=False),
+                result_json=json.dumps(result, ensure_ascii=False),
+                progress_json=json.dumps(result, ensure_ascii=False),
                 finished_at=now_int(),
             )
         else:

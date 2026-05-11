@@ -1763,6 +1763,7 @@ function resetSimulationRows() {
   simTableWrap.hidden = true;
   currentPositionValue.textContent = "$0.00";
   currentRewardValue.textContent = "$0.00";
+  currentTotalValue.textContent = "$0.00";
   updateSimulationControls();
   draw();
 }
@@ -1963,10 +1964,11 @@ function renderSimulationTable(scrollToLatest = false) {
     currentPositionValue.textContent = fmtUsdc(last.value);
     const isStaked = state.sim.lpMode === "staked";
     const rewardValue = isStaked ? last.aeroTotalUsdc ?? last.aeroUsdc : last.lpFeesTotalUsdc ?? 0;
+    const totalReturnValue = last.totalReturnUsdc ?? rewardValue;
     const rewardLabel = isStaked ? "AERO earned, USDC" : "LP fees earned, USDC";
     currentRewardLabel.textContent = rewardLabel;
     currentRewardValue.textContent = fmtUsdc(rewardValue);
-    currentTotalValue.textContent = fmtUsdc(last.value + rewardValue);
+    currentTotalValue.textContent = fmtUsdc(totalReturnValue);
   }
   updateSimulationControls();
   if (scrollToLatest && last) {
@@ -2164,6 +2166,8 @@ function serverSimulationText(simulation) {
   const progress = simulation?.progress || {};
   const result = simulation?.result || {};
   const payload = Object.keys(result).length ? result : progress;
+  const rawRows = payload.rawRows || progress.rawRows || result.rawRows || [];
+  const latestRawRow = payload.latestRawRow || rawRows.at?.(-1) || null;
   const rows = payload.rows || 0;
   const elapsed = payload.elapsedSeconds ? formatDuration(payload.elapsedSeconds * 1000) : "";
   const notice = (payload.notice || simulation?.error || "").replace(/до даты конца/g, "до конца");
@@ -2172,6 +2176,7 @@ function serverSimulationText(simulation) {
     elapsed,
     currentValue: payload.currentValue || "",
     currentReward: payload.currentReward || payload.currentAero || "",
+    currentTotalReturn: payload.currentTotalReturn || (latestRawRow ? fmtUsdc(latestRawRow.totalReturnUsdc || 0) : ""),
     notice,
   };
 }
@@ -2422,6 +2427,7 @@ function renderSimulationResultView(simulation) {
       createResultMetric("Rows", info.rows ? String(info.rows) : ""),
       createResultMetric("Position value", info.currentValue),
       createResultMetric(isStaked ? "AERO earned" : "LP fees earned", info.currentReward || ""),
+      createResultMetric("Total return", info.currentTotalReturn || ""),
       createResultMetric("Swap fallback", fallback.details, fallback.details),
       createResultMetric("Elapsed", info.elapsed),
       createResultMetric("Warnings", warningsText, warningsText),
@@ -2639,6 +2645,7 @@ function renderServerSimulation(simulation, options = {}) {
   const elapsedSeconds = serverElapsedSeconds(simulation);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
   if (info.currentReward) currentRewardValue.textContent = info.currentReward;
+  if (info.currentTotalReturn) currentTotalValue.textContent = info.currentTotalReturn;
   if (currentRewardLabel) currentRewardLabel.textContent = state.sim.lpMode === "staked" ? "AERO earned, USDC" : "LP fees earned, USDC";
   const rowsDone = Number(info.rows || 0);
   const totalRows = estimateServerTotalRows(simulation);

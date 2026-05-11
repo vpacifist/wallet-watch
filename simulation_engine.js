@@ -359,7 +359,7 @@
         excludedRewardStreams: state.sim.lpMode === "staked" ? ["lpFees"] : ["aero"],
         lpFeesClaimable: state.sim.lpMode === "unstaked",
         aeroClaimable: state.sim.lpMode === "staked",
-        totalReturnUsdc: state.sim.lpMode === "staked" ? aeroTotals.conservative : lpFeeTotalsAfter.usdcValue,
+        totalReturnUsdc: amounts.value + (state.sim.lpMode === "staked" ? aeroTotals.conservative : lpFeeTotalsAfter.usdcValue),
         stateAfter: snapshotState(),
       };
     }
@@ -491,7 +491,7 @@
         excludedRewardStreams: state.sim.lpMode === "staked" ? ["lpFees"] : ["aero"],
         lpFeesClaimable: state.sim.lpMode === "unstaked",
         aeroClaimable: state.sim.lpMode === "staked",
-        totalReturnUsdc: state.sim.lpMode === "staked" ? harvestedAeroUsdc : lpFeeTotalsAfter.usdcValue,
+        totalReturnUsdc: newPlan.value + (state.sim.lpMode === "staked" ? harvestedAeroUsdc : lpFeeTotalsAfter.usdcValue),
         stateAfter: snapshotState(),
         rebalance: {
           oldTickLower,

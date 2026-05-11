@@ -267,6 +267,7 @@ function readUi(document) {
     button: document.getElementById("runSimulation").textContent || "",
     currentValue: document.getElementById("currentPositionValue").textContent || "",
     currentReward: document.getElementById("currentRewardValue").textContent || "",
+    currentTotalReturn: document.getElementById("currentTotalValue").textContent || "",
   };
 }
 
@@ -298,6 +299,7 @@ function progressEvent(config, startedAt, state, rawRows, newRawRows, reason = "
     lastRow: state.lastRow,
     currentValue: state.currentValue,
     currentReward: state.currentReward,
+    currentTotalReturn: state.currentTotalReturn,
     latestRawRow: rawRows.at(-1) || null,
     newRawRows,
     stage: startup.stage || "",
@@ -438,6 +440,7 @@ async function runSimulation(config, emit = () => { }) {
         lastRow: state.lastRow,
         currentValue: state.currentValue,
         currentReward: state.currentReward,
+        currentTotalReturn: state.currentTotalReturn,
         rawRows: readRawRows(sandbox),
         dataQuality: readDataQuality(sandbox),
       });
@@ -454,6 +457,7 @@ async function runSimulation(config, emit = () => { }) {
         lastRow: state.lastRow,
         currentValue: state.currentValue,
         currentReward: state.currentReward,
+        currentTotalReturn: state.currentTotalReturn,
         rawRows: readRawRows(sandbox),
         dataQuality: readDataQuality(sandbox),
       });
@@ -470,6 +474,9 @@ async function runSimulation(config, emit = () => { }) {
     rows: state.rowCount,
     notice: state.notice,
     lastRow: state.lastRow,
+    currentValue: state.currentValue,
+    currentReward: state.currentReward,
+    currentTotalReturn: state.currentTotalReturn,
   });
   return { exitCode: 3 };
 }
