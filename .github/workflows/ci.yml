@@ -49,6 +49,9 @@ jobs:
             scripts/export_dexpaprika_ohlcv.py
 
       - name: Start local RPC server
+        env:
+          BASE_RPC_URLS: ${{ secrets.BASE_RPC_URLS }}
+          BASE_ARCHIVE_RPC_URLS: ${{ secrets.BASE_ARCHIVE_RPC_URLS }}
         run: |
           python scripts/serve_with_rpc.py > server.log 2>&1 &
           echo $! > server.pid
