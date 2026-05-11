@@ -1354,23 +1354,7 @@ function analyzeDataQuality(rows) {
 
 function dataQualityStatus(quality) {
   if (!quality || !quality.rowCount) return "CSV загружен";
-  const source = quality.source ? `${quality.source.replace(/^\.\//, "")} · ` : "";
-  const grid = quality.minuteRowCount && quality.minuteRowCount !== quality.rowCount
-    ? ` · сетка ${quality.minuteRowCount.toLocaleString("en-US")} мин`
-    : "";
-  const issueCount = (quality.gapCount || 0)
-    + (quality.duplicateTimestampCount || 0)
-    + (quality.outOfOrderCount || 0)
-    + (quality.invalidPriceCount || 0)
-    + (quality.zeroPriceCount || 0)
-    + (quality.emptyVolumeCount || 0);
-  if (!issueCount) return `CSV загружен · ${source}${quality.rowCount.toLocaleString("en-US")} строк, без проблем${grid}`;
-  const parts = [];
-  if (quality.gapCount) parts.push(`пропущено ${quality.missingMinutes.toLocaleString("en-US")} мин`);
-  if (quality.duplicateTimestampCount) parts.push(`дубликаты ${quality.duplicateTimestampCount.toLocaleString("en-US")}`);
-  if (quality.invalidPriceCount || quality.zeroPriceCount) parts.push(`плохие цены ${(quality.invalidPriceCount + quality.zeroPriceCount).toLocaleString("en-US")}`);
-  if (quality.emptyVolumeCount) parts.push(`пустой volume ${quality.emptyVolumeCount.toLocaleString("en-US")}`);
-  return `CSV загружен · ${source}${quality.rowCount.toLocaleString("en-US")} строк, ${parts.join(", ")}${grid}`;
+  return `CSV загружен, ${quality.rowCount.toLocaleString("en-US")} строк, пропущено ${(quality.missingMinutes || 0).toLocaleString("en-US")} мин`;
 }
 
 function dataQualityTitle(quality) {
@@ -3444,7 +3428,8 @@ fetch(CSV_FILE)
     loadInitialServerSimulations();
   })
   .catch((error) => {
-    statusEl.textContent = "Ошибка загрузки CSV";
+    statusEl.textContent = `CSV не загружен, ${error.message}`;
+    statusEl.title = error.stack || error.message;
     console.error(error);
   });
 
