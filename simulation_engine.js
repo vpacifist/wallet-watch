@@ -630,7 +630,7 @@
       }
       if (runToken === state.sim.runToken && loopId === state.sim.autoLoopId) {
         state.sim.autoRunning = false;
-        if (state.sim.currentIndex >= state.sim.endIndex || state.sim.stopped) {
+        if (state.sim.currentIndex >= state.sim.endIndex) {
           setSimulationNotice({ status: "Симуляция дошла до конца.", details: simulationProgressText(), estimate: "" });
         }
         renderSimulationTable(true);

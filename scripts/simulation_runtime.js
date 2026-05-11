@@ -452,6 +452,10 @@ async function runSimulation(config, emit = () => { }) {
         rows: state.rowCount,
         notice: state.notice,
         lastRow: state.lastRow,
+        currentValue: state.currentValue,
+        currentReward: state.currentReward,
+        rawRows: readRawRows(sandbox),
+        dataQuality: readDataQuality(sandbox),
       });
       return { exitCode: 2 };
     }

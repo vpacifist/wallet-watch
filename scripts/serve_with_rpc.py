@@ -41,8 +41,12 @@ def load_dotenv(path):
 
 load_dotenv(ROOT / ".env")
 
-DEFAULT_RPC_URLS = ["https://base.drpc.org", "https://base.gateway.tenderly.co", "https://mainnet.base.org", "https://base.llamarpc.com"]
-RPC_URLS = [url.strip() for url in os.environ.get("BASE_RPC_URLS", "").split(",") if url.strip()] or DEFAULT_RPC_URLS
+def env_rpc_urls(name):
+    return [url.strip() for url in os.environ.get(name, "").split(",") if url.strip()]
+
+
+RPC_URLS = env_rpc_urls("BASE_RPC_URLS")
+ARCHIVE_RPC_URLS = env_rpc_urls("BASE_ARCHIVE_RPC_URLS")
 DATA_PATH = Path(os.environ.get("MARKET_DATA_PATH", ROOT / "output" / "market_data.sqlite"))
 SIM_DATA_PATH = Path(os.environ.get("SIM_DATA_PATH", ROOT / "output" / "simulations.sqlite"))
 SIM_WORKER_PATH = Path(os.environ.get("SIM_WORKER_PATH", ROOT / "scripts" / "node_sim_worker.js"))
@@ -620,6 +624,10 @@ def exact_cacheable(payload):
     return False
 
 
+def is_historical_eth_call(payload):
+    return payload.get("method") == "eth_call" and exact_cacheable(payload)
+
+
 def parse_supported_logs_filter(payload):
     if payload.get("method") != "eth_getLogs":
         return None
@@ -828,7 +836,10 @@ def try_one_provider(url, body, summary):
         return False, {"message": str(exc)}
 
 
-def upstream_post(payload):
+def upstream_post(payload, urls=None, label="RPC"):
+    provider_urls = urls if urls is not None else RPC_URLS
+    if not provider_urls:
+        raise RuntimeError(json.dumps({"message": f"{label} URLs are not configured"}))
     body = json.dumps(payload).encode("utf-8")
     last_error = None
     payloads = payload if isinstance(payload, list) else [payload]
@@ -838,7 +849,7 @@ def upstream_post(payload):
     
     attempted_errors = []
     # Try providers one by one first to save limits
-    for url in RPC_URLS:
+    for url in provider_urls:
         success, result = try_one_provider(url, body, summary)
         if success:
             return result
@@ -846,9 +857,9 @@ def upstream_post(payload):
         attempted_errors.append((url, last_error))
 
     # If all failed once, use parallelism for retries to find a working one fast
-    with ThreadPoolExecutor(max_workers=min(len(RPC_URLS), 8)) as executor:
+    with ThreadPoolExecutor(max_workers=min(len(provider_urls), 8)) as executor:
         for attempt in range(3):
-            futures = {executor.submit(try_one_provider, url, body, summary): url for url in RPC_URLS}
+            futures = {executor.submit(try_one_provider, url, body, summary): url for url in provider_urls}
             for future in as_completed(futures):
                 url = futures[future]
                 try:
@@ -880,9 +891,9 @@ def upstream_post(payload):
                 time.sleep(2.0 * (attempt + 1))
     
     if attempted_errors:
-        providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(RPC_URLS):])
-        print(f"RPC upstream failed for [{summary}] after parallel retries; last providers: {providers}; last_error={last_error}", file=sys.stderr, flush=True)
-    raise RuntimeError(json.dumps(last_error or {"message": "RPC proxy error"}))
+        providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(provider_urls):])
+        print(f"{label} upstream failed for [{summary}] after parallel retries; last providers: {providers}; last_error={last_error}", file=sys.stderr, flush=True)
+    raise RuntimeError(json.dumps(last_error or {"message": f"{label} proxy error"}))
 
 
 def fetch_logs_in_chunks(payload, info):
@@ -922,6 +933,33 @@ def fetch_logs_in_chunks(payload, info):
             hex_to_int(log.get("logIndex", "0x0")),
         ),
     )
+
+
+def upstream_for_payload(payload):
+    if is_historical_eth_call(payload):
+        return ARCHIVE_RPC_URLS, "Archive RPC"
+    return RPC_URLS, "RPC"
+
+
+def upstream_post_for_payload(payload):
+    urls, label = upstream_for_payload(payload)
+    return upstream_post(payload, urls=urls, label=label)
+
+
+def split_upstream_batches(items):
+    batches = []
+    current = []
+    current_route = None
+    for item in items:
+        route = upstream_for_payload(item[1])
+        if current and (route != current_route or len(current) >= MAX_UPSTREAM_BATCH_SIZE):
+            batches.append((current_route, current))
+            current = []
+        current_route = route
+        current.append(item)
+    if current:
+        batches.append((current_route, current))
+    return batches
 
 
 def classify_payload(payload):
@@ -982,17 +1020,18 @@ def post_rpc_batch(payloads):
         misses = deferred_misses
 
     if misses:
-        upstream_payload = []
-        for upstream_id, (_, _, _, _, payload) in enumerate(misses, start=1):
+        upstream_items = []
+        for upstream_id, miss in enumerate(misses, start=1):
+            payload = miss[4]
             item = dict(payload)
             item["jsonrpc"] = "2.0"
             item["id"] = upstream_id
-            upstream_payload.append(item)
-        for offset in range(0, len(upstream_payload), MAX_UPSTREAM_BATCH_SIZE):
-            chunk = upstream_payload[offset:offset + MAX_UPSTREAM_BATCH_SIZE]
-            chunk_misses = misses[offset:offset + MAX_UPSTREAM_BATCH_SIZE]
+            upstream_items.append((miss, item))
+        for (urls, label), batch_items in split_upstream_batches(upstream_items):
+            chunk_misses = [item[0] for item in batch_items]
+            chunk = [item[1] for item in batch_items]
             try:
-                parsed = upstream_post(chunk[0] if len(chunk) == 1 else chunk)
+                parsed = upstream_post(chunk[0] if len(chunk) == 1 else chunk, urls=urls, label=label)
                 upstream_responses = parsed if isinstance(parsed, list) else [parsed]
                 by_id = {item.get("id"): item for item in upstream_responses}
                 record_stat("upstream_batches")
@@ -1324,7 +1363,12 @@ if __name__ == "__main__":
     print(f"Market data cache: {DATA_PATH}", file=sys.stderr, flush=True)
     print(f"Simulation data: {SIM_DATA_PATH}", file=sys.stderr, flush=True)
     print("Raw eth_getLogs JSON cache: disabled; logs are normalized and deduplicated", file=sys.stderr, flush=True)
+    if not RPC_URLS:
+        raise RuntimeError("BASE_RPC_URLS is not configured")
+    if not ARCHIVE_RPC_URLS:
+        raise RuntimeError("BASE_ARCHIVE_RPC_URLS is not configured")
     print(f"RPC upstreams: {', '.join(redact_url(url) for url in RPC_URLS)}", file=sys.stderr, flush=True)
+    print(f"Archive RPC upstreams: {', '.join(redact_url(url) for url in ARCHIVE_RPC_URLS)}", file=sys.stderr, flush=True)
     print(f"Listening on {HOST}:{PORT}", file=sys.stderr, flush=True)
     try:
         http.server.ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

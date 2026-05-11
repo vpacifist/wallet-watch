@@ -129,6 +129,7 @@ PUBLIC_BASE_URL=https://your-railway-domain.up.railway.app
 MARKET_DATA_PATH=/data/market_data.sqlite
 SIM_DATA_PATH=/data/simulations.sqlite
 BASE_RPC_URLS=https://base.drpc.org,https://base.gateway.tenderly.co,https://mainnet.base.org,https://base.llamarpc.com
+BASE_ARCHIVE_RPC_URLS=https://your-archive-provider.example/base
 MAX_RUNNING_SIMULATIONS=1
 MAX_SIMULATION_DAYS=31
 RPC_RATE_LIMIT_PER_MINUTE=300
@@ -146,6 +147,8 @@ MAX_LOG_BLOCK_SPAN=2000
 ```
 
 Use a Railway Volume mounted at `/data` to persist market-data and simulation caches across restarts.
+
+`BASE_RPC_URLS` is used for blocks, logs, and live/non-historical RPC calls. `BASE_ARCHIVE_RPC_URLS` is required for historical `eth_call` requests, including historical quote reconstruction. The server intentionally does not fall back to built-in public RPC defaults; missing RPC variables should be fixed in `.env` or Railway Environment Variables. Historical `eth_call` failures from archive RPC are surfaced for diagnosis instead of silently retrying through non-archive RPCs.
 
 For public deployments set `ADMIN_API_TOKEN`; create/cancel/delete/read/event-stream simulation APIs then require the token. Do not commit real tokens, secrets, or private RPC URLs. Keep them in `.env`, local environment, or Railway Environment Variables.
 
@@ -165,7 +168,7 @@ GitHub-hosted JavaScript actions are migrating away from Node 20. CI now pins No
 RPC compatibility check:
 
 ```bash
-BASE_RPC_URLS="https://provider-1.example/...,https://provider-2.example/..." python scripts/check_base_rpc.py
+BASE_RPC_URLS="https://provider-1.example/...,https://provider-2.example/..." BASE_ARCHIVE_RPC_URLS="https://archive-provider.example/..." python scripts/check_base_rpc.py
 ```
 
 The check covers `eth_getBlockByNumber`, historical `eth_call`, batch requests, and `eth_getLogs` on Base. Output redacts URLs, but real RPC URLs should still stay out of the repository.

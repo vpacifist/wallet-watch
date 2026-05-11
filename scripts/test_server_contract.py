@@ -272,6 +272,48 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual(calls, [("0x1", "0x2"), ("0x3", "0x4")])
       self.assertEqual([log["transactionHash"] for log in logs], ["0xaaa", "0xbbb", "0xccc"])
 
+    def test_historical_eth_call_uses_archive_route(self):
+      self.server.RPC_URLS = ["https://regular.example"]
+      self.server.ARCHIVE_RPC_URLS = ["https://archive.example"]
+      payload = {"method": "eth_call", "params": [{"to": "0xabc", "data": "0x"}, "0x123"]}
+
+      urls, label = self.server.upstream_for_payload(payload)
+
+      self.assertEqual(urls, ["https://archive.example"])
+      self.assertEqual(label, "Archive RPC")
+
+    def test_logs_and_blocks_use_regular_route(self):
+      self.server.RPC_URLS = ["https://regular.example"]
+      self.server.ARCHIVE_RPC_URLS = ["https://archive.example"]
+      log_payload = {"method": "eth_getLogs", "params": [{"address": "0xpool", "fromBlock": "0x1", "toBlock": "0x2", "topics": ["0xtopic"]}]}
+      block_payload = {"method": "eth_getBlockByNumber", "params": ["0x123", False]}
+
+      log_urls, log_label = self.server.upstream_for_payload(log_payload)
+      block_urls, block_label = self.server.upstream_for_payload(block_payload)
+
+      self.assertEqual(log_urls, ["https://regular.example"])
+      self.assertEqual(log_label, "RPC")
+      self.assertEqual(block_urls, ["https://regular.example"])
+      self.assertEqual(block_label, "RPC")
+
+    def test_split_upstream_batches_separates_archive_calls(self):
+      self.server.MAX_UPSTREAM_BATCH_SIZE = 3
+      self.server.RPC_URLS = ["https://regular.example"]
+      self.server.ARCHIVE_RPC_URLS = ["https://archive.example"]
+      regular = {"method": "eth_getBlockByNumber", "params": ["0x123", False]}
+      archive = {"method": "eth_call", "params": [{"to": "0xabc", "data": "0x"}, "0x123"]}
+      items = [((0, "exact", None, "regular", regular), regular), ((1, "exact", None, "archive", archive), archive)]
+
+      batches = self.server.split_upstream_batches(items)
+
+      self.assertEqual(len(batches), 2)
+      self.assertEqual(batches[0][0][1], "RPC")
+      self.assertEqual(batches[1][0][1], "Archive RPC")
+
+    def test_empty_route_raises_configuration_error(self):
+      with self.assertRaisesRegex(RuntimeError, "Archive RPC URLs are not configured"):
+        self.server.upstream_post({"method": "eth_call", "params": [{"to": "0xabc", "data": "0x"}, "0x123"]}, urls=[], label="Archive RPC")
+
 
 if __name__ == "__main__":
     unittest.main()

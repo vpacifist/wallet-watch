@@ -169,7 +169,7 @@ const SELECTORS = {
   feeGrowthGlobal1X128: "0x46141319",
   ticks: "0xf30dba93",
   getRewardGrowthInside: "0xa16368c9",
-  quoteExactInputSingle: "0xf7729d43",
+  quoteExactInputSingle: "0x9e7defe6",
   token0: "0x0dfe1681",
   token1: "0xd21220a7",
 };
@@ -674,9 +674,9 @@ async function quoteAerodromeSwap(tokenIn, tokenOut, amountInRaw, blockNumber) {
   if (amountInRaw <= 0n) return { amountOutRaw: 0n, source: "no-swap", reliability: 100, sourceLabel: "exact-onchain" };
   const validPair = new Set([tokenIn.toLowerCase(), tokenOut.toLowerCase()]);
   if (!validPair.has(WETH_ADDRESS.toLowerCase()) || !validPair.has(USDC_ADDRESS.toLowerCase())) {
-    return { amountOutRaw: 0n, source: "invalid-token-pair", reliability: 0, sourceLabel: "fallback", failureReason: "token order/pair validation failed" };
+    throw new Error("token order/pair validation failed");
   }
-  const data = `${SELECTORS.quoteExactInputSingle}${encodeAddress(tokenIn)}${encodeAddress(tokenOut)}${encodeUint256(AERODROME_TICK_SPACING)}${encodeUint256(amountInRaw)}${encodeUint256(0)}`;
+  const data = `${SELECTORS.quoteExactInputSingle}${encodeAddress(tokenIn)}${encodeAddress(tokenOut)}${encodeUint256(amountInRaw)}${encodeUint256(AERODROME_TICK_SPACING)}${encodeUint256(0)}`;
   let failureReason = "";
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
@@ -686,16 +686,18 @@ async function quoteAerodromeSwap(tokenIn, tokenOut, amountInRaw, blockNumber) {
       failureReason = error.message || "quoter eth_call failed";
     }
   }
-  return { amountOutRaw: 0n, source: "fallback", reliability: 50, sourceLabel: "fallback", failureReason, attempts: 2 };
-}
-
-function fallbackSwapQuote(swap, price, direction, failureReason) {
-  if (direction === "WETH_TO_USDC") {
-    const outputAmount = swap.amount * price * (1 - REBALANCE_FALLBACK_SLIPPAGE_BPS / 10000);
-    return { outputAmount, lossUsdc: swap.amount * price - outputAmount, source: "fallback", sourceLabel: "fallback", reliability: 50, failureReason };
-  }
-  const outputAmount = swap.amount / price * (1 - REBALANCE_FALLBACK_SLIPPAGE_BPS / 10000);
-  return { outputAmount, lossUsdc: swap.amount - outputAmount * price, source: "fallback", sourceLabel: "fallback", reliability: 50, failureReason };
+  const context = [
+    `reason=${failureReason || "quoter eth_call failed"}`,
+    `block=${blockNumber}`,
+    `tokenIn=${tokenIn}`,
+    `tokenOut=${tokenOut}`,
+    `amountInRaw=${amountInRaw.toString()}`,
+    `tickSpacing=${AERODROME_TICK_SPACING}`,
+    `quoter=${AERO_SLIPSTREAM_QUOTER}`,
+    `selector=${SELECTORS.quoteExactInputSingle}`,
+    `calldata=${data}`,
+  ].join(" ");
+  throw new Error(`historical swap quote failed after 2 attempts: ${context}`);
 }
 
 async function estimateHistoricalSwap(swap, price, blockNumber) {
@@ -705,33 +707,27 @@ async function estimateHistoricalSwap(swap, price, blockNumber) {
   if (swap.direction === "WETH_TO_USDC") {
     const amountInRaw = rawWeth(swap.amount);
     const quote = await quoteAerodromeSwap(WETH_ADDRESS, USDC_ADDRESS, amountInRaw, blockNumber);
-    if (quote.source !== "fallback") {
-      const outputAmount = rawToUsdc(quote.amountOutRaw);
-      return {
-        outputAmount,
-        lossUsdc: Math.max(0, swap.amount * price - outputAmount),
-        source: quote.source,
-        sourceLabel: quote.sourceLabel,
-        reliability: quote.reliability,
-        quoteAttempts: quote.attempts,
-      };
-    }
-    return fallbackSwapQuote(swap, price, "WETH_TO_USDC", quote.failureReason);
-  }
-  const amountInRaw = rawUsdc(swap.amount);
-  const quote = await quoteAerodromeSwap(USDC_ADDRESS, WETH_ADDRESS, amountInRaw, blockNumber);
-  if (quote.source !== "fallback") {
-    const outputAmount = rawToWeth(quote.amountOutRaw);
+    const outputAmount = rawToUsdc(quote.amountOutRaw);
     return {
       outputAmount,
-      lossUsdc: Math.max(0, swap.amount - outputAmount * price),
+      lossUsdc: Math.max(0, swap.amount * price - outputAmount),
       source: quote.source,
       sourceLabel: quote.sourceLabel,
       reliability: quote.reliability,
       quoteAttempts: quote.attempts,
     };
   }
-  return fallbackSwapQuote(swap, price, "USDC_TO_WETH", quote.failureReason);
+  const amountInRaw = rawUsdc(swap.amount);
+  const quote = await quoteAerodromeSwap(USDC_ADDRESS, WETH_ADDRESS, amountInRaw, blockNumber);
+  const outputAmount = rawToWeth(quote.amountOutRaw);
+  return {
+    outputAmount,
+    lossUsdc: Math.max(0, swap.amount - outputAmount * price),
+    source: quote.source,
+    sourceLabel: quote.sourceLabel,
+    reliability: quote.reliability,
+    quoteAttempts: quote.attempts,
+  };
 }
 
 async function buildRebalanceRow(index, exit, block, runToken = null) {
@@ -2657,6 +2653,14 @@ function renderServerSimulation(simulation, options = {}) {
       : (totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / —` : "—")),
     eta: serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows),
   });
+  if (isServerSimulationTerminal(simulation.status) && simulation.status !== "completed" && info.notice) {
+    setSimulationNotice({
+      status: `Симуляция остановлена: ${simulation.status}`,
+      details: info.notice,
+      estimate: "",
+      isError: true,
+    });
+  }
   const index = serverSimulation.jobs.findIndex((item) => item.id === simulation.id);
   if (index >= 0) serverSimulation.jobs[index] = simulation;
   else serverSimulation.jobs.unshift(simulation);
