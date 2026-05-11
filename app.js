@@ -3418,7 +3418,7 @@ async function loadCsvWithProgress(url) {
   statusEl.textContent = "Загрузка CSV... 0%";
   const response = await fetch(url);
   if (!response.ok) throw new Error(`CSV load failed: ${response.status}`);
-  const total = Number(response.headers.get("content-length") || 0);
+  const total = Number(response.headers?.get?.("content-length") || 0);
   if (!response.body || !response.body.getReader) {
     const text = await response.text();
     statusEl.textContent = `CSV скачан (${formatCsvBytes(text.length)}), обработка...`;
