@@ -2,17 +2,22 @@
 <html lang="ru">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>WETH/USDC Aerodrome Prices</title>
+    <meta name="viewport" content="width=1200, initial-scale=1, user-scalable=yes" />
+    <title>WETH/USDC Aerodrome Симулятор прибыли</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="./styles.css" />
+    <style>
+      html, body {
+        min-width: 1200px !important;
+        width: 100%;
+      }
+    </style>
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
         <div>
-          <h1>WETH/USDC 0.05% Aerodrome</h1>
-          <p>Поминутные цены за февраль, март и апрель 2026</p>
+          <h1>WETH/USDC 0.05% — Aerodrome — Симулятор прибыли</h1>
         </div>
         <div class="status" id="status">Загрузка CSV...</div>
       </header>
@@ -47,20 +52,24 @@
 
       <section class="panel simulatorPanel appView" id="newSimulationView" data-view="new" aria-label="Симулятор позиции">
         <div class="simControls">
+          <div class="simButtons" aria-label="Управление симуляцией">
+            <button id="runSimulation" class="startButton" type="button" title="Старт симуляции">START</button>
+            <button id="resetSimulation" class="resetButton" type="button" title="Reset simulation">RESET</button>
+          </div>
           <label class="field">
-            <span>Начало симуляции</span>
+            <span>Start</span>
             <input id="simStartInput" type="text" value="2026-02-01 00:00" />
           </label>
           <label class="field endField">
-            <span>Конец симуляции</span>
+            <span>End</span>
             <input id="simEndInput" type="text" value="2026-04-30 23:59" />
           </label>
           <label class="field depositField">
-            <span>Депозит, USDC</span>
+            <span>Position</span>
             <input id="depositInput" type="text" value="10'000" />
           </label>
           <label class="field rangePercentField">
-            <span>Диапазон, %</span>
+            <span>Range, %</span>
             <input id="rangePercentInput" type="text" value="1" />
           </label>
           <label class="field">
@@ -70,26 +79,24 @@
               <option value="unstaked">Unstaked LP (LP trading fees)</option>
             </select>
           </label>
-          <div class="simButtons" aria-label="Управление симуляцией">
-            <div class="playbackButtons">
-              <button id="runSimulation" class="startButton" type="button" title="Старт симуляции">START</button>
-              <button id="stepBack" type="button" title="Назад на минуту">&#9664;</button>
-              <button id="stepForward" type="button" title="Вперед на минуту">&#9654;</button>
-            </div>
-            <button id="resetSimulation" class="resetButton" type="button" title="Reset simulation">RESET</button>
-          </div>
           <div class="simTotals">
-            <div>
-              <span>Стоимость позиции</span>
-              <strong id="currentPositionValue">$0.00</strong>
+            <div class="simTotal">
+              <span>Position Value</span>
+              <div class="simTotalValue">
+                <strong id="currentPositionValue">$0.00</strong>
+              </div>
             </div>
-            <div id="currentRewardDiv">
-              <span id="currentRewardLabel">AERO earned, USDC</span>
-              <strong id="currentRewardValue">$0.00</strong>
+            <div class="simTotal" id="currentRewardDiv">
+              <span id="currentRewardLabel">AERO, $</span>
+              <div class="simTotalValue">
+                <strong id="currentRewardValue">$0.00</strong>
+              </div>
             </div>
-            <div>
-              <span>Total return, USDC</span>
-              <strong id="currentTotalValue">$0.00</strong>
+            <div class="simTotal">
+              <span>Total return, $</span>
+              <div class="simTotalValue">
+                <strong id="currentTotalValue">$0.00</strong>
+              </div>
             </div>
           </div>
         </div>
@@ -111,12 +118,12 @@
               <tr>
                 <th>Дата, время</th>
                 <th>Событие</th>
-                <th>Стоимость, USDC</th>
+                <th>Стоимость, $</th>
                 <th>Цена WETH</th>
                 <th>WETH</th>
                 <th>USDC</th>
-                <th id="aeroTh">AERO, USDC</th>
-                <th id="lpFeesTh">LP fees est.</th>
+                <th id="aeroTh">AERO, $</th>
+                <th id="lpFeesTh">LP fees, $</th>
                 <th>Достоверность</th>
               </tr>
             </thead>
@@ -164,12 +171,12 @@
               <tr>
                 <th>Дата, время</th>
                 <th>Событие</th>
-                <th>Стоимость, USDC</th>
+                <th>Стоимость, $</th>
                 <th>Цена WETH</th>
                 <th>WETH</th>
                 <th>USDC</th>
-                <th>AERO, USDC</th>
-                <th>LP fees est.</th>
+                <th>AERO, $</th>
+                <th>LP fees, $</th>
                 <th>Достоверность</th>
               </tr>
             </thead>
@@ -183,5 +190,14 @@
     <script src="./simulation_core.js"></script>
     <script src="./simulation_engine.js"></script>
     <script src="./app.js"></script>
+    <script>
+      // Force desktop view - remove any mobile adaptations
+      document.documentElement.style.minWidth = '1200px';
+      document.body.style.minWidth = '1200px';
+      window.addEventListener('resize', function() {
+        document.documentElement.style.minWidth = '1200px';
+        document.body.style.minWidth = '1200px';
+      });
+    </script>
   </body>
 </html>

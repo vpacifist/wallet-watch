@@ -46,6 +46,8 @@
         anchorTick: state.sim.anchorTick,
         startGridTick: state.sim.startGridTick,
         rangeStepTicks: state.sim.rangeStepTicks,
+        lastExitBlockNumber: state.sim.lastExitBlockNumber,
+        lastExitLogIndex: state.sim.lastExitLogIndex,
         liquidityRaw: state.sim.liquidityRaw,
         liquidityHuman: state.sim.liquidityHuman,
         rewardStart: state.sim.rewardStart,
@@ -77,6 +79,8 @@
       state.sim.anchorTick = snapshot.anchorTick;
       state.sim.startGridTick = snapshot.startGridTick || snapshot.tickLower || 0;
       state.sim.rangeStepTicks = snapshot.rangeStepTicks || 0;
+      state.sim.lastExitBlockNumber = snapshot.lastExitBlockNumber || 0;
+      state.sim.lastExitLogIndex = Number.isFinite(snapshot.lastExitLogIndex) ? snapshot.lastExitLogIndex : -1;
       state.sim.liquidityRaw = snapshot.liquidityRaw;
       state.sim.liquidityHuman = snapshot.liquidityHuman;
       state.sim.rewardStart = snapshot.rewardStart;
@@ -355,7 +359,7 @@
         excludedRewardStreams: state.sim.lpMode === "staked" ? ["lpFees"] : ["aero"],
         lpFeesClaimable: state.sim.lpMode === "unstaked",
         aeroClaimable: state.sim.lpMode === "staked",
-        totalReturnUsdc: state.sim.lpMode === "staked" ? aeroTotals.conservative : lpFeeTotalsAfter.usdcValue,
+        totalReturnUsdc: amounts.value + (state.sim.lpMode === "staked" ? aeroTotals.conservative : lpFeeTotalsAfter.usdcValue),
         stateAfter: snapshotState(),
       };
     }
@@ -487,7 +491,7 @@
         excludedRewardStreams: state.sim.lpMode === "staked" ? ["lpFees"] : ["aero"],
         lpFeesClaimable: state.sim.lpMode === "unstaked",
         aeroClaimable: state.sim.lpMode === "staked",
-        totalReturnUsdc: state.sim.lpMode === "staked" ? harvestedAeroUsdc : lpFeeTotalsAfter.usdcValue,
+        totalReturnUsdc: newPlan.value + (state.sim.lpMode === "staked" ? harvestedAeroUsdc : lpFeeTotalsAfter.usdcValue),
         stateAfter: snapshotState(),
         rebalance: {
           oldTickLower,
@@ -543,15 +547,30 @@
 
       try {
         const nextBlock = await findBlockAtOrAfter(nextTimestamp, previous.blockNumber);
-        const exit = await findSwapExit(previous.blockNumber, nextBlock.number, state.sim.tickLower, state.sim.tickUpper);
+        const lastExit = state.sim.lastExitBlockNumber > 0
+          ? { blockNumber: state.sim.lastExitBlockNumber, logIndex: state.sim.lastExitLogIndex }
+          : null;
+        const exit = await findSwapExit(previous.blockNumber, nextBlock.number, state.sim.tickLower, state.sim.tickUpper, lastExit);
         if (runToken !== state.sim.runToken || !state.sim.started) return false;
         state.sim.currentIndex = nextIndex;
 
-        if (exit) {
+        const closePrice = state.rows[nextIndex].close;
+        const lowerPrice = priceForTick(state.sim.tickLower);
+        const upperPrice = priceForTick(state.sim.tickUpper);
+        const exitConfirmed = exit && (closePrice < lowerPrice || closePrice >= upperPrice);
+        if (exit && !exitConfirmed) {
+          state.sim.lastExitBlockNumber = exit.blockNumber;
+          state.sim.lastExitLogIndex = exit.logIndex;
+        }
+
+        if (exitConfirmed) {
           const rebalanceBlock = await getBlock(exit.blockNumber);
           if (runToken !== state.sim.runToken || !state.sim.started) return false;
           const rebalanceRow = await buildRebalanceRow(nextIndex, exit, rebalanceBlock, runToken);
           if (runToken !== state.sim.runToken || !state.sim.started) return false;
+          state.sim.lastExitBlockNumber = exit.blockNumber;
+          state.sim.lastExitLogIndex = exit.logIndex;
+          rebalanceRow.stateAfter = snapshotState();
           state.sim.rows.push(rebalanceRow);
           state.sim.activeRowIndex = nextIndex;
           state.sim.stopped = false;
@@ -565,7 +584,7 @@
           if (shouldRender) setSimulationNotice({ status: "Свеча рассчитана.", details: simulationProgressText(), estimate: "" });
         }
 
-        if (exit) {
+        if (exitConfirmed) {
           recordSimulationStepDuration(stepStartedAt);
           if (shouldRender) setSimulationNotice({ status: "Rebalance рассчитан.", details: simulationProgressText(), estimate: "" });
         }
@@ -611,7 +630,7 @@
       }
       if (runToken === state.sim.runToken && loopId === state.sim.autoLoopId) {
         state.sim.autoRunning = false;
-        if (state.sim.currentIndex >= state.sim.endIndex || state.sim.stopped) {
+        if (state.sim.currentIndex >= state.sim.endIndex) {
           setSimulationNotice({ status: "Симуляция дошла до конца.", details: simulationProgressText(), estimate: "" });
         }
         renderSimulationTable(true);

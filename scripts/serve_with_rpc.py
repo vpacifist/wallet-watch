@@ -13,6 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict, deque
 from contextlib import contextmanager
 from pathlib import Path
@@ -32,14 +33,20 @@ def load_dotenv(path):
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        if key:
             os.environ[key] = value
+            masked = (value[:3] + "...") if len(value) > 3 else "***"
+            print(f"Loaded from .env: {key}={masked}", file=sys.stderr, flush=True)
 
 
 load_dotenv(ROOT / ".env")
 
-DEFAULT_RPC_URLS = ["https://base.drpc.org", "https://base.gateway.tenderly.co", "https://mainnet.base.org", "https://base.llamarpc.com"]
-RPC_URLS = [url.strip() for url in os.environ.get("BASE_RPC_URLS", "").split(",") if url.strip()] or DEFAULT_RPC_URLS
+def env_rpc_urls(name):
+    return [url.strip() for url in os.environ.get(name, "").split(",") if url.strip()]
+
+
+RPC_URLS = env_rpc_urls("BASE_RPC_URLS")
+ARCHIVE_RPC_URLS = env_rpc_urls("BASE_ARCHIVE_RPC_URLS")
 DATA_PATH = Path(os.environ.get("MARKET_DATA_PATH", ROOT / "output" / "market_data.sqlite"))
 SIM_DATA_PATH = Path(os.environ.get("SIM_DATA_PATH", ROOT / "output" / "simulations.sqlite"))
 SIM_WORKER_PATH = Path(os.environ.get("SIM_WORKER_PATH", ROOT / "scripts" / "node_sim_worker.js"))
@@ -364,12 +371,16 @@ def normalize_simulation_params(payload):
     range_pct = float(payload.get("rangePct", payload.get("range_pct", 1)))
     if range_pct <= 0 or range_pct >= 100:
         raise ApiError(400, "rangePct must be greater than 0 and less than 100", "invalid_range_pct")
+    lp_mode = str(payload.get("lpMode", payload.get("lp_mode", "staked"))).strip().lower() or "staked"
+    if lp_mode not in {"staked", "unstaked"}:
+        raise ApiError(400, "lpMode must be 'staked' or 'unstaked'", "invalid_lp_mode")
     timeout_seconds = int(payload.get("timeoutSeconds", 21600))
     return {
         "start": start,
         "end": end,
         "deposit": deposit,
         "rangePct": range_pct,
+        "lpMode": lp_mode,
         "timeoutSeconds": timeout_seconds,
         "progressEverySeconds": int(payload.get("progressEverySeconds", 2)),
         "rebalanceManualFeeBps": float(payload.get("rebalanceManualFeeBps", os.environ.get("REBALANCE_MANUAL_FEE_BPS", "1"))),
@@ -411,7 +422,20 @@ def merge_simulation_progress(simulation_id, event):
         merged["rawRowCount"] = len(raw_rows)
         merged["latestRawRow"] = event.get("latestRawRow") or raw_rows[-1]
         merged["rows"] = max(int(event.get("rows") or 0), len(raw_rows))
+        if not merged.get("currentTotalReturn"):
+            total_return = merged["latestRawRow"].get("totalReturnUsdc") if isinstance(merged["latestRawRow"], dict) else None
+            if isinstance(total_return, (int, float)):
+                merged["currentTotalReturn"] = f"${total_return:,.2f}"
     return merged
+
+
+def finalize_simulation_result(simulation_id, event):
+    current = get_simulation(simulation_id) or {}
+    previous = current.get("progress") if isinstance(current.get("progress"), dict) else {}
+    result = merge_simulation_progress(simulation_id, event)
+    if not result.get("currentTotalReturn") and isinstance(previous, dict):
+        result["currentTotalReturn"] = previous.get("currentTotalReturn") or ""
+    return result
 
 
 def stream_simulation_stdout(simulation_id, pipe):
@@ -428,11 +452,12 @@ def stream_simulation_stdout(simulation_id, pipe):
         if event_type == "result":
             status = event.get("status") or "finished"
             terminal = "completed" if status == "completed" else status
+            result = finalize_simulation_result(simulation_id, event)
             update_simulation(
                 simulation_id,
                 status=terminal,
-                result_json=json.dumps(event, ensure_ascii=False),
-                progress_json=json.dumps(event, ensure_ascii=False),
+                result_json=json.dumps(result, ensure_ascii=False),
+                progress_json=json.dumps(result, ensure_ascii=False),
                 finished_at=now_int(),
             )
         else:
@@ -474,12 +499,13 @@ def start_simulation_job(params):
     insert_simulation(simulation_id, params)
     config = {
         "id": simulation_id,
-        "url": f"{PUBLIC_BASE_URL.rstrip('/')}/index.html?local-sim=1",
+        "url": f"{PUBLIC_BASE_URL.rstrip('/')}/index.html",
         **params,
         "headed": False,
         "retryInitialSeconds": 60,
         "retryMaxSeconds": 300,
         "maxRetries": 1000,
+        "timeoutSeconds": 86400,
     }
     env = os.environ.copy()
     env["SERVER_SIM_CONFIG"] = json.dumps(config, ensure_ascii=False)
@@ -610,6 +636,10 @@ def exact_cacheable(payload):
     if method == "eth_call":
         return len(params) > 1 and is_historical_block_tag(params[-1])
     return False
+
+
+def is_historical_eth_call(payload):
+    return payload.get("method") == "eth_call" and exact_cacheable(payload)
 
 
 def parse_supported_logs_filter(payload):
@@ -783,61 +813,101 @@ def response_from_error(payload, error):
     return {"jsonrpc": "2.0", "id": payload.get("id"), "error": error or {"message": "RPC proxy error"}}
 
 
-def upstream_post(payload):
+def try_one_provider(url, body, summary):
+    try:
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "wallet-watch/1.0"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30) as response:
+            raw = response.read()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            preview = raw[:240].decode("utf-8", errors="replace")
+            return False, {
+                "message": f"Invalid JSON from RPC provider: {exc.msg}",
+                "position": exc.pos,
+                "responseBytes": len(raw),
+                "preview": preview,
+            }
+        
+        responses = parsed if isinstance(parsed, list) else [parsed]
+        if all("error" not in item for item in responses):
+            return True, parsed
+        
+        last_error = next((item["error"] for item in responses if "error" in item), None)
+        return False, last_error
+    except urllib.error.HTTPError as exc:
+        try:
+            body_text = exc.read().decode("utf-8", errors="replace")
+        except:
+            body_text = "unreadable body"
+        return False, {"code": exc.code, "message": body_text}
+    except (urllib.error.URLError, TimeoutError) as exc:
+        return False, {"message": str(exc)}
+
+
+def upstream_post(payload, urls=None, label="RPC"):
+    provider_urls = urls if urls is not None else RPC_URLS
+    if not provider_urls:
+        raise RuntimeError(json.dumps({"message": f"{label} URLs are not configured"}))
     body = json.dumps(payload).encode("utf-8")
     last_error = None
     payloads = payload if isinstance(payload, list) else [payload]
     summary = ", ".join(item.get("method", "<unknown>") for item in payloads[:8])
     if len(payloads) > 8:
         summary += f", ... +{len(payloads) - 8}"
+    
     attempted_errors = []
-    for _ in range(4):
-        for url in RPC_URLS:
-            try:
-                req = urllib.request.Request(
-                    url,
-                    data=body,
-                    headers={"Content-Type": "application/json", "User-Agent": "wallet-watch/1.0"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=30) as response:
-                    raw = response.read()
+    # Try providers one by one first to save limits
+    for url in provider_urls:
+        success, result = try_one_provider(url, body, summary)
+        if success:
+            return result
+        last_error = result
+        attempted_errors.append((url, last_error))
+
+    # If all failed once, use parallelism for retries to find a working one fast
+    with ThreadPoolExecutor(max_workers=min(len(provider_urls), 8)) as executor:
+        for attempt in range(3):
+            futures = {executor.submit(try_one_provider, url, body, summary): url for url in provider_urls}
+            for future in as_completed(futures):
+                url = futures[future]
                 try:
-                    parsed = json.loads(raw)
-                except json.JSONDecodeError as exc:
-                    preview = raw[:240].decode("utf-8", errors="replace")
-                    last_error = {
-                        "message": f"Invalid JSON from RPC provider: {exc.msg}",
-                        "position": exc.pos,
-                        "responseBytes": len(raw),
-                        "preview": preview,
-                    }
-                attempted_errors.append((url, last_error))
-                if DEBUG_RPC_ERRORS:
-                    print(f"RPC invalid JSON from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
-                    continue
-                responses = parsed if isinstance(parsed, list) else [parsed]
-                if all("error" not in item for item in responses):
-                    return parsed
-                last_error = next((item["error"] for item in responses if "error" in item), None)
-                attempted_errors.append((url, last_error))
-                if DEBUG_RPC_ERRORS:
-                    print(f"RPC upstream error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
-            except urllib.error.HTTPError as exc:
-                last_error = {"code": exc.code, "message": exc.read().decode("utf-8", errors="replace")}
-                attempted_errors.append((url, last_error))
-                if DEBUG_RPC_ERRORS:
-                    print(f"RPC HTTP error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
-            except (urllib.error.URLError, TimeoutError) as exc:
-                last_error = {"message": str(exc)}
-                attempted_errors.append((url, last_error))
-                if DEBUG_RPC_ERRORS:
-                    print(f"RPC network error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
-        time.sleep(1.2)
+                    success, result = future.result()
+                    if success:
+                        return result
+                    
+                    last_error = result
+                    attempted_errors.append((url, last_error))
+                    
+                    # Detailed logging for specific error types
+                    err_msg = str(last_error.get("message", "")) if isinstance(last_error, dict) else str(last_error)
+                    is_plan_error = any(token in err_msg.lower() for token in ["plan", "archive", "limit", "allowance", "method not allowed", "debug", "trace"])
+                    
+                    if is_plan_error:
+                        print(f"\n!!! PLAN LIMIT DETECTED !!!", file=sys.stderr, flush=True)
+                        print(f"Provider: {redact_url(url)}", file=sys.stderr, flush=True)
+                        print(f"Methods: [{summary}]", file=sys.stderr, flush=True)
+                        print(f"Error: {err_msg}", file=sys.stderr, flush=True)
+                        print(f"Action: Consider upgrading plan or reducing request range.\n", file=sys.stderr, flush=True)
+                    elif DEBUG_RPC_ERRORS:
+                        print(f"RPC error from {redact_url(url)} for [{summary}]: {last_error}", file=sys.stderr, flush=True)
+                except Exception as exc:
+                    last_error = {"message": str(exc)}
+                    attempted_errors.append((url, last_error))
+                    print(f"[{time.strftime('%H:%M:%S')}] RPC Exception from {redact_url(url)}: {exc}", file=sys.stderr, flush=True)
+            
+            if attempt < 2:
+                time.sleep(2.0 * (attempt + 1))
+    
     if attempted_errors:
-        providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(RPC_URLS):])
-        print(f"RPC upstream failed for [{summary}] after retries; last providers: {providers}; last_error={last_error}", file=sys.stderr, flush=True)
-    raise RuntimeError(json.dumps(last_error or {"message": "RPC proxy error"}))
+        providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(provider_urls):])
+        print(f"{label} upstream failed for [{summary}] after parallel retries; last providers: {providers}; last_error={last_error}", file=sys.stderr, flush=True)
+    raise RuntimeError(json.dumps(last_error or {"message": f"{label} proxy error"}))
 
 
 def fetch_logs_in_chunks(payload, info):
@@ -877,6 +947,33 @@ def fetch_logs_in_chunks(payload, info):
             hex_to_int(log.get("logIndex", "0x0")),
         ),
     )
+
+
+def upstream_for_payload(payload):
+    if is_historical_eth_call(payload):
+        return ARCHIVE_RPC_URLS, "Archive RPC"
+    return RPC_URLS, "RPC"
+
+
+def upstream_post_for_payload(payload):
+    urls, label = upstream_for_payload(payload)
+    return upstream_post(payload, urls=urls, label=label)
+
+
+def split_upstream_batches(items):
+    batches = []
+    current = []
+    current_route = None
+    for item in items:
+        route = upstream_for_payload(item[1])
+        if current and (route != current_route or len(current) >= MAX_UPSTREAM_BATCH_SIZE):
+            batches.append((current_route, current))
+            current = []
+        current_route = route
+        current.append(item)
+    if current:
+        batches.append((current_route, current))
+    return batches
 
 
 def classify_payload(payload):
@@ -937,17 +1034,18 @@ def post_rpc_batch(payloads):
         misses = deferred_misses
 
     if misses:
-        upstream_payload = []
-        for upstream_id, (_, _, _, _, payload) in enumerate(misses, start=1):
+        upstream_items = []
+        for upstream_id, miss in enumerate(misses, start=1):
+            payload = miss[4]
             item = dict(payload)
             item["jsonrpc"] = "2.0"
             item["id"] = upstream_id
-            upstream_payload.append(item)
-        for offset in range(0, len(upstream_payload), MAX_UPSTREAM_BATCH_SIZE):
-            chunk = upstream_payload[offset:offset + MAX_UPSTREAM_BATCH_SIZE]
-            chunk_misses = misses[offset:offset + MAX_UPSTREAM_BATCH_SIZE]
+            upstream_items.append((miss, item))
+        for (urls, label), batch_items in split_upstream_batches(upstream_items):
+            chunk_misses = [item[0] for item in batch_items]
+            chunk = [item[1] for item in batch_items]
             try:
-                parsed = upstream_post(chunk[0] if len(chunk) == 1 else chunk)
+                parsed = upstream_post(chunk[0] if len(chunk) == 1 else chunk, urls=urls, label=label)
                 upstream_responses = parsed if isinstance(parsed, list) else [parsed]
                 by_id = {item.get("id"): item for item in upstream_responses}
                 record_stat("upstream_batches")
@@ -1025,6 +1123,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         return self.check_rate_limit("rpc", RPC_RATE_LIMIT_PER_MINUTE)
 
     def do_POST(self):
+        print(f"[{time.strftime('%H:%M:%S')}] POST {self.path}", file=sys.stderr, flush=True)
         parsed = urllib.parse.urlparse(getattr(self, "path", ""))
         if parsed.path == "/api/simulations":
             if not self.check_api_rate_limit():
@@ -1083,17 +1182,41 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def require_admin_token(self):
         if not ADMIN_API_TOKEN:
             return True
-        parsed = urllib.parse.urlparse(getattr(self, "path", ""))
-        query_token = urllib.parse.parse_qs(parsed.query).get("admin_token", [""])[0].strip()
-        header_token = self.headers.get("X-Admin-API-Token", "").strip()
+        # Using self.path directly as it contains the full request path including query
+        path_str = getattr(self, "path", "")
+        if "?" in path_str:
+            _, query = path_str.split("?", 1)
+        else:
+            query = ""
+        params = urllib.parse.parse_qs(query)
+
+        # Extract tokens from various sources, stripping whitespace and optional quotes
+        # Also handle potential double encoding from some proxies
+        raw_query_token = params.get("admin_token", [""])[0].strip().strip('"').strip("'")
+        query_token = urllib.parse.unquote(raw_query_token) if "%" in raw_query_token else raw_query_token
+        
+        header_token = self.headers.get("X-Admin-API-Token", "").strip().strip('"').strip("'")
         auth = self.headers.get("Authorization", "").strip()
-        bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        if header_token == ADMIN_API_TOKEN or bearer == ADMIN_API_TOKEN or query_token == ADMIN_API_TOKEN:
+        bearer = auth[7:].strip().strip('"').strip("'") if auth.lower().startswith("bearer ") else ""
+
+        # Ensure tokens are clean for comparison
+        target = (ADMIN_API_TOKEN or "").strip().strip('"').strip("'")
+        
+        if header_token == target or bearer == target or query_token == target:
             return True
-        self.send_json(401, {"error": "admin token required"})
+
+        # Log failed attempt for debugging (without revealing the full token)
+        client_ip = self.client_ip()
+        masked_query = (query_token[:3] + "...") if len(query_token) > 3 else ("***" if query_token else "none")
+        expected_len = len(target)
+        received_len = len(query_token)
+        print(f"[{time.strftime('%H:%M:%S')}] 401 Unauthorized: {client_ip} {self.command} {path_str} (query_token={masked_query}, len_expected={expected_len}, len_received={received_len})", file=sys.stderr, flush=True)
+
+        self.send_json(401, {"error": "admin token required", "code": "unauthorized"})
         return False
 
     def do_GET(self):
+        print(f"[{time.strftime('%H:%M:%S')}] GET {self.path}", file=sys.stderr, flush=True)
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/health":
             self.send_json(200, {"ok": True, "status": "healthy", "time": now_int()})
@@ -1254,7 +1377,12 @@ if __name__ == "__main__":
     print(f"Market data cache: {DATA_PATH}", file=sys.stderr, flush=True)
     print(f"Simulation data: {SIM_DATA_PATH}", file=sys.stderr, flush=True)
     print("Raw eth_getLogs JSON cache: disabled; logs are normalized and deduplicated", file=sys.stderr, flush=True)
+    if not RPC_URLS:
+        raise RuntimeError("BASE_RPC_URLS is not configured")
+    if not ARCHIVE_RPC_URLS:
+        raise RuntimeError("BASE_ARCHIVE_RPC_URLS is not configured")
     print(f"RPC upstreams: {', '.join(redact_url(url) for url in RPC_URLS)}", file=sys.stderr, flush=True)
+    print(f"Archive RPC upstreams: {', '.join(redact_url(url) for url in ARCHIVE_RPC_URLS)}", file=sys.stderr, flush=True)
     print(f"Listening on {HOST}:{PORT}", file=sys.stderr, flush=True)
     try:
         http.server.ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

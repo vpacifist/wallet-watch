@@ -114,8 +114,8 @@ async function readState(page) {
     const lastRow = rows.length ? rows[rows.length - 1].innerText : "";
     const button = document.getElementById("runSimulation")?.innerText || "";
     const currentValue = document.getElementById("currentPositionValue")?.innerText || "";
-    const currentAero = document.getElementById("currentRewardValue")?.innerText || "";
-    return { notice, rowCount: rows.length, lastRow, button, currentValue, currentAero };
+    const currentReward = document.getElementById("currentRewardValue")?.innerText || "";
+    return { notice, rowCount: rows.length, lastRow, button, currentValue, currentReward };
   });
 }
 
@@ -165,7 +165,7 @@ async function readState(page) {
           notice: state.notice,
           lastRow: state.lastRow,
           currentValue: state.currentValue,
-          currentAero: state.currentAero,
+          currentReward: state.currentReward,
         }));
         await browser.close();
         process.exit(0);

@@ -158,8 +158,8 @@ class FakeElement {
 const fakeCanvasContext = new Proxy({}, {
   get(target, prop) {
     if (prop === "measureText") return (text) => ({ width: String(text || "").length * 7 });
-    if (prop === "createLinearGradient") return () => ({ addColorStop() {} });
-    if (!(prop in target)) target[prop] = () => {};
+    if (prop === "createLinearGradient") return () => ({ addColorStop() { } });
+    if (!(prop in target)) target[prop] = () => { };
     return target[prop];
   },
   set(target, prop, value) {
@@ -267,6 +267,7 @@ function readUi(document) {
     button: document.getElementById("runSimulation").textContent || "",
     currentValue: document.getElementById("currentPositionValue").textContent || "",
     currentReward: document.getElementById("currentRewardValue").textContent || "",
+    currentTotalReturn: document.getElementById("currentTotalValue").textContent || "",
   };
 }
 
@@ -298,6 +299,7 @@ function progressEvent(config, startedAt, state, rawRows, newRawRows, reason = "
     lastRow: state.lastRow,
     currentValue: state.currentValue,
     currentReward: state.currentReward,
+    currentTotalReturn: state.currentTotalReturn,
     latestRawRow: rawRows.at(-1) || null,
     newRawRows,
     stage: startup.stage || "",
@@ -311,7 +313,7 @@ function readDataQuality(sandbox) {
   return sandbox.getSimulationDataQuality();
 }
 
-async function runSimulation(config, emit = () => {}) {
+async function runSimulation(config, emit = () => { }) {
   if (!config.start || !config.end) {
     emit({ type: "result", status: "error", message: "SERVER_SIM_CONFIG requires start and end" });
     return { exitCode: 4 };
@@ -340,9 +342,9 @@ async function runSimulation(config, emit = () => {}) {
     JSON,
     SERVER_SIM_CONFIG_CLIENT: config,
     window: {
-      location: { search: "?local-sim=1" },
+      location: { search: "" },
       devicePixelRatio: 1,
-      addEventListener() {},
+      addEventListener() { },
       setInterval,
       clearInterval,
       setTimeout,
@@ -371,6 +373,10 @@ async function runSimulation(config, emit = () => {}) {
   document.getElementById("simEndInput").value = config.end;
   document.getElementById("depositInput").value = String(config.deposit || "10000");
   document.getElementById("rangePercentInput").value = String(config.rangePct || 1);
+  if (config.lpMode && document.getElementById("simulationModeSelect")) {
+    document.getElementById("simulationModeSelect").value = String(config.lpMode);
+    document.getElementById("simulationModeSelect").dispatchEvent({ type: "change" });
+  }
 
   emit({
     type: "inputs",
@@ -379,6 +385,7 @@ async function runSimulation(config, emit = () => {}) {
     end: document.getElementById("simEndInput").value,
     deposit: document.getElementById("depositInput").value,
     rangePct: document.getElementById("rangePercentInput").value,
+    lpMode: document.getElementById("simulationModeSelect")?.value || "",
   });
 
   const startedAt = Date.now();
@@ -433,6 +440,7 @@ async function runSimulation(config, emit = () => {}) {
         lastRow: state.lastRow,
         currentValue: state.currentValue,
         currentReward: state.currentReward,
+        currentTotalReturn: state.currentTotalReturn,
         rawRows: readRawRows(sandbox),
         dataQuality: readDataQuality(sandbox),
       });
@@ -447,6 +455,11 @@ async function runSimulation(config, emit = () => {}) {
         rows: state.rowCount,
         notice: state.notice,
         lastRow: state.lastRow,
+        currentValue: state.currentValue,
+        currentReward: state.currentReward,
+        currentTotalReturn: state.currentTotalReturn,
+        rawRows: readRawRows(sandbox),
+        dataQuality: readDataQuality(sandbox),
       });
       return { exitCode: 2 };
     }
@@ -461,6 +474,9 @@ async function runSimulation(config, emit = () => {}) {
     rows: state.rowCount,
     notice: state.notice,
     lastRow: state.lastRow,
+    currentValue: state.currentValue,
+    currentReward: state.currentReward,
+    currentTotalReturn: state.currentTotalReturn,
   });
   return { exitCode: 3 };
 }

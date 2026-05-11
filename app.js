@@ -46,6 +46,8 @@ const state = {
     anchorTick: 0,
     startGridTick: 0,
     rangeStepTicks: 0,
+    lastExitBlockNumber: 0,
+    lastExitLogIndex: -1,
     rewardStart: 0n,
     rewardLast: 0n,
     feeGrowthInside0Last: 0n,
@@ -74,6 +76,8 @@ const state = {
     elapsedTimer: null,
     initialRangeReady: false,
     skeletonVisible: false,
+    chartPriceMin: null,
+    chartPriceMax: null,
   },
 };
 
@@ -135,7 +139,8 @@ const REBALANCE_FALLBACK_SLIPPAGE_BPS = Number(RUNTIME_CONFIG.rebalanceFallbackS
 const AERO_IMPACT_HAIRCUT_MAX = Number(RUNTIME_CONFIG.aeroImpactHaircutMax ?? 0.5);
 const SERVER_SIMULATION_POLL_MS = Number(RUNTIME_CONFIG.serverSimulationPollMs ?? 2500);
 const BASE_RPC_URLS = ["/rpc"];
-const SERVER_SIMULATION_MODE = !new URLSearchParams(window.location.search).has("local-sim");
+const IS_SERVER_WORKER = Boolean(globalThis.SERVER_SIM_CONFIG_CLIENT && globalThis.SERVER_SIM_CONFIG_CLIENT.id);
+const SERVER_SIMULATION_MODE = !IS_SERVER_WORKER;
 let baseRpcIndex = 0;
 const POOL_ADDRESS = "0xb2cc224c1c9fee385f8ad6a55b4d94e92359dc59";
 const AERO_USDC_POOL_ADDRESS = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1";
@@ -164,7 +169,7 @@ const SELECTORS = {
   feeGrowthGlobal1X128: "0x46141319",
   ticks: "0xf30dba93",
   getRewardGrowthInside: "0xa16368c9",
-  quoteExactInputSingle: "0xf7729d43",
+  quoteExactInputSingle: "0x9e7defe6",
   token0: "0x0dfe1681",
   token1: "0xd21220a7",
 };
@@ -269,14 +274,43 @@ function updateMetrics(rows) {
   setMetric("priceRange", `${fmtPrice(bounds.min)} - ${fmtPrice(bounds.max)}`);
 }
 
+function isPlanLimitError(error) {
+  const msg = String(error?.message || error || "").toLowerCase();
+  return msg.includes("archive") || msg.includes("plan") || msg.includes("allowance") || msg.includes("limit") || msg.includes("method not allowed") || msg.includes("debug") || msg.includes("trace");
+}
+
 function chartPriceBounds(rows) {
   const bounds = priceBounds(rows);
+  if (Number.isFinite(state.sim.chartPriceMin)) bounds.min = Math.min(bounds.min, state.sim.chartPriceMin);
+  if (Number.isFinite(state.sim.chartPriceMax)) bounds.max = Math.max(bounds.max, state.sim.chartPriceMax);
   if (state.sim.started) {
     const prices = simRangePrices();
     bounds.min = Math.min(bounds.min, prices.lower);
     bounds.max = Math.max(bounds.max, prices.upper);
   }
   return bounds;
+}
+
+function setSimulationChartPriceBounds(startIndex, endIndex) {
+  if (!Number.isFinite(state.sim.tickLower) || !Number.isFinite(state.sim.tickUpper)) return;
+  const start = Math.max(0, Math.min(startIndex, endIndex));
+  const end = Math.min(state.rows.length - 1, Math.max(startIndex, endIndex));
+  const rows = state.rows.slice(start, end + 1);
+  if (!rows.length) return;
+  const bounds = priceBounds(rows);
+  const spanTicks = Math.max(AERODROME_TICK_SPACING, state.sim.tickUpper - state.sim.tickLower);
+  let min = Math.min(bounds.min, priceForTick(state.sim.tickLower));
+  let max = Math.max(bounds.max, priceForTick(state.sim.tickUpper));
+  rows.forEach((row) => {
+    [row.low, row.high].forEach((price) => {
+      if (!Number.isFinite(price) || price <= 0) return;
+      const range = tickRangeAroundTick(tickForPrice(price), spanTicks);
+      min = Math.min(min, priceForTick(range.tickLower));
+      max = Math.max(max, priceForTick(range.tickUpper));
+    });
+  });
+  state.sim.chartPriceMin = min;
+  state.sim.chartPriceMax = max;
 }
 
 async function rpcCall(method, params) {
@@ -291,10 +325,15 @@ async function rpcCall(method, params) {
       });
       if (!response.ok) throw new Error(`Base RPC HTTP ${response.status}`);
       const payload = await response.json();
-      if (payload.error) throw new Error(payload.error.message || "Base RPC error");
+      if (payload.error) {
+        const err = new Error(payload.error.message || "Base RPC error");
+        if (isPlanLimitError(err)) err.isPlanLimit = true;
+        throw err;
+      }
       return payload.result;
     } catch (error) {
       lastError = error;
+      if (error.isPlanLimit) break; // Don't retry on other providers if it's a plan limit (likely same for all if they are proxies)
       baseRpcIndex += 1;
     }
   }
@@ -316,11 +355,16 @@ async function rpcBatch(calls) {
       const byId = new Map(payload.map((item) => [item.id, item]));
       return calls.map((_, index) => {
         const item = byId.get(index + 1);
-        if (!item || item.error) throw new Error(item?.error?.message || "Base RPC batch error");
+        if (!item || item.error) {
+          const err = new Error(item?.error?.message || "Base RPC batch error");
+          if (isPlanLimitError(err)) err.isPlanLimit = true;
+          throw err;
+        }
         return item.result;
       });
     } catch (error) {
       lastError = error;
+      if (error.isPlanLimit) break;
       baseRpcIndex += 1;
     }
   }
@@ -491,15 +535,19 @@ async function getAeroPrice(blockNumber) {
   }
 }
 
-async function findSwapExit(fromBlock, toBlock, tickLower, tickUpper) {
+async function findSwapExit(fromBlock, toBlock, tickLower, tickUpper, after = null) {
   if (toBlock < fromBlock) return null;
   const logs = await getSwapLogs(fromBlock, toBlock);
   for (const log of logs) {
+    const blockNumber = Number(BigInt(log.blockNumber));
+    const logIndex = Number(BigInt(log.logIndex));
+    if (after && blockNumber === after.blockNumber && logIndex <= after.logIndex) continue;
+    if (after && blockNumber < after.blockNumber) continue;
     const tick = Number(toSignedWord(wordAt(log.data, 4)));
     if (tick < tickLower || tick >= tickUpper) {
       return {
-        blockNumber: Number(BigInt(log.blockNumber)),
-        logIndex: Number(BigInt(log.logIndex)),
+        blockNumber,
+        logIndex,
         tick,
         sqrtPriceX96: hexToBigInt(`0x${wordAt(log.data, 2)}`),
       };
@@ -626,9 +674,9 @@ async function quoteAerodromeSwap(tokenIn, tokenOut, amountInRaw, blockNumber) {
   if (amountInRaw <= 0n) return { amountOutRaw: 0n, source: "no-swap", reliability: 100, sourceLabel: "exact-onchain" };
   const validPair = new Set([tokenIn.toLowerCase(), tokenOut.toLowerCase()]);
   if (!validPair.has(WETH_ADDRESS.toLowerCase()) || !validPair.has(USDC_ADDRESS.toLowerCase())) {
-    return { amountOutRaw: 0n, source: "invalid-token-pair", reliability: 0, sourceLabel: "fallback", failureReason: "token order/pair validation failed" };
+    throw new Error("token order/pair validation failed");
   }
-  const data = `${SELECTORS.quoteExactInputSingle}${encodeAddress(tokenIn)}${encodeAddress(tokenOut)}${encodeUint256(AERODROME_TICK_SPACING)}${encodeUint256(amountInRaw)}${encodeUint256(0)}`;
+  const data = `${SELECTORS.quoteExactInputSingle}${encodeAddress(tokenIn)}${encodeAddress(tokenOut)}${encodeUint256(amountInRaw)}${encodeUint256(AERODROME_TICK_SPACING)}${encodeUint256(0)}`;
   let failureReason = "";
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
@@ -638,16 +686,18 @@ async function quoteAerodromeSwap(tokenIn, tokenOut, amountInRaw, blockNumber) {
       failureReason = error.message || "quoter eth_call failed";
     }
   }
-  return { amountOutRaw: 0n, source: "fallback", reliability: 50, sourceLabel: "fallback", failureReason, attempts: 2 };
-}
-
-function fallbackSwapQuote(swap, price, direction, failureReason) {
-  if (direction === "WETH_TO_USDC") {
-    const outputAmount = swap.amount * price * (1 - REBALANCE_FALLBACK_SLIPPAGE_BPS / 10000);
-    return { outputAmount, lossUsdc: swap.amount * price - outputAmount, source: "fallback", sourceLabel: "fallback", reliability: 50, failureReason };
-  }
-  const outputAmount = swap.amount / price * (1 - REBALANCE_FALLBACK_SLIPPAGE_BPS / 10000);
-  return { outputAmount, lossUsdc: swap.amount - outputAmount * price, source: "fallback", sourceLabel: "fallback", reliability: 50, failureReason };
+  const context = [
+    `reason=${failureReason || "quoter eth_call failed"}`,
+    `block=${blockNumber}`,
+    `tokenIn=${tokenIn}`,
+    `tokenOut=${tokenOut}`,
+    `amountInRaw=${amountInRaw.toString()}`,
+    `tickSpacing=${AERODROME_TICK_SPACING}`,
+    `quoter=${AERO_SLIPSTREAM_QUOTER}`,
+    `selector=${SELECTORS.quoteExactInputSingle}`,
+    `calldata=${data}`,
+  ].join(" ");
+  throw new Error(`historical swap quote failed after 2 attempts: ${context}`);
 }
 
 async function estimateHistoricalSwap(swap, price, blockNumber) {
@@ -657,33 +707,27 @@ async function estimateHistoricalSwap(swap, price, blockNumber) {
   if (swap.direction === "WETH_TO_USDC") {
     const amountInRaw = rawWeth(swap.amount);
     const quote = await quoteAerodromeSwap(WETH_ADDRESS, USDC_ADDRESS, amountInRaw, blockNumber);
-    if (quote.source !== "fallback") {
-      const outputAmount = rawToUsdc(quote.amountOutRaw);
-      return {
-        outputAmount,
-        lossUsdc: Math.max(0, swap.amount * price - outputAmount),
-        source: quote.source,
-        sourceLabel: quote.sourceLabel,
-        reliability: quote.reliability,
-        quoteAttempts: quote.attempts,
-      };
-    }
-    return fallbackSwapQuote(swap, price, "WETH_TO_USDC", quote.failureReason);
-  }
-  const amountInRaw = rawUsdc(swap.amount);
-  const quote = await quoteAerodromeSwap(USDC_ADDRESS, WETH_ADDRESS, amountInRaw, blockNumber);
-  if (quote.source !== "fallback") {
-    const outputAmount = rawToWeth(quote.amountOutRaw);
+    const outputAmount = rawToUsdc(quote.amountOutRaw);
     return {
       outputAmount,
-      lossUsdc: Math.max(0, swap.amount - outputAmount * price),
+      lossUsdc: Math.max(0, swap.amount * price - outputAmount),
       source: quote.source,
       sourceLabel: quote.sourceLabel,
       reliability: quote.reliability,
       quoteAttempts: quote.attempts,
     };
   }
-  return fallbackSwapQuote(swap, price, "USDC_TO_WETH", quote.failureReason);
+  const amountInRaw = rawUsdc(swap.amount);
+  const quote = await quoteAerodromeSwap(USDC_ADDRESS, WETH_ADDRESS, amountInRaw, blockNumber);
+  const outputAmount = rawToWeth(quote.amountOutRaw);
+  return {
+    outputAmount,
+    lossUsdc: Math.max(0, swap.amount - outputAmount * price),
+    source: quote.source,
+    sourceLabel: quote.sourceLabel,
+    reliability: quote.reliability,
+    quoteAttempts: quote.attempts,
+  };
 }
 
 async function buildRebalanceRow(index, exit, block, runToken = null) {
@@ -709,6 +753,36 @@ function simRangeText() {
   if (!state.sim.initialRangeReady && !state.sim.rangeStepTicks) return "Range: calculating...";
   const prices = simRangePrices();
   return `Диапазон ${fmtPercent(state.sim.rangeWidth * 100)}%: ${fmtPrice(prices.lower)} — ${fmtPrice(prices.upper)} (ticks ${Math.abs(state.sim.tickLower)} — ${Math.abs(state.sim.tickUpper)})`;
+}
+
+function chartSimulationRows() {
+  if (serverSimulation.rawRows.length) return serverSimulation.rawRows;
+  return state.sim.rows.map(simulationRowToRaw).filter(Boolean);
+}
+
+function simulationRowForIndex(index) {
+  return chartSimulationRows().find((row) => row?.index === index) || null;
+}
+
+function activeChartSimulationRow() {
+  if (state.sim.tableHoverIndex >= 0) return simulationRowForIndex(state.sim.tableHoverIndex);
+  if (state.sim.activeRowIndex >= 0) return simulationRowForIndex(state.sim.activeRowIndex);
+  if (state.sim.currentIndex >= 0) return simulationRowForIndex(state.sim.currentIndex);
+  return null;
+}
+
+function simulationChartTooltip(row, marketRow) {
+  const lines = [
+    `${fmtTime(row?.time || marketRow?.time || "")}`,
+    `<strong>${fmtPrice(row?.price ?? marketRow?.close)}</strong>`,
+  ];
+  if (row?.event) lines.push(row.event);
+  if (row?.rebalance) {
+    const rb = row.rebalance;
+    lines.push(`range ${rb.oldTickLower}..${rb.oldTickUpper} → ${rb.newTickLower}..${rb.newTickUpper}`);
+    if (rb.swapIsFallback) lines.push(`swap fallback: ${summarizeFallbackReason(rb.quoteFailureReason)}`);
+  }
+  return lines.join("<br>");
 }
 
 function simulationRangeGridPrices(min, max) {
@@ -1012,27 +1086,23 @@ function draw() {
       ctx.fillText(fmtPrice(price), width - pad.right + 12, y + 4);
     }
   });
-  if (state.sim.started || state.sim.initialRangeReady) {
-    const activeBounds = [
-      { label: "lower", tick: state.sim.tickLower, price: priceForTick(state.sim.tickLower), color: "rgba(242, 95, 92, 0.9)" },
-      { label: "upper", tick: state.sim.tickUpper, price: priceForTick(state.sim.tickUpper), color: "rgba(242, 95, 92, 0.9)" },
-    ]
+  const drawRangeBounds = (bounds, segmentStartX = pad.left, segmentEndX = width - pad.right, labelSuffix = "") => {
+    const activeBounds = bounds
       .filter(({ price }) => price >= min && price <= max)
       .map((bound) => ({ ...bound, y: yFor(bound.price) }));
     const activeBoundsAreTight = activeBounds.length === 2 && Math.abs(activeBounds[0].y - activeBounds[1].y) < 34;
     activeBounds.forEach(({ label, price, color, y }) => {
-      if (price < min || price > max) return;
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
       ctx.setLineDash([6, 4]);
       ctx.beginPath();
-      ctx.moveTo(pad.left, y);
-      ctx.lineTo(width - pad.right, y);
+      ctx.moveTo(segmentStartX, y);
+      ctx.lineTo(segmentEndX, y);
       ctx.stroke();
       ctx.setLineDash([]);
-      const text = `${label} ${fmtPrice(price)}`;
+      const text = `${label}${labelSuffix} ${fmtPrice(price)}`;
       const textWidth = ctx.measureText(text).width;
-      const labelX = width - pad.right - textWidth - 8;
+      const labelX = Math.max(segmentStartX + 4, segmentEndX - textWidth - 8);
       const preferredLabelY = activeBoundsAreTight && label === "lower" ? y + 16 : y - 6;
       const labelY = Math.max(pad.top + 13, Math.min(height - pad.bottom - 4, preferredLabelY));
       ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
@@ -1040,6 +1110,31 @@ function draw() {
       ctx.fillStyle = "#f25f5c";
       ctx.fillText(text, labelX, labelY);
     });
+  };
+  if (state.sim.started || state.sim.initialRangeReady || chartSimulationRows().length) {
+    const activeSimRow = activeChartSimulationRow();
+    if (activeSimRow?.rebalance) {
+      const timestamp = activeSimRow.timestamp ? activeSimRow.timestamp * 1000 : new Date(activeSimRow.time || state.rows[activeSimRow.index]?.time || "").getTime();
+      const markerX = Number.isFinite(timestamp) ? xForTime(timestamp) : null;
+      const rb = activeSimRow.rebalance;
+      if (Number.isFinite(markerX) && markerX >= pad.left && markerX <= width - pad.right) {
+        drawRangeBounds([
+          { label: "lower", price: priceForTick(rb.oldTickLower), color: "rgba(242, 95, 92, 0.72)" },
+          { label: "upper", price: priceForTick(rb.oldTickUpper), color: "rgba(242, 95, 92, 0.72)" },
+        ], pad.left, markerX, " old");
+        drawRangeBounds([
+          { label: "lower", price: priceForTick(rb.newTickLower), color: "rgba(242, 95, 92, 0.9)" },
+          { label: "upper", price: priceForTick(rb.newTickUpper), color: "rgba(242, 95, 92, 0.9)" },
+        ], markerX, width - pad.right, " new");
+      }
+    } else {
+      const tickLower = Number.isFinite(activeSimRow?.tickLower) ? activeSimRow.tickLower : state.sim.tickLower;
+      const tickUpper = Number.isFinite(activeSimRow?.tickUpper) ? activeSimRow.tickUpper : state.sim.tickUpper;
+      drawRangeBounds([
+        { label: "lower", price: priceForTick(tickLower), color: "rgba(242, 95, 92, 0.9)" },
+        { label: "upper", price: priceForTick(tickUpper), color: "rgba(242, 95, 92, 0.9)" },
+      ]);
+    }
   }
   const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
   gradient.addColorStop(0, "rgba(15, 139, 141, 0.18)");
@@ -1118,6 +1213,39 @@ function draw() {
     element.style.transform = "none";
   };
 
+  const drawRebalanceMarkers = () => {
+    const rebalanceRows = chartSimulationRows().filter((row) => row?.rebalance);
+    if (!rebalanceRows.length) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(pad.left, pad.top, plotW, plotH);
+    ctx.clip();
+    rebalanceRows.forEach((simRow) => {
+      const timestamp = simRow.timestamp ? simRow.timestamp * 1000 : new Date(simRow.time || state.rows[simRow.index]?.time || "").getTime();
+      if (!Number.isFinite(timestamp) || timestamp < firstTime || timestamp > lastTime) return;
+      const price = Number.isFinite(simRow.price) ? simRow.price : state.rows[simRow.index]?.close;
+      if (!Number.isFinite(price)) return;
+      const x = xForTime(timestamp);
+      const y = yFor(price);
+      ctx.strokeStyle = "rgba(245, 158, 11, 0.72)";
+      ctx.lineWidth = 1.6;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, height - pad.bottom);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = simRow.rebalance?.swapIsFallback ? "#f59e0b" : "#16a34a";
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    });
+    ctx.restore();
+  };
+
   const drawTimeMarker = (rowIndex, color, label, element = null) => {
     const row = state.rows[rowIndex];
     if (!row) return false;
@@ -1137,12 +1265,15 @@ function draw() {
     ctx.fill();
     if (label) ctx.fillText(label, x + 6, pad.top + 14);
     if (element) {
+      const simRow = simulationRowForIndex(rowIndex);
       element.hidden = false;
-      element.innerHTML = `${fmtTime(row.time)}<br><strong>${fmtPrice(row.close)}</strong>`;
+      element.innerHTML = simRow ? simulationChartTooltip(simRow, row) : `${fmtTime(row.time)}<br><strong>${fmtPrice(row.close)}</strong>`;
       placeTooltip(element, x, y);
     }
     return true;
   };
+
+  drawRebalanceMarkers();
 
   const hasSimMarker = state.sim.started && drawTimeMarker(state.sim.currentIndex, "#f25f5c", "sim", simTooltip);
   if (!hasSimMarker) simTooltip.hidden = true;
@@ -1223,23 +1354,7 @@ function analyzeDataQuality(rows) {
 
 function dataQualityStatus(quality) {
   if (!quality || !quality.rowCount) return "CSV загружен";
-  const source = quality.source ? `${quality.source.replace(/^\.\//, "")} · ` : "";
-  const grid = quality.minuteRowCount && quality.minuteRowCount !== quality.rowCount
-    ? ` · сетка ${quality.minuteRowCount.toLocaleString("en-US")} мин`
-    : "";
-  const issueCount = (quality.gapCount || 0)
-    + (quality.duplicateTimestampCount || 0)
-    + (quality.outOfOrderCount || 0)
-    + (quality.invalidPriceCount || 0)
-    + (quality.zeroPriceCount || 0)
-    + (quality.emptyVolumeCount || 0);
-  if (!issueCount) return `CSV загружен · ${source}${quality.rowCount.toLocaleString("en-US")} строк, без проблем${grid}`;
-  const parts = [];
-  if (quality.gapCount) parts.push(`пропущено ${quality.missingMinutes.toLocaleString("en-US")} мин`);
-  if (quality.duplicateTimestampCount) parts.push(`дубликаты ${quality.duplicateTimestampCount.toLocaleString("en-US")}`);
-  if (quality.invalidPriceCount || quality.zeroPriceCount) parts.push(`плохие цены ${(quality.invalidPriceCount + quality.zeroPriceCount).toLocaleString("en-US")}`);
-  if (quality.emptyVolumeCount) parts.push(`пустой volume ${quality.emptyVolumeCount.toLocaleString("en-US")}`);
-  return `CSV загружен · ${source}${quality.rowCount.toLocaleString("en-US")} строк, ${parts.join(", ")}${grid}`;
+  return `CSV загружен, ${quality.rowCount.toLocaleString("en-US")} строк, пропущено ${(quality.missingMinutes || 0).toLocaleString("en-US")} мин`;
 }
 
 function dataQualityTitle(quality) {
@@ -1325,6 +1440,7 @@ function formatProgressTimestamp(value) {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    timeZone: "UTC",
   }).format(new Date(timestamp)).replace(",", "");
 }
 
@@ -1351,6 +1467,10 @@ function serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows) {
 }
 
 function setServerSimulationProgressNotice({ status, elapsed, processing, rows, eta }) {
+  // Do not overwrite critical transport or auth errors with normal progress
+  if (simNotice.classList.contains("simNoticeError") && simNotice.textContent.includes("SSE")) {
+    return;
+  }
   simNotice.replaceChildren();
   simNotice.classList.add("simProgressNotice");
   const columns = [
@@ -1448,6 +1568,7 @@ function applyInitialRange(range) {
   );
   if (Number.isFinite(Number(range.rangeWidth))) state.sim.rangeWidth = Number(range.rangeWidth);
   state.sim.initialRangeReady = true;
+  setSimulationChartPriceBounds(state.sim.startIndex, state.sim.endIndex);
   draw();
   return true;
 }
@@ -1557,8 +1678,8 @@ function updateSimulationControls() {
       resetSimulationButton.title = hasActiveServerSimulation ? "Остановить серверную симуляцию" : "Reset simulation";
       resetSimulationButton.disabled = false;
     }
-    stepBack.disabled = true;
-    stepForward.disabled = true;
+    if (stepBack) stepBack.disabled = true;
+    if (stepForward) stepForward.disabled = true;
     return;
   }
   if (state.sim.initializing || state.sim.autoRunning) {
@@ -1576,8 +1697,8 @@ function updateSimulationControls() {
     resetSimulationButton.title = state.sim.started || state.sim.initializing || state.sim.autoRunning ? "Остановить симуляцию" : "Reset simulation";
     resetSimulationButton.disabled = state.sim.rows.length === 0 && !state.sim.started && !state.sim.initializing;
   }
-  stepBack.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.rows.length <= 1;
-  stepForward.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.stepInProgress || state.sim.stopped || !state.sim.started || state.sim.currentIndex >= state.sim.endIndex;
+  if (stepBack) stepBack.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.rows.length <= 1;
+  if (stepForward) stepForward.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.stepInProgress || state.sim.stopped || !state.sim.started || state.sim.currentIndex >= state.sim.endIndex;
 }
 
 function resetSimulationRows() {
@@ -1595,6 +1716,8 @@ function resetSimulationRows() {
   state.sim.rewardStart = 0n;
   state.sim.startGridTick = 0;
   state.sim.rangeStepTicks = 0;
+  state.sim.lastExitBlockNumber = 0;
+  state.sim.lastExitLogIndex = -1;
   state.sim.rewardLast = 0n;
   state.sim.feeGrowthInside0Last = 0n;
   state.sim.feeGrowthInside1Last = 0n;
@@ -1617,11 +1740,14 @@ function resetSimulationRows() {
   state.sim.elapsedStartedAtMs = 0;
   state.sim.initialRangeReady = false;
   state.sim.skeletonVisible = false;
+  state.sim.chartPriceMin = null;
+  state.sim.chartPriceMax = null;
   document.body?.classList?.toggle("simSkeletonActive", false);
   simTableBody.innerHTML = "";
   simTableWrap.hidden = true;
   currentPositionValue.textContent = "$0.00";
   currentRewardValue.textContent = "$0.00";
+  currentTotalValue.textContent = "$0.00";
   updateSimulationControls();
   draw();
 }
@@ -1633,7 +1759,8 @@ function simulationRowTitle(row) {
   ].filter(Boolean).join("; ");
   if (!row.rebalance) return details;
   const rb = row.rebalance;
-  return `${details}; swap ${rb.swapDirection} via ${rb.swapSource}; swap loss ${fmtUsdc(rb.swapLossUsdc)}; gas ${fmtUsdc(rb.gasUsdc)}; fee ${fmtUsdc(rb.automationFeeUsdc)}; ticks ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}`;
+  const quoteFailure = rb.swapIsFallback && rb.quoteFailureReason ? `; fallback reason: ${summarizeFallbackReason(rb.quoteFailureReason)}` : "";
+  return `${details}; swap ${rb.swapDirection} via ${rb.swapSource}; swap loss ${fmtUsdc(rb.swapLossUsdc)}; gas ${fmtUsdc(rb.gasUsdc)}; fee ${fmtUsdc(rb.automationFeeUsdc)}; ticks ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}${quoteFailure}`;
 }
 
 function compactNumber(value, digits = 8) {
@@ -1821,10 +1948,11 @@ function renderSimulationTable(scrollToLatest = false) {
     currentPositionValue.textContent = fmtUsdc(last.value);
     const isStaked = state.sim.lpMode === "staked";
     const rewardValue = isStaked ? last.aeroTotalUsdc ?? last.aeroUsdc : last.lpFeesTotalUsdc ?? 0;
-    const rewardLabel = isStaked ? "AERO earned, USDC" : "LP fees earned, USDC";
+    const totalReturnValue = last.totalReturnUsdc ?? rewardValue;
+    const rewardLabel = isStaked ? "AERO, $" : "LP fees, $";
     currentRewardLabel.textContent = rewardLabel;
     currentRewardValue.textContent = fmtUsdc(rewardValue);
-    currentTotalValue.textContent = fmtUsdc(last.value + rewardValue);
+    currentTotalValue.textContent = fmtUsdc(totalReturnValue);
   }
   updateSimulationControls();
   if (scrollToLatest && last) {
@@ -1844,14 +1972,21 @@ function renderSimulationTable(scrollToLatest = false) {
 
 function setSimulationNotice(message, isError = false) {
   if (simNotice.classList?.remove) {
-    simNotice.classList.remove("simProgressNotice", "simNoticeError");
+    simNotice.classList.remove("simProgressNotice", "simNoticeError", "simNoticeWarning");
   }
-  const notice = typeof message === "string" ? { status: message, details: "", isError } : message;
-  
+  let notice = typeof message === "string" ? { status: message, details: "", isError } : { ...message };
+
   if (typeof message === "string" && !isError) {
     if (message.includes("ошибка") || message.includes("Не удалось") || message.includes("Не могу") || message.includes("остановлена") || message.includes("недоступен") || message.includes("должна быть") || message.includes("должен быть")) {
       notice.isError = true;
     }
+  }
+
+  // Detect plan limits and upgrade to warning if it's a known RPC restriction
+  if (isPlanLimitError(notice.status) || isPlanLimitError(notice.details)) {
+    notice.isWarning = true;
+    notice.status = "⚠️ Ограничение RPC плана (Chainstack)";
+    notice.details = "Текущий план не поддерживает Archive/Debug запросы. Код пытается использовать кэш или упрощенные модели, но точность может пострадать или симуляция остановится.";
   }
 
   let statusEl = simNotice.querySelector(".simNoticeStatus");
@@ -1877,8 +2012,28 @@ function setSimulationNotice(message, isError = false) {
   if (detailsEl.textContent !== nextDetails) detailsEl.textContent = nextDetails;
   if (estimateEl.textContent !== nextEstimate) estimateEl.textContent = nextEstimate;
 
+  // Add "Update Token" button if it's an auth error
+  if (notice.isError && (String(notice.status).includes("SSE") || String(notice.details).includes("токен") || String(notice.details).includes("авторизац"))) {
+    const btn = document.createElement("button");
+    btn.textContent = "Обновить токен";
+    btn.style.cssText = "margin-top:8px;padding:4px 12px;font-size:12px;border:1px solid #ccc;border-radius:4px;background:white;cursor:pointer;";
+    btn.onclick = async () => {
+      const token = await showTokenPrompt();
+      if (token && typeof localStorage !== "undefined") {
+        localStorage.setItem("walletWatchAdminToken", token);
+        if (serverSimulation.id) {
+          stopServerSimulationEvents();
+          watchServerSimulation(serverSimulation.id);
+        }
+      }
+    };
+    estimateEl.append(document.createElement("br"), btn);
+  }
+
   if (notice.isError) {
     simNotice.classList.add("simNoticeError");
+  } else if (notice.isWarning) {
+    simNotice.classList.add("simNoticeWarning");
   }
 }
 
@@ -1995,6 +2150,8 @@ function serverSimulationText(simulation) {
   const progress = simulation?.progress || {};
   const result = simulation?.result || {};
   const payload = Object.keys(result).length ? result : progress;
+  const rawRows = payload.rawRows || progress.rawRows || result.rawRows || [];
+  const latestRawRow = payload.latestRawRow || rawRows.at?.(-1) || null;
   const rows = payload.rows || 0;
   const elapsed = payload.elapsedSeconds ? formatDuration(payload.elapsedSeconds * 1000) : "";
   const notice = (payload.notice || simulation?.error || "").replace(/до даты конца/g, "до конца");
@@ -2002,7 +2159,8 @@ function serverSimulationText(simulation) {
     rows,
     elapsed,
     currentValue: payload.currentValue || "",
-    currentAero: payload.currentAero || "",
+    currentReward: payload.currentReward || payload.currentAero || "",
+    currentTotalReturn: payload.currentTotalReturn || (latestRawRow ? fmtUsdc(latestRawRow.totalReturnUsdc || 0) : ""),
     notice,
   };
 }
@@ -2067,12 +2225,12 @@ function serverJobLabel(simulation) {
 
 function serverJobMeta(simulation) {
   const info = serverSimulationText(simulation);
-  const created = simulation?.created_at ? new Date(simulation.created_at * 1000).toLocaleString() : "";
+  const created = simulation?.created_at ? fmtTime(simulation.created_at * 1000) : "";
   return [
     simulation?.status || "unknown",
     info.rows ? `${info.rows} rows` : "",
     info.currentValue || "",
-    info.currentAero ? `AERO ${info.currentAero}` : "",
+    info.currentReward ? info.currentReward : "",
     created,
   ].filter(Boolean).join(" · ");
 }
@@ -2136,22 +2294,55 @@ function setAppTab(tabId) {
   window.scrollTo(0, 0);
 }
 
-function createResultMetric(label, value) {
+function createResultMetric(label, value, title = "") {
   const metric = document.createElement("div");
   metric.className = "resultMetric";
   const labelEl = document.createElement("span");
   labelEl.textContent = label;
   const valueEl = document.createElement("strong");
   valueEl.textContent = value || "-";
+  if (title || value) metric.title = title || value;
   metric.append(labelEl, valueEl);
   return metric;
+}
+
+function summarizeFallbackReason(reason) {
+  const text = String(reason || "").trim();
+  const lower = text.toLowerCase();
+  if (!text) return "unknown";
+  if (lower.includes("free tier") || lower.includes("timeout")) return "RPC timeout/free tier";
+  if (lower.includes("historical state") && lower.includes("not available")) return "historical state unavailable";
+  if (lower.includes("execution reverted")) return "quoter reverted";
+  if (lower.includes("temporary internal error")) return "RPC temporary internal error";
+  if (lower.includes("archive") || lower.includes("plan") || lower.includes("limit")) return "RPC archive/plan limit";
+  return text.length > 96 ? `${text.slice(0, 93)}...` : text;
+}
+
+function swapFallbackSummary(rawRows = []) {
+  const rebalanceRows = rawRows.filter((row) => row?.rebalance);
+  const fallbackRows = rebalanceRows.filter((row) => row.rebalance?.swapIsFallback);
+  if (!rebalanceRows.length) return { label: "0 / 0", reasons: [] };
+  const reasonCounts = new Map();
+  fallbackRows.forEach((row) => {
+    const label = summarizeFallbackReason(row.rebalance?.quoteFailureReason);
+    reasonCounts.set(label, (reasonCounts.get(label) || 0) + 1);
+  });
+  const reasons = Array.from(reasonCounts.entries())
+    .sort((left, right) => right[1] - left[1])
+    .map(([reason, count]) => `${reason} ×${count}`);
+  return {
+    label: `${fallbackRows.length} / ${rebalanceRows.length}`,
+    reasons,
+    details: reasons.length ? `${fallbackRows.length} / ${rebalanceRows.length} · ${reasons.join("; ")}` : `${fallbackRows.length} / ${rebalanceRows.length}`,
+  };
 }
 
 function simulationWarnings(rawRows = [], dataQuality = null) {
   const warnings = new Set();
   if (dataQuality?.missingMinutes > 0) warnings.add(`${dataQuality.missingMinutes} missing CSV minute(s) filled`);
   if (rawRows.some((row) => row?.missingCandle)) warnings.add("missing candles present in raw rows");
-  if (rawRows.some((row) => row?.rebalance?.swapIsFallback)) warnings.add("rebalance swap fallback used");
+  const fallback = swapFallbackSummary(rawRows);
+  if (fallback.reasons.length) warnings.add(`rebalance swap fallback used: ${fallback.reasons.join("; ")}`);
   if (rawRows.some((row) => (row?.csvOnchainDivergenceBps || 0) > 100)) warnings.add("CSV/on-chain price divergence above 100 bps");
   if (rawRows.some((row) => row?.sourceLabels?.includes("estimated"))) warnings.add("estimated fields present");
   if (rawRows.some((row) => row?.sourceLabels?.includes("heuristic"))) warnings.add("heuristic quality fields present");
@@ -2169,6 +2360,9 @@ function renderResultTableRows(tableRows = []) {
   }
   for (const rowItem of tableRows) {
     const tr = document.createElement("tr");
+    if (typeof rowItem === "object" && rowItem !== null && rowItem.rebalance?.swapIsFallback) {
+      tr.title = `swap fallback: ${summarizeFallbackReason(rowItem.rebalance.quoteFailureReason)}`;
+    }
     const cells = typeof rowItem === "object" && rowItem !== null
       ? simulationRawRowToCells(rowItem)
       : String(rowItem).split("\t").map((cellText) => cellText.trim());
@@ -2193,8 +2387,11 @@ function renderSimulationResultView(simulation) {
     return;
   }
   const info = serverSimulationText(simulation);
-  const created = simulation.created_at ? new Date(simulation.created_at * 1000).toLocaleString() : "";
-  const finished = simulation.finished_at ? new Date(simulation.finished_at * 1000).toLocaleString() : "";
+  const params = simulation?.params || {};
+  const lpMode = String(params.lpMode || state.sim.lpMode || "staked");
+  const isStaked = lpMode === "staked";
+  const created = simulation.created_at ? fmtTime(simulation.created_at * 1000) : "";
+  const finished = simulation.finished_at ? fmtTime(simulation.finished_at * 1000) : "";
   if (resultTitle) resultTitle.textContent = serverJobLabel(simulation) || simulation.id;
   if (resultSubtitle) {
     resultSubtitle.textContent = [
@@ -2206,14 +2403,18 @@ function renderSimulationResultView(simulation) {
   }
   if (resultSummary) {
     const rawRows = simulation?.result?.rawRows || simulation?.progress?.rawRows || [];
+    const fallback = swapFallbackSummary(rawRows);
     const warnings = simulationWarnings(rawRows, simulation?.result?.dataQuality || simulation?.progress?.dataQuality || null);
+    const warningsText = warnings.length ? warnings.join("; ") : "none";
     resultSummary.replaceChildren(
       createResultMetric("Status", simulation.status || "unknown"),
       createResultMetric("Rows", info.rows ? String(info.rows) : ""),
       createResultMetric("Position value", info.currentValue),
-      createResultMetric("AERO earned", info.currentAero),
+      createResultMetric(isStaked ? "AERO earned" : "LP fees earned", info.currentReward || ""),
+      createResultMetric("Total return", info.currentTotalReturn || ""),
+      createResultMetric("Swap fallback", fallback.details, fallback.details),
       createResultMetric("Elapsed", info.elapsed),
-      createResultMetric("Warnings", warnings.length ? warnings.join("; ") : "none"),
+      createResultMetric("Warnings", warningsText, warningsText),
     );
   }
   if (resultLastRow) {
@@ -2323,12 +2524,44 @@ function animateServerJobDelete(row) {
 }
 
 function renderServerResultTable(simulation) {
-  const tableRows = simulation?.result?.rawRows || simulation?.result?.tableRows || serverSimulation.rawRows || [];
-  if (!SERVER_SIMULATION_MODE || !simTableBody || !simTableWrap || !tableRows.length) return;
+  const resultRawRows = simulation?.result?.rawRows;
+  const resultTableRows = simulation?.result?.tableRows;
+  const progressRawRows = simulation?.progress?.rawRows;
+  const tableRows = Array.isArray(resultRawRows) && resultRawRows.length
+    ? resultRawRows
+    : Array.isArray(resultTableRows) && resultTableRows.length
+      ? resultTableRows
+      : Array.isArray(progressRawRows) && progressRawRows.length
+        ? progressRawRows
+        : serverSimulation.rawRows || [];
+  let rowsToRender = tableRows;
+  let truncated = false;
+  if (tableRows.length > 1000) {
+    rowsToRender = [...tableRows.slice(0, 500), null, ...tableRows.slice(-500)];
+    truncated = true;
+  }
+
   simTableBody.replaceChildren();
-  tableRows.forEach((rowItem, index) => {
+  rowsToRender.forEach((rowItem, i) => {
+    if (rowItem === null) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 15;
+      td.style.textAlign = "center";
+      td.style.padding = "20px";
+      td.style.color = "#888";
+      td.style.fontStyle = "italic";
+      td.textContent = `... ${tableRows.length - 1000} rows hidden to improve performance ...`;
+      tr.append(td);
+      simTableBody.append(tr);
+      return;
+    }
+    const index = truncated ? (i < 500 ? i : tableRows.length - 1000 + i) : i;
     const tr = document.createElement("tr");
     tr.dataset.index = String(index);
+    if (typeof rowItem === "object" && rowItem !== null && rowItem.rebalance?.swapIsFallback) {
+      tr.title = `swap fallback: ${summarizeFallbackReason(rowItem.rebalance.quoteFailureReason)}`;
+    }
     const cells = typeof rowItem === "object" && rowItem !== null
       ? simulationRawRowToCells(rowItem)
       : String(rowItem).split("\t").map((cellText) => cellText.trim());
@@ -2388,9 +2621,16 @@ function renderServerSimulation(simulation, options = {}) {
   if (!serverSimulation.running) stopSimulationElapsedTimer();
   applyServerRawProgress(simulation);
   const info = serverSimulationText(simulation);
+  const params = simulation?.params || {};
+  if (params.lpMode && simulationModeSelect) {
+    state.sim.lpMode = String(params.lpMode);
+    simulationModeSelect.value = state.sim.lpMode;
+  }
   const elapsedSeconds = serverElapsedSeconds(simulation);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
-  if (info.currentAero) currentRewardValue.textContent = info.currentAero;
+  if (info.currentReward) currentRewardValue.textContent = info.currentReward;
+  if (info.currentTotalReturn) currentTotalValue.textContent = info.currentTotalReturn;
+  if (currentRewardLabel) currentRewardLabel.textContent = state.sim.lpMode === "staked" ? "AERO, $" : "LP fees, $";
   const rowsDone = Number(info.rows || 0);
   const totalRows = estimateServerTotalRows(simulation);
   setServerSimulationProgressNotice({
@@ -2399,9 +2639,19 @@ function renderServerSimulation(simulation, options = {}) {
       : (rowsDone > 0 ? (simulation.status || "running") : serverInitializationStage(simulation)),
     elapsed: formatCompactDurationSeconds(elapsedSeconds),
     processing: serverProcessingTimestamp(simulation) || (state.sim.initialRangeReady ? simRangeText() : "Range: calculating..."),
-    rows: totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / —` : "—"),
+    rows: (state.sim.skeletonVisible && !serverSimulation.rawRows.length)
+      ? (totalRows > 0 ? `— / ${totalRows}` : "—")
+      : (totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / —` : "—")),
     eta: serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows),
   });
+  if (isServerSimulationTerminal(simulation.status) && simulation.status !== "completed" && info.notice) {
+    setSimulationNotice({
+      status: `Симуляция остановлена: ${simulation.status}`,
+      details: info.notice,
+      estimate: "",
+      isError: true,
+    });
+  }
   const index = serverSimulation.jobs.findIndex((item) => item.id === simulation.id);
   if (index >= 0) serverSimulation.jobs[index] = simulation;
   else serverSimulation.jobs.unshift(simulation);
@@ -2419,6 +2669,8 @@ function stopServerSimulationPolling() {
 function stopServerSimulationEvents() {
   if (serverSimulation.eventSource) serverSimulation.eventSource.close();
   serverSimulation.eventSource = null;
+  if (serverSimulation.eventSourceTimer) clearTimeout(serverSimulation.eventSourceTimer);
+  serverSimulation.eventSourceTimer = null;
 }
 
 async function pollServerSimulation(id) {
@@ -2449,12 +2701,21 @@ async function pollServerSimulation(id) {
   }
 }
 
-function watchServerSimulation(id) {
+async function watchServerSimulation(id) {
   stopServerSimulationPolling();
   stopServerSimulationEvents();
   serverSimulation.paused = false;
   serverSimulation.pollBackoffMs = Math.max(5000, SERVER_SIMULATION_POLL_MS);
-  pollServerSimulation(id);
+
+  // Wait for initial poll to ensure UI has data before starting SSE
+  // This also validates the token via fetchJson
+  try {
+    await pollServerSimulation(id);
+  } catch (_) {
+    // If poll failed, it will set its own notice, we don't start SSE
+    return;
+  }
+
   const adminToken = typeof localStorage !== "undefined" ? localStorage.getItem("walletWatchAdminToken") : "";
   const eventUrl = adminToken
     ? `/api/simulations/${id}/events?admin_token=${encodeURIComponent(adminToken)}`
@@ -2463,13 +2724,14 @@ function watchServerSimulation(id) {
   source.addEventListener("simulation", (event) => {
     try {
       const simulation = JSON.parse(event.data);
+      serverSimulation.sseRetryCount = 0;
       renderServerSimulation(simulation);
       if (isServerSimulationTerminal(simulation.status)) {
         stopServerSimulationEvents();
         stopServerSimulationPolling();
       }
       serverSimulation.pollBackoffMs = Math.max(5000, SERVER_SIMULATION_POLL_MS);
-    } catch (_) {}
+    } catch (_) { }
   });
   source.addEventListener("terminal", () => {
     stopServerSimulationEvents();
@@ -2480,7 +2742,28 @@ function watchServerSimulation(id) {
     stopServerSimulationEvents();
     const delayMs = Math.max(5000, serverSimulation.pollBackoffMs || SERVER_SIMULATION_POLL_MS);
     serverSimulation.pollBackoffMs = Math.min(60000, delayMs * 2);
-    serverSimulation.pollTimer = setTimeout(() => pollServerSimulation(id), delayMs);
+
+    let errorMessage = "Ошибка потока событий (SSE). Проверьте соединение или авторизацию.";
+    if (!adminToken) {
+      errorMessage = "SSE ошибка: отсутствует admin_token. Проверьте авторизацию.";
+    } else if (source.readyState === EventSource.CLOSED) {
+      errorMessage = "SSE соединение закрыто. Возможно, неверный токен (401/403) или сервер недоступен.";
+    }
+    setSimulationNotice({ status: "SSE Error", details: errorMessage, isError: true });
+
+    // Automatic reconnect attempt if still running
+    if (serverSimulation.running && !isServerSimulationTerminal(serverSimulation.lastSimulation?.status)) {
+      serverSimulation.sseRetryCount = (serverSimulation.sseRetryCount || 0) + 1;
+
+      if (serverSimulation.sseRetryCount > 3 && (adminToken || source.readyState !== EventSource.CLOSED)) {
+        console.log(`SSE reconnect failed ${serverSimulation.sseRetryCount} times. Starting fallback polling (30s)...`);
+        serverSimulation.pollBackoffMs = 30000;
+        pollServerSimulation(id);
+      } else {
+        console.log(`SSE connection lost (attempt ${serverSimulation.sseRetryCount}). Reconnecting in ${delayMs}ms...`);
+        serverSimulation.eventSourceTimer = setTimeout(() => watchServerSimulation(id), delayMs);
+      }
+    }
   };
   serverSimulation.eventSource = source;
 }
@@ -2492,7 +2775,7 @@ function pauseServerSimulation() {
   serverSimulation.running = false;
   serverSimulation.paused = true;
   stopSimulationElapsedTimer();
-  setSimulationNotice({ status: "Пауза.", details: "Серверная симуляция поставлена на паузу.", estimate: "" });
+  setSimulationNotice({ status: "Пауза.", details: "", estimate: "" });
   updateSimulationControls();
 }
 
@@ -2510,6 +2793,23 @@ async function loadInitialServerSimulations() {
   if (!SERVER_SIMULATION_MODE) return;
   try {
     await loadServerJobs();
+
+    // Check for active simulation at startup to avoid 409 Conflict and resume observation
+    const latest = await fetchJson("/api/simulations/latest");
+    if (latest && latest.id && !isServerSimulationTerminal(latest.status)) {
+      const params = latest.params || {};
+      if (params.start) simStartInput.value = params.start;
+      if (params.end) simEndInput.value = params.end;
+      if (params.deposit) depositInput.value = fmtDeposit(parseNumericInput(params.deposit));
+      if (params.rangePct) rangePercentInput.value = fmtPercent(params.rangePct);
+      if (params.lpMode) {
+        state.sim.lpMode = String(params.lpMode);
+        if (simulationModeSelect) simulationModeSelect.value = state.sim.lpMode;
+      }
+
+      watchServerSimulation(latest.id);
+    }
+
     updateSimulationControls();
   } catch (_) {
     serverSimulation.available = false;
@@ -2648,6 +2948,7 @@ async function startServerSimulation() {
         end: fmtInputTime(endTimestamp),
         deposit: String(depositUsdc),
         rangePct: rangePercent,
+        lpMode: state.sim.lpMode,
         progressEverySeconds: 2,
       }),
     });
@@ -2769,6 +3070,7 @@ async function startSimulation() {
       Math.round((plan.tickUpper - plan.tickLower) / AERODROME_TICK_SPACING) * AERODROME_TICK_SPACING,
     );
     state.sim.initialRangeReady = true;
+    setSimulationChartPriceBounds(startIndex, endIndex);
     renderStartupNotice();
     draw();
     state.sim.liquidityRaw = plan.liquidityRaw;
@@ -2786,13 +3088,13 @@ async function startSimulation() {
     state.sim.aeroUnharvested = 0;
     state.sim.aeroBaseUnharvested = 0;
     state.sim.aeroHaircutUnharvested = 0;
-  state.sim.started = true;
-  state.sim.initializing = false;
-  state.sim.rows = [await buildSimulationRow(startIndex, "deposit", block, runToken)];
-  ensureActiveSimulation(runToken);
-  setSimulationSkeletonVisible(false);
-  stopSimulationElapsedTimer();
-  setSimulationNotice({ status: "Симуляция запущена.", details: simulationProgressText(), estimate: "" });
+    state.sim.started = true;
+    state.sim.initializing = false;
+    state.sim.rows = [await buildSimulationRow(startIndex, "deposit", block, runToken)];
+    ensureActiveSimulation(runToken);
+    setSimulationSkeletonVisible(false);
+    stopSimulationElapsedTimer();
+    setSimulationNotice({ status: "Симуляция запущена.", details: simulationProgressText(), estimate: "" });
     renderSimulationTable(true);
     state.sim.autoLoopId += 1;
     runAutoSimulationLoop(state.sim.runToken, state.sim.autoLoopId);
@@ -2837,6 +3139,17 @@ async function runAutoSimulationLoop(runToken, loopId) {
 }
 
 canvas.addEventListener("wheel", (event) => {
+  const scroller = document.scrollingElement || document.documentElement;
+  const canScrollPage = scroller && scroller.scrollHeight > scroller.clientHeight + 1;
+  const simulationActive = state.sim.started || state.sim.initializing || state.sim.autoRunning || serverSimulation.running || serverSimulation.paused;
+  if (canScrollPage && !simulationActive) {
+    const atTop = scroller.scrollTop <= 0;
+    const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 1;
+    const wantsScrollUp = event.deltaY < 0;
+    const wantsScrollDown = event.deltaY > 0;
+    if ((wantsScrollUp && !atTop) || (wantsScrollDown && !atBottom)) return;
+  }
+
   const rect = canvas.getBoundingClientRect();
   const x = event.clientX - rect.left;
   const padLeft = 72;
@@ -3072,10 +3385,12 @@ if (serverJobsList) {
     if (action === "delete") deleteServerSimulation(id, row).catch((error) => console.error(error));
   });
 }
-stepForward.addEventListener("click", () => {
-  stepSimulationForward();
-});
-stepBack.addEventListener("click", stepSimulationBack);
+if (stepForward) {
+  stepForward.addEventListener("click", () => {
+    stepSimulationForward();
+  });
+}
+if (stepBack) stepBack.addEventListener("click", stepSimulationBack);
 
 simTableBody.addEventListener("mousemove", (event) => {
   const row = event.target.closest("tr[data-index]");
@@ -3115,7 +3430,8 @@ fetch(CSV_FILE)
     loadInitialServerSimulations();
   })
   .catch((error) => {
-    statusEl.textContent = "Ошибка загрузки CSV";
+    statusEl.textContent = `CSV не загружен, ${error.message}`;
+    statusEl.title = error.stack || error.message;
     console.error(error);
   });
 
