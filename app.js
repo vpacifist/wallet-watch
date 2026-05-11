@@ -3409,13 +3409,50 @@ simTableBody.addEventListener("mouseleave", () => {
 
 window.addEventListener("resize", draw);
 
-fetch(CSV_FILE)
-  .then((response) => {
-    if (!response.ok) throw new Error(`CSV load failed: ${response.status}`);
-    return response.text();
-  })
+function formatCsvBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function loadCsvWithProgress(url) {
+  statusEl.textContent = "Загрузка CSV... 0%";
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`CSV load failed: ${response.status}`);
+  const total = Number(response.headers.get("content-length") || 0);
+  if (!response.body || !response.body.getReader) {
+    const text = await response.text();
+    statusEl.textContent = `CSV скачан (${formatCsvBytes(text.length)}), обработка...`;
+    return text;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  let lastUpdate = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    const now = performance.now();
+    if (now - lastUpdate > 100) {
+      if (total > 0) {
+        const percent = Math.min(100, Math.round((received / total) * 100));
+        statusEl.textContent = `Загрузка CSV... ${percent}% (${formatCsvBytes(received)} из ${formatCsvBytes(total)})`;
+      } else {
+        statusEl.textContent = `Загрузка CSV... ${formatCsvBytes(received)}`;
+      }
+      lastUpdate = now;
+    }
+  }
+  statusEl.textContent = `CSV скачан (${formatCsvBytes(received)}), обработка...`;
+  return new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
+}
+
+loadCsvWithProgress(CSV_FILE)
   .then((text) => {
+    statusEl.textContent = "CSV скачан, парсинг...";
     const csvRows = parseCsv(text);
+    statusEl.textContent = "CSV распарсен, построение минутной сетки...";
     state.dataQuality = analyzeDataQuality(csvRows);
     state.dataQuality.source = CSV_FILE;
     state.rows = buildCompleteMinuteRows(csvRows);
