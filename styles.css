@@ -148,7 +148,7 @@ body {
 
 .topbar {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 24px;
   margin-bottom: 0;
@@ -353,27 +353,28 @@ canvas {
 }
 
 .simControls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: 164px 140px 140px 98px 82px minmax(116px, 1fr) repeat(3, minmax(66px, 0.75fr));
+  gap: 5px;
   align-items: end;
+  overflow-x: auto;
 }
 
 .simControls .field {
-  flex: 1 1 140px;
+  min-width: 0;
 }
 
 .simControls .depositField {
-  flex-basis: 96px;
+  min-width: 0;
 }
 
 .simControls .rangePercentField {
-  flex-basis: 70px;
+  min-width: 0;
 }
 
 .field {
   display: grid;
-  gap: 7px;
+  gap: 6px;
   color: var(--muted);
   font-size: 13px;
 }
@@ -383,11 +384,11 @@ canvas {
   height: 38px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0 11px;
+  padding: 0 9px;
   color: var(--ink);
   background: #ffffff;
   font: inherit;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .field select {
@@ -395,11 +396,11 @@ canvas {
   height: 38px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0 36px 0 11px;
+  padding: 0 30px 0 9px;
   color: var(--ink);
   background-color: #ffffff;
   font: inherit;
-  font-size: 14px;
+  font-size: 12px;
   cursor: pointer;
   appearance: none;
   -webkit-appearance: none;
@@ -446,8 +447,7 @@ canvas {
 .simButtons {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  flex: 0 0 auto;
+  gap: 6px;
   min-width: 0;
   white-space: nowrap;
 }
@@ -463,8 +463,8 @@ canvas {
 }
 
 .simButtons .startButton {
-  width: 88px;
-  padding: 0 12px;
+  width: 82px;
+  padding: 0 10px;
   font-size: 13px;
   font-weight: 700;
 }
@@ -474,14 +474,14 @@ canvas {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 56px;
+  width: 82px;
   min-width: 0;
   flex: 0 0 auto;
   padding: 0 12px;
   border-color: var(--line);
   color: #7f3b3a;
   background: #f8fafc;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
   overflow: visible;
   text-align: center;
@@ -508,28 +508,32 @@ canvas {
 }
 
 .simTotals {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  flex: 1 1 100%;
-  gap: 10px;
+  display: contents;
 }
 
-.simTotals div {
-  min-height: 54px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 9px 11px;
-  background: #fbfcfd;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
+.simTotal {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
 }
 
 .simTotals span {
   display: block;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.2;
+  font-size: 13px;
+  line-height: normal;
+  cursor: default;
+}
+
+.simTotalValue {
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 9px;
+  background: #fbfcfd;
+  display: flex;
+  align-items: center;
+  min-width: 0;
 }
 
 .simTotals strong {

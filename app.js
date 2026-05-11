@@ -1678,8 +1678,8 @@ function updateSimulationControls() {
       resetSimulationButton.title = hasActiveServerSimulation ? "Остановить серверную симуляцию" : "Reset simulation";
       resetSimulationButton.disabled = false;
     }
-    stepBack.disabled = true;
-    stepForward.disabled = true;
+    if (stepBack) stepBack.disabled = true;
+    if (stepForward) stepForward.disabled = true;
     return;
   }
   if (state.sim.initializing || state.sim.autoRunning) {
@@ -1697,8 +1697,8 @@ function updateSimulationControls() {
     resetSimulationButton.title = state.sim.started || state.sim.initializing || state.sim.autoRunning ? "Остановить симуляцию" : "Reset simulation";
     resetSimulationButton.disabled = state.sim.rows.length === 0 && !state.sim.started && !state.sim.initializing;
   }
-  stepBack.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.rows.length <= 1;
-  stepForward.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.stepInProgress || state.sim.stopped || !state.sim.started || state.sim.currentIndex >= state.sim.endIndex;
+  if (stepBack) stepBack.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.rows.length <= 1;
+  if (stepForward) stepForward.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.stepInProgress || state.sim.stopped || !state.sim.started || state.sim.currentIndex >= state.sim.endIndex;
 }
 
 function resetSimulationRows() {
@@ -1949,7 +1949,7 @@ function renderSimulationTable(scrollToLatest = false) {
     const isStaked = state.sim.lpMode === "staked";
     const rewardValue = isStaked ? last.aeroTotalUsdc ?? last.aeroUsdc : last.lpFeesTotalUsdc ?? 0;
     const totalReturnValue = last.totalReturnUsdc ?? rewardValue;
-    const rewardLabel = isStaked ? "AERO earned, USDC" : "LP fees earned, USDC";
+    const rewardLabel = isStaked ? "AERO, $" : "LP fees, $";
     currentRewardLabel.textContent = rewardLabel;
     currentRewardValue.textContent = fmtUsdc(rewardValue);
     currentTotalValue.textContent = fmtUsdc(totalReturnValue);
@@ -2630,7 +2630,7 @@ function renderServerSimulation(simulation, options = {}) {
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
   if (info.currentReward) currentRewardValue.textContent = info.currentReward;
   if (info.currentTotalReturn) currentTotalValue.textContent = info.currentTotalReturn;
-  if (currentRewardLabel) currentRewardLabel.textContent = state.sim.lpMode === "staked" ? "AERO earned, USDC" : "LP fees earned, USDC";
+  if (currentRewardLabel) currentRewardLabel.textContent = state.sim.lpMode === "staked" ? "AERO, $" : "LP fees, $";
   const rowsDone = Number(info.rows || 0);
   const totalRows = estimateServerTotalRows(simulation);
   setServerSimulationProgressNotice({
@@ -2775,7 +2775,7 @@ function pauseServerSimulation() {
   serverSimulation.running = false;
   serverSimulation.paused = true;
   stopSimulationElapsedTimer();
-  setSimulationNotice({ status: "Пауза.", details: "Серверная симуляция поставлена на паузу.", estimate: "" });
+  setSimulationNotice({ status: "Пауза.", details: "", estimate: "" });
   updateSimulationControls();
 }
 
@@ -3385,10 +3385,12 @@ if (serverJobsList) {
     if (action === "delete") deleteServerSimulation(id, row).catch((error) => console.error(error));
   });
 }
-stepForward.addEventListener("click", () => {
-  stepSimulationForward();
-});
-stepBack.addEventListener("click", stepSimulationBack);
+if (stepForward) {
+  stepForward.addEventListener("click", () => {
+    stepSimulationForward();
+  });
+}
+if (stepBack) stepBack.addEventListener("click", stepSimulationBack);
 
 simTableBody.addEventListener("mousemove", (event) => {
   const row = event.target.closest("tr[data-index]");
