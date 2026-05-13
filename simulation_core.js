@@ -464,6 +464,21 @@
       };
     }
 
+    function rewardGrowthInsideFromState({ tickLower, tickUpper, tickCurrent, rewardGrowthGlobalX128, lowerTick, upperTick }) {
+      const uint256 = 1n << 256n;
+      const subIn256 = (left, right) => {
+        const value = BigInt(left) - BigInt(right);
+        return value >= 0n ? value : value + uint256;
+      };
+      const lower = lowerTick.rewardGrowthOutsideX128 || 0n;
+      const upper = upperTick.rewardGrowthOutsideX128 || 0n;
+      const below = tickCurrent >= tickLower ? lower : subIn256(rewardGrowthGlobalX128, lower);
+      const above = tickCurrent < tickUpper ? upper : subIn256(rewardGrowthGlobalX128, upper);
+      return {
+        rewardGrowthInsideX128: subIn256(subIn256(rewardGrowthGlobalX128, below), above),
+      };
+    }
+
     function growthDeltaIn256(current, previous) {
       const uint256 = 1n << 256n;
       const value = BigInt(current || 0n) - BigInt(previous || 0n);
@@ -599,6 +614,7 @@
       priceAgreementReliability,
       rewardStateReliability,
       feeGrowthInsideFromState,
+      rewardGrowthInsideFromState,
       growthDeltaIn256,
       liquidityDilutionFactor,
       applyGrowthDelta,

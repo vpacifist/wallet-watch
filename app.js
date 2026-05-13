@@ -169,7 +169,6 @@ const SELECTORS = {
   feeGrowthGlobal0X128: "0xf3058399",
   feeGrowthGlobal1X128: "0x46141319",
   ticks: "0xf30dba93",
-  getRewardGrowthInside: "0xa16368c9",
   quoteExactInputSingle: "0x9e7defe6",
   token0: "0x0dfe1681",
   token1: "0xd21220a7",
@@ -238,6 +237,7 @@ const {
   rewardStateReliability,
   scoreFromThresholds,
   feeGrowthInsideFromState,
+  rewardGrowthInsideFromState,
   growthDeltaIn256,
   applyGrowthDelta,
   normalizeSourceLabel,
@@ -540,8 +540,14 @@ async function readRewardInside(blockNumber, tickLower, tickUpper) {
   let reward = expectedReward;
   if (reward > rewardReserve) reward = rewardReserve;
   const calculatedGlobal = stakedLiquidity > 0n ? storedGlobal + reward * Q128 / stakedLiquidity : storedGlobal;
-  const data = `${SELECTORS.getRewardGrowthInside}${encodeInt24(tickLower)}${encodeInt24(tickUpper)}${encodeUint256(calculatedGlobal)}`;
-  const rewardInside = hexToBigInt(await rpcCall("eth_call", [{ to: POOL_ADDRESS, data }, tag]));
+  const rewardInside = rewardGrowthInsideFromState({
+    tickLower,
+    tickUpper,
+    tickCurrent: slot.tick,
+    rewardGrowthGlobalX128: calculatedGlobal,
+    lowerTick,
+    upperTick,
+  }).rewardGrowthInsideX128;
   return {
     rewardInside,
     stakedLiquidity,
