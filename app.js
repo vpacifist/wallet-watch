@@ -165,7 +165,6 @@ const SELECTORS = {
   lastUpdated: "0xd0b06f5d",
   stakedLiquidity: "0x3ab04b20",
   liquidity: "0x1a686502",
-  fee: "0xddca3f43",
   feeGrowthGlobal0X128: "0xf3058399",
   feeGrowthGlobal1X128: "0x46141319",
   ticks: "0xf30dba93",
@@ -498,7 +497,7 @@ async function readRewardInside(blockNumber, tickLower, tickUpper) {
   const tag = blockTag(blockNumber);
   const tickLowerData = `${SELECTORS.ticks}${encodeInt24(tickLower)}`;
   const tickUpperData = `${SELECTORS.ticks}${encodeInt24(tickUpper)}`;
-  const [slotData, globalData, rateData, reserveData, lastUpdatedData, stakedData, activeLiquidityData, feeData, feeGlobal0Data, feeGlobal1Data, lowerTickData, upperTickData] = await readPoolStateBatch(tag, [
+  const [slotData, globalData, rateData, reserveData, lastUpdatedData, stakedData, activeLiquidityData, feeGlobal0Data, feeGlobal1Data, lowerTickData, upperTickData] = await readPoolStateBatch(tag, [
     SELECTORS.slot0,
     SELECTORS.rewardGrowthGlobal,
     SELECTORS.rewardRate,
@@ -506,7 +505,6 @@ async function readRewardInside(blockNumber, tickLower, tickUpper) {
     SELECTORS.lastUpdated,
     SELECTORS.stakedLiquidity,
     SELECTORS.liquidity,
-    SELECTORS.fee,
     SELECTORS.feeGrowthGlobal0X128,
     SELECTORS.feeGrowthGlobal1X128,
     tickLowerData,
@@ -520,7 +518,6 @@ async function readRewardInside(blockNumber, tickLower, tickUpper) {
   const lastUpdated = hexToBigInt(lastUpdatedData);
   const stakedLiquidity = hexToBigInt(stakedData);
   const activeLiquidity = hexToBigInt(activeLiquidityData);
-  const feeRate = Number(hexToBigInt(feeData)) / 1_000_000;
   const feeGrowthGlobal0X128 = hexToBigInt(feeGlobal0Data);
   const feeGrowthGlobal1X128 = hexToBigInt(feeGlobal1Data);
   const lowerTick = decodeTickInfo(lowerTickData);
@@ -557,7 +554,6 @@ async function readRewardInside(blockNumber, tickLower, tickUpper) {
     block,
     rewardElapsedSeconds,
     rewardReserveCapped: expectedReward > rewardReserve,
-    feeRate,
     feeGrowthGlobal0X128,
     feeGrowthGlobal1X128,
     ...feeGrowthInside,
