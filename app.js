@@ -145,6 +145,7 @@ let baseRpcIndex = 0;
 const POOL_ADDRESS = "0xb2cc224c1c9fee385f8ad6a55b4d94e92359dc59";
 const AERO_USDC_POOL_ADDRESS = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1";
 const AERO_SLIPSTREAM_QUOTER = "0x254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0";
+const MULTICALL3_ADDRESS = "0xca11bde05977b3631167028862be2a173976ca11";
 const AERO_ADDRESS = "0x940181a94A35A4569E4529A3CDfB74e38FD98631";
 const WETH_ADDRESS = "0x4200000000000000000000000000000000000006";
 const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
@@ -172,6 +173,7 @@ const SELECTORS = {
   quoteExactInputSingle: "0x9e7defe6",
   token0: "0x0dfe1681",
   token1: "0xd21220a7",
+  aggregate3: "0x82ad56cb",
 };
 let aeroUsdcTokenOrder = null;
 const serverSimulation = {
@@ -371,6 +373,79 @@ async function rpcBatch(calls) {
   throw lastError || new Error("Base RPC batch error");
 }
 
+function hexNoPrefix(value) {
+  return String(value || "").replace(/^0x/i, "");
+}
+
+function abiWord(value) {
+  return BigInt(value).toString(16).padStart(64, "0");
+}
+
+function abiAddress(address) {
+  return hexNoPrefix(address).toLowerCase().padStart(64, "0");
+}
+
+function abiBool(value) {
+  return value ? abiWord(1n) : abiWord(0n);
+}
+
+function abiBytes(hexData) {
+  const clean = hexNoPrefix(hexData);
+  const paddedLength = Math.ceil(clean.length / 64) * 64;
+  return `${abiWord(BigInt(clean.length / 2))}${clean.padEnd(paddedLength, "0")}`;
+}
+
+function encodeAggregate3Call(calls) {
+  const heads = [];
+  const tails = [];
+  let offset = BigInt(32 * calls.length);
+  for (const call of calls) {
+    const encodedCall = `${abiAddress(call.target)}${abiBool(call.allowFailure)}${abiWord(96n)}${abiBytes(call.callData)}`;
+    heads.push(abiWord(offset));
+    tails.push(encodedCall);
+    offset += BigInt(encodedCall.length / 2);
+  }
+  return `0x${SELECTORS.aggregate3.slice(2)}${abiWord(32n)}${abiWord(BigInt(calls.length))}${heads.join("")}${tails.join("")}`;
+}
+
+function decodeAggregate3Result(data, expectedLength) {
+  const clean = hexNoPrefix(data);
+  const arrayOffset = Number(BigInt(`0x${clean.slice(0, 64)}`)) * 2;
+  const length = Number(BigInt(`0x${clean.slice(arrayOffset, arrayOffset + 64)}`));
+  if (length !== expectedLength) throw new Error("Multicall result length mismatch");
+  const results = [];
+  const base = arrayOffset + 64;
+  for (let index = 0; index < length; index += 1) {
+    const tupleOffset = Number(BigInt(`0x${clean.slice(base + index * 64, base + (index + 1) * 64)}`)) * 2;
+    const tupleStart = base + tupleOffset;
+    const success = BigInt(`0x${clean.slice(tupleStart, tupleStart + 64)}`) !== 0n;
+    const returnOffset = Number(BigInt(`0x${clean.slice(tupleStart + 64, tupleStart + 128)}`)) * 2;
+    const returnLengthOffset = tupleStart + returnOffset;
+    const returnLength = Number(BigInt(`0x${clean.slice(returnLengthOffset, returnLengthOffset + 64)}`)) * 2;
+    const returnStart = returnLengthOffset + 64;
+    if (!success) throw new Error("Multicall subcall failed");
+    results.push(`0x${clean.slice(returnStart, returnStart + returnLength)}`);
+  }
+  return results;
+}
+
+async function readPoolStateBatch(tag, callDataItems) {
+  const calls = callDataItems.map((data) => ({
+    target: POOL_ADDRESS,
+    allowFailure: false,
+    callData: data,
+  }));
+  try {
+    const result = await rpcCall("eth_call", [{ to: MULTICALL3_ADDRESS, data: encodeAggregate3Call(calls) }, tag]);
+    return decodeAggregate3Result(result, calls.length);
+  } catch (error) {
+    return await rpcBatch(callDataItems.map((data) => ({
+      method: "eth_call",
+      params: [{ to: POOL_ADDRESS, data }, tag],
+    })));
+  }
+}
+
 async function getBlock(blockNumber) {
   const block = await rpcCall("eth_getBlockByNumber", [blockTag(blockNumber), false]);
   return {
@@ -423,19 +498,19 @@ async function readRewardInside(blockNumber, tickLower, tickUpper) {
   const tag = blockTag(blockNumber);
   const tickLowerData = `${SELECTORS.ticks}${encodeInt24(tickLower)}`;
   const tickUpperData = `${SELECTORS.ticks}${encodeInt24(tickUpper)}`;
-  const [slotData, globalData, rateData, reserveData, lastUpdatedData, stakedData, activeLiquidityData, feeData, feeGlobal0Data, feeGlobal1Data, lowerTickData, upperTickData] = await rpcBatch([
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.slot0 }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.rewardGrowthGlobal }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.rewardRate }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.rewardReserve }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.lastUpdated }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.stakedLiquidity }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.liquidity }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.fee }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.feeGrowthGlobal0X128 }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.feeGrowthGlobal1X128 }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: tickLowerData }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: tickUpperData }, tag] },
+  const [slotData, globalData, rateData, reserveData, lastUpdatedData, stakedData, activeLiquidityData, feeData, feeGlobal0Data, feeGlobal1Data, lowerTickData, upperTickData] = await readPoolStateBatch(tag, [
+    SELECTORS.slot0,
+    SELECTORS.rewardGrowthGlobal,
+    SELECTORS.rewardRate,
+    SELECTORS.rewardReserve,
+    SELECTORS.lastUpdated,
+    SELECTORS.stakedLiquidity,
+    SELECTORS.liquidity,
+    SELECTORS.fee,
+    SELECTORS.feeGrowthGlobal0X128,
+    SELECTORS.feeGrowthGlobal1X128,
+    tickLowerData,
+    tickUpperData,
   ]);
   const block = await getBlock(blockNumber);
   const slot = decodeSlot0(slotData);
