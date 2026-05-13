@@ -55,6 +55,7 @@ PORT = int(os.environ.get("PORT", "8003"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", f"http://127.0.0.1:{PORT}")
 MAX_UPSTREAM_BATCH_SIZE = int(os.environ.get("MAX_UPSTREAM_BATCH_SIZE", "3"))
 MAX_LOG_BLOCK_SPAN = int(os.environ.get("MAX_LOG_BLOCK_SPAN", "2000"))
+LOG_PREFETCH_BLOCK_SPAN = int(os.environ.get("LOG_PREFETCH_BLOCK_SPAN", "600"))
 MAX_EXACT_RESULT_BYTES = int(os.environ.get("MAX_EXACT_RESULT_BYTES", str(512 * 1024)))
 DEBUG_RPC_ERRORS = os.environ.get("DEBUG_RPC_ERRORS", "").lower() in {"1", "true", "yes", "on"}
 ADMIN_API_TOKEN = os.environ.get("ADMIN_API_TOKEN", "").strip()
@@ -710,6 +711,32 @@ def cached_log_result(info):
     return [json.loads(row[0]) for row in rows]
 
 
+def filter_logs_for_range(logs, from_block, to_block):
+    return [
+        log for log in logs or []
+        if from_block <= hex_to_int(log.get("blockNumber", "0x0")) <= to_block
+    ]
+
+
+def expanded_log_info(info):
+    span = max(1, LOG_PREFETCH_BLOCK_SPAN)
+    requested_span = info["to_block"] - info["from_block"] + 1
+    if span <= requested_span:
+        return dict(info)
+    start = (info["from_block"] // span) * span
+    end = start + span - 1
+    while end < info["to_block"]:
+        end += span
+    return dict(info, from_block=start, to_block=end)
+
+
+def payload_for_log_info(payload, info):
+    expanded = json.loads(json.dumps(payload))
+    expanded["params"][0]["fromBlock"] = int_to_block_tag(info["from_block"])
+    expanded["params"][0]["toBlock"] = int_to_block_tag(info["to_block"])
+    return expanded
+
+
 def cached_exact_result(key, payload):
     method = payload.get("method")
     params = payload.get("params", [])
@@ -1029,6 +1056,36 @@ def post_rpc_batch(payloads):
                     except json.JSONDecodeError:
                         error = {"message": str(exc)}
                     results[index] = response_from_error(payload, error)
+            elif kind == "logs" and log_info:
+                prefetch_info = expanded_log_info(log_info)
+                if prefetch_info != log_info:
+                    cached_prefetch = cached_log_result(prefetch_info)
+                    if cached_prefetch is not None:
+                        results[index] = response_from_result(
+                            payload,
+                            filter_logs_for_range(cached_prefetch, log_info["from_block"], log_info["to_block"]),
+                        )
+                        record_stat("cache_hits")
+                        record_stat("log_range_hits")
+                    elif prefetch_info["to_block"] - prefetch_info["from_block"] + 1 > MAX_LOG_BLOCK_SPAN:
+                        try:
+                            result = fetch_logs_in_chunks(payload_for_log_info(payload, prefetch_info), prefetch_info)
+                            results[index] = response_from_result(
+                                payload,
+                                filter_logs_for_range(result, log_info["from_block"], log_info["to_block"]),
+                            )
+                            record_stat("upstream_items", len(result))
+                        except RuntimeError as exc:
+                            record_stat("errors")
+                            try:
+                                error = json.loads(str(exc))
+                            except json.JSONDecodeError:
+                                error = {"message": str(exc)}
+                            results[index] = response_from_error(payload, error)
+                    else:
+                        deferred_misses.append((index, kind, prefetch_info, None, payload_for_log_info(payload, prefetch_info), log_info))
+                else:
+                    deferred_misses.append((index, kind, log_info, key, payload))
             else:
                 deferred_misses.append((index, kind, log_info, key, payload))
         misses = deferred_misses
@@ -1050,7 +1107,9 @@ def post_rpc_batch(payloads):
                 by_id = {item.get("id"): item for item in upstream_responses}
                 record_stat("upstream_batches")
                 record_stat("upstream_items", len(chunk))
-                for upstream_id, (index, kind, log_info, key, payload) in zip([item["id"] for item in chunk], chunk_misses):
+                for upstream_id, miss in zip([item["id"] for item in chunk], chunk_misses):
+                    index, kind, log_info, key, payload = miss[:5]
+                    requested_log_info = miss[5] if len(miss) > 5 else log_info
                     item = by_id.get(upstream_id)
                     if not item:
                         results[index] = response_from_error(payload, {"message": "missing RPC batch response"})
@@ -1060,6 +1119,7 @@ def post_rpc_batch(payloads):
                         result = item.get("result")
                         if kind == "logs" and log_info is not None:
                             store_log_result(log_info, result)
+                            result = filter_logs_for_range(result, requested_log_info["from_block"], requested_log_info["to_block"])
                         elif kind == "exact" and key is not None:
                             store_exact_result(key, payload, result)
                         results[index] = response_from_result(payload, result)
@@ -1069,7 +1129,8 @@ def post_rpc_batch(payloads):
                     error = json.loads(str(exc))
                 except json.JSONDecodeError:
                     error = {"message": str(exc)}
-                for index, _, _, _, payload in chunk_misses:
+                for miss in chunk_misses:
+                    index, _, _, _, payload = miss[:5]
                     results[index] = response_from_error(payload, error)
 
     maybe_log_progress()

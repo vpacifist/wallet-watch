@@ -272,6 +272,50 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual(calls, [("0x1", "0x2"), ("0x3", "0x4")])
       self.assertEqual([log["transactionHash"] for log in logs], ["0xaaa", "0xbbb", "0xccc"])
 
+    def test_log_prefetch_expands_small_misses_and_filters_response(self):
+      self.server.LOG_PREFETCH_BLOCK_SPAN = 10
+      calls = []
+
+      def fake_upstream(payload, urls=None, label="RPC"):
+        calls.append((payload["params"][0]["fromBlock"], payload["params"][0]["toBlock"]))
+        return {
+            "jsonrpc": "2.0",
+            "id": payload.get("id"),
+            "result": [
+                {"address": "0xpool", "topics": ["0xtopic"], "blockNumber": "0xa", "transactionIndex": "0x0", "logIndex": "0x0", "transactionHash": "0xaaa", "data": "0x"},
+                {"address": "0xpool", "topics": ["0xtopic"], "blockNumber": "0xf", "transactionIndex": "0x0", "logIndex": "0x0", "transactionHash": "0xbbb", "data": "0x"},
+            ],
+        }
+
+      self.server.upstream_post = fake_upstream
+      payload = {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "eth_getLogs",
+          "params": [{
+              "address": "0xpool",
+              "fromBlock": "0xc",
+              "toBlock": "0xd",
+              "topics": ["0xtopic"],
+          }],
+      }
+
+      response = self.server.post_rpc(payload)
+      self.assertEqual(calls, [("0xa", "0x13")])
+      self.assertEqual(response["result"], [])
+
+      cached = self.server.post_rpc({
+          **payload,
+          "params": [{
+              "address": "0xpool",
+              "fromBlock": "0xf",
+              "toBlock": "0xf",
+              "topics": ["0xtopic"],
+          }],
+      })
+      self.assertEqual(calls, [("0xa", "0x13")])
+      self.assertEqual([log["transactionHash"] for log in cached["result"]], ["0xbbb"])
+
     def test_historical_eth_call_uses_archive_route(self):
       self.server.RPC_URLS = ["https://regular.example"]
       self.server.ARCHIVE_RPC_URLS = ["https://archive.example"]
