@@ -119,11 +119,154 @@ async function testVariableBlockTimesFallBackToBoundedSearch() {
   assert.equal((await engine.findSequentialBlockAtOrAfter(132, 5)).number, 8);
 }
 
+function makeStepState() {
+  return {
+    rows: [
+      { time: new Date(1000 * 1000).toISOString(), close: 100, open: 100 },
+      { time: new Date(1060 * 1000).toISOString(), close: 200, open: 200 },
+      { time: new Date(1120 * 1000).toISOString(), close: 200, open: 200 },
+    ],
+    sim: {
+      started: true,
+      stopped: false,
+      stepInProgress: false,
+      autoRunning: false,
+      currentIndex: 0,
+      endIndex: 2,
+      rows: [{ index: 0, blockNumber: 10, stateAfter: {} }],
+      activeRowIndex: 0,
+      runToken: 1,
+      tickLower: 0,
+      tickUpper: 100,
+      rangeWidth: 1,
+      anchorTick: 0,
+      startGridTick: 0,
+      rangeStepTicks: 100,
+      lastExitBlockNumber: 0,
+      lastExitLogIndex: -1,
+      liquidityRaw: 100n,
+      liquidityHuman: 1,
+      rewardStart: 0n,
+      rewardLast: 0n,
+      feeGrowthInside0Last: 0n,
+      feeGrowthInside1Last: 0n,
+      feeDilutionLiquidityLast: 0n,
+      rewardDilutionLiquidityLast: 0n,
+      aeroUnharvested: 0,
+      aeroBaseUnharvested: 0,
+      aeroHaircutUnharvested: 0,
+      aeroHarvestedUsdc: 0,
+      aeroBaseHarvestedUsdc: 0,
+      aeroHaircutUsdc: 0,
+      lpFeesWeth: 0,
+      lpFeesUsdc: 0,
+      lpFeesUsdcValue: 0,
+      lpMode: "staked",
+      aeroPriceReliability: 100,
+      aeroPriceAgeSeconds: 0,
+    },
+  };
+}
+
+function makeStepEngine(state, findSwapExitCalls) {
+  const blocks = new Map([
+    [10, { number: 10, timestamp: 1000, baseFeePerGas: 1n }],
+    [11, { number: 11, timestamp: 1060, baseFeePerGas: 1n }],
+    [12, { number: 12, timestamp: 1120, baseFeePerGas: 1n }],
+  ]);
+  return WalletWatchSimulationEngine.create({
+    state,
+    performance,
+    findBlockAtOrAfter: async () => {
+      throw new Error("generic finder should not be used by stepForward");
+    },
+    findSwapExit: async (fromBlock, toBlock, tickLower, tickUpper, after) => {
+      findSwapExitCalls.push({ fromBlock, toBlock, tickLower, tickUpper, after });
+      if (findSwapExitCalls.length === 1) {
+        return { blockNumber: 11, logIndex: 5, tick: 120, sqrtPriceX96: 120n };
+      }
+      return null;
+    },
+    estimateLpFees: async () => ({ weth: 0, usdc: 0, usdcValue: 0, source: "test", reliability: 100, swapCount: 0 }),
+    getBlock: async (number) => blocks.get(number),
+    readRewardInside: async () => ({
+      tick: 50,
+      sqrtPriceX96: 120n,
+      rewardInside: 0n,
+      activeLiquidity: 100n,
+      stakedLiquidity: 100n,
+      feeGrowthInside0X128: 0n,
+      feeGrowthInside1X128: 0n,
+      rewardReserve: 1n,
+      rewardRate: 1n,
+    }),
+    getAeroPrice: async () => 1,
+    ensureActiveSimulation: () => {},
+    priceForTick: (tick) => tick,
+    priceFromSqrtX96: (value) => Number(value),
+    computePositionPlanForRange: (capital, price, tickLower, tickUpper, anchorTick) => ({
+      tickLower,
+      tickUpper,
+      anchorTick,
+      liquidityHuman: 1,
+      liquidityRaw: 100n,
+      weth: 0,
+      usdc: capital,
+      value: capital,
+    }),
+    tickRangeAroundTick: (tick) => ({ tickLower: tick - 20, tickUpper: tick + 80, anchorTick: tick }),
+    estimateHistoricalSwap: async () => ({ lossUsdc: 0, source: "test", reliability: 100, outputAmount: 0 }),
+    rewardStateReliability: () => 100,
+    blockTimeReliability: () => 100,
+    priceAgreementReliability: () => 100,
+    conservativeReliability: () => ({ score: 100, parts: [] }),
+    scoreFromThresholds: () => 100,
+    fmtNumber: String,
+    fmtUsdc: (value) => `$${Number(value || 0).toFixed(2)}`,
+    reliabilityDetailsText: () => "",
+    AERODROME_TICK_SPACING: 100,
+    REBALANCE_MANUAL_FEE_BPS: 1,
+    REBALANCE_GAS_UNITS: 1n,
+    REBALANCE_L1_DATA_FEE_ETH: 0,
+    REBALANCE_FALLBACK_SLIPPAGE_BPS: 5,
+    AERO_IMPACT_HAIRCUT_MAX: 0,
+    Q128: 2n ** 128n,
+    AERO_DECIMALS: 10n ** 18n,
+    recordSimulationStepDuration: () => {},
+    recordSimulationTiming: () => {},
+    simulationProgressText: () => "",
+    setSimulationNotice: () => {},
+    renderSimulationTable: () => {},
+    updateSimulationControls: () => {},
+    secondsPerBlock: 60,
+  });
+}
+
+async function testConfirmedRebalanceSkipsRemainingLogsInSameBlock() {
+  const state = makeStepState();
+  const findSwapExitCalls = [];
+  const engine = makeStepEngine(state, findSwapExitCalls);
+
+  assert.equal(await engine.stepForward({ render: false }), true, "first step should rebalance");
+  assert.match(state.sim.rows.at(-1).event, /^rebalance /);
+  assert.equal(state.sim.lastExitBlockNumber, 11);
+  assert.equal(state.sim.lastExitLogIndex, Number.MAX_SAFE_INTEGER);
+
+  assert.equal(await engine.stepForward({ render: false }), true, "second step should continue after the rebalance block");
+  assert.equal(findSwapExitCalls.length, 2);
+  assert.deepEqual(findSwapExitCalls[1].after, {
+    blockNumber: 11,
+    logIndex: Number.MAX_SAFE_INTEGER,
+  });
+  assert.equal(state.sim.rows.at(-1).event, "price change");
+}
+
 async function main() {
   await testMonotonicMinuteTimestampsUseCursorEstimate();
   await testDuplicateTimestampsReturnFirstAllowedDuplicate();
   await testAfterBlockFloorIsRespected();
   await testVariableBlockTimesFallBackToBoundedSearch();
+  await testConfirmedRebalanceSkipsRemainingLogsInSameBlock();
 }
 
 main().catch((error) => {

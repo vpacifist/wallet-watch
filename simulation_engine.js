@@ -735,7 +735,7 @@
           recordSimulationTiming("stepForward.buildRebalanceRow", phaseStartedAt);
           if (runToken !== state.sim.runToken || !state.sim.started) return false;
           state.sim.lastExitBlockNumber = exit.blockNumber;
-          state.sim.lastExitLogIndex = exit.logIndex;
+          state.sim.lastExitLogIndex = Number.MAX_SAFE_INTEGER;
           rebalanceRow.stateAfter = snapshotState();
           state.sim.rows.push(rebalanceRow);
           state.sim.activeRowIndex = nextIndex;
