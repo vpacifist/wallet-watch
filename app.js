@@ -80,6 +80,8 @@ const state = {
     skeletonVisible: false,
     chartPriceMin: null,
     chartPriceMax: null,
+    initialChartView: null,
+    userAdjustedChartView: false,
   },
 };
 
@@ -88,6 +90,7 @@ const ctx = canvas.getContext("2d");
 const tooltip = document.getElementById("tooltip");
 const simTooltip = document.getElementById("simTooltip");
 const tableTooltip = document.getElementById("tableTooltip");
+const resetChartViewButton = document.getElementById("resetChartView");
 const statusEl = document.getElementById("status");
 const rangeNavigator = document.getElementById("rangeNavigator");
 const rangeTrack = document.getElementById("rangeTrack");
@@ -314,14 +317,58 @@ function getSimulationTiming() {
 
 function chartPriceBounds(rows) {
   const bounds = priceBounds(rows);
-  if (Number.isFinite(state.sim.chartPriceMin)) bounds.min = Math.min(bounds.min, state.sim.chartPriceMin);
-  if (Number.isFinite(state.sim.chartPriceMax)) bounds.max = Math.max(bounds.max, state.sim.chartPriceMax);
-  if (state.sim.started) {
+  const useSimulationInitialView = hasSimulationInitialChartView() && !state.sim.userAdjustedChartView;
+  if (useSimulationInitialView && Number.isFinite(state.sim.chartPriceMin)) bounds.min = Math.min(bounds.min, state.sim.chartPriceMin);
+  if (useSimulationInitialView && Number.isFinite(state.sim.chartPriceMax)) bounds.max = Math.max(bounds.max, state.sim.chartPriceMax);
+  if (state.sim.started && !state.sim.userAdjustedChartView) {
     const prices = simRangePrices();
     bounds.min = Math.min(bounds.min, prices.lower);
     bounds.max = Math.max(bounds.max, prices.upper);
   }
   return bounds;
+}
+
+function hasSimulationInitialChartView() {
+  const view = state.sim.initialChartView;
+  return Boolean(view && Number.isFinite(view.zoomStart) && Number.isFinite(view.zoomEnd));
+}
+
+function updateResetChartViewButton() {
+  if (!resetChartViewButton) return;
+  const simulationActive = state.sim.started || state.sim.initializing || state.sim.autoRunning || serverSimulation.running || serverSimulation.paused;
+  resetChartViewButton.hidden = !(simulationActive && state.sim.userAdjustedChartView && hasSimulationInitialChartView());
+}
+
+function captureSimulationInitialChartView() {
+  state.sim.initialChartView = {
+    zoomStart: state.zoomStart,
+    zoomEnd: state.zoomEnd,
+    chartPriceMin: state.sim.chartPriceMin,
+    chartPriceMax: state.sim.chartPriceMax,
+  };
+  state.sim.userAdjustedChartView = false;
+  updateResetChartViewButton();
+}
+
+function updateSimulationInitialChartBounds() {
+  if (!hasSimulationInitialChartView()) return;
+  state.sim.initialChartView.chartPriceMin = state.sim.chartPriceMin;
+  state.sim.initialChartView.chartPriceMax = state.sim.chartPriceMax;
+}
+
+function resetToSimulationInitialChartView() {
+  if (!hasSimulationInitialChartView()) return;
+  const view = state.sim.initialChartView;
+  state.zoomStart = view.zoomStart;
+  state.zoomEnd = view.zoomEnd;
+  state.sim.chartPriceMin = view.chartPriceMin;
+  state.sim.chartPriceMax = view.chartPriceMax;
+  state.sim.userAdjustedChartView = false;
+  state.hoverIndex = -1;
+  state.releaseRows = null;
+  updateMetrics(getVisibleRows());
+  updateResetChartViewButton();
+  draw();
 }
 
 function setSimulationChartPriceBounds(startIndex, endIndex) {
@@ -344,6 +391,7 @@ function setSimulationChartPriceBounds(startIndex, endIndex) {
   });
   state.sim.chartPriceMin = min;
   state.sim.chartPriceMax = max;
+  updateSimulationInitialChartBounds();
 }
 
 async function rpcCall(method, params) {
@@ -1739,6 +1787,7 @@ function applyInitialRange(range) {
   if (Number.isFinite(Number(range.rangeWidth))) state.sim.rangeWidth = Number(range.rangeWidth);
   state.sim.initialRangeReady = true;
   setSimulationChartPriceBounds(state.sim.startIndex, state.sim.endIndex);
+  if (!hasSimulationInitialChartView()) captureSimulationInitialChartView();
   draw();
   return true;
 }
@@ -1831,6 +1880,7 @@ function zoomToSimulationRange(startIndex, endIndex) {
 }
 
 function updateSimulationControls() {
+  updateResetChartViewButton();
   if (simulationModeSelect) simulationModeSelect.value = state.sim.lpMode;
   if (SERVER_SIMULATION_MODE) {
     if (serverSimulation.running && !serverSimulation.paused) {
@@ -1916,6 +1966,9 @@ function resetSimulationRows() {
   state.sim.skeletonVisible = false;
   state.sim.chartPriceMin = null;
   state.sim.chartPriceMax = null;
+  state.sim.initialChartView = null;
+  state.sim.userAdjustedChartView = false;
+  updateResetChartViewButton();
   document.body?.classList?.toggle("simSkeletonActive", false);
   simTableBody.innerHTML = "";
   simTableWrap.hidden = true;
@@ -3155,6 +3208,7 @@ async function startServerSimulation() {
     simStartInput.value = fmtInputTime(state.rows[startIndex].time);
     simEndInput.value = fmtInputTime(state.rows[endIndex].time);
     zoomToSimulationRange(startIndex, endIndex);
+    captureSimulationInitialChartView();
     draw();
   }
   updateSimulationControls();
@@ -3271,6 +3325,7 @@ async function startSimulation() {
   simStartInput.value = fmtInputTime(startRow.time);
   simEndInput.value = fmtInputTime(state.rows[endIndex].time);
   zoomToSimulationRange(startIndex, endIndex);
+  captureSimulationInitialChartView();
   state.sim.initializing = true;
   state.sim.autoRunning = true;
   state.sim.elapsedStartedAtMs = Date.now();
@@ -3302,6 +3357,7 @@ async function startSimulation() {
     );
     state.sim.initialRangeReady = true;
     setSimulationChartPriceBounds(startIndex, endIndex);
+    updateSimulationInitialChartBounds();
     renderStartupNotice();
     draw();
     state.sim.liquidityRaw = plan.liquidityRaw;
@@ -3388,12 +3444,20 @@ canvas.addEventListener("wheel", (event) => {
   const plotW = canvas.clientWidth - padLeft - padRight;
   const ratio = Math.min(1, Math.max(0, (x - padLeft) / plotW));
   event.preventDefault();
+  if (simulationActive && hasSimulationInitialChartView()) {
+    state.sim.userAdjustedChartView = true;
+    updateResetChartViewButton();
+  }
   state.hoverIndex = -1;
   zoomAt(ratio, event.deltaY);
   state.releaseRows = null;
   updateMetrics(getVisibleRows());
   draw();
 }, { passive: false });
+
+if (resetChartViewButton) {
+  resetChartViewButton.addEventListener("click", resetToSimulationInitialChartView);
+}
 
 canvas.addEventListener("click", (event) => {
   if (state.suppressNextClick) {
