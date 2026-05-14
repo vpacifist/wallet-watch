@@ -119,12 +119,13 @@ async function testVariableBlockTimesFallBackToBoundedSearch() {
   assert.equal((await engine.findSequentialBlockAtOrAfter(132, 5)).number, 8);
 }
 
-function makeStepState() {
+function makeStepState(overrides = {}) {
+  const closes = overrides.closes || [100, 200, 200];
   return {
     rows: [
-      { time: new Date(1000 * 1000).toISOString(), close: 100, open: 100 },
-      { time: new Date(1060 * 1000).toISOString(), close: 200, open: 200 },
-      { time: new Date(1120 * 1000).toISOString(), close: 200, open: 200 },
+      { time: new Date(1000 * 1000).toISOString(), close: closes[0], open: closes[0] },
+      { time: new Date(1060 * 1000).toISOString(), close: closes[1], open: closes[1] },
+      { time: new Date(1120 * 1000).toISOString(), close: closes[2], open: closes[2] },
     ],
     sim: {
       started: true,
@@ -168,7 +169,7 @@ function makeStepState() {
   };
 }
 
-function makeStepEngine(state, findSwapExitCalls) {
+function makeStepEngine(state, findSwapExitCalls, options = {}) {
   const blocks = new Map([
     [10, { number: 10, timestamp: 1000, baseFeePerGas: 1n }],
     [11, { number: 11, timestamp: 1060, baseFeePerGas: 1n }],
@@ -182,6 +183,7 @@ function makeStepEngine(state, findSwapExitCalls) {
     },
     findSwapExit: async (fromBlock, toBlock, tickLower, tickUpper, after) => {
       findSwapExitCalls.push({ fromBlock, toBlock, tickLower, tickUpper, after });
+      if (options.exits) return options.exits[findSwapExitCalls.length - 1] || null;
       if (findSwapExitCalls.length === 1) {
         return { blockNumber: 11, logIndex: 5, tick: 120, sqrtPriceX96: 120n };
       }
@@ -229,6 +231,8 @@ function makeStepEngine(state, findSwapExitCalls) {
     REBALANCE_GAS_UNITS: 1n,
     REBALANCE_L1_DATA_FEE_ETH: 0,
     REBALANCE_FALLBACK_SLIPPAGE_BPS: 5,
+    REBALANCE_CONFIRMATION_BUFFER_BPS: options.confirmationBufferBps || 0,
+    REBALANCE_CONFIRMATION_MINUTES: options.confirmationMinutes || 1,
     AERO_IMPACT_HAIRCUT_MAX: 0,
     Q128: 2n ** 128n,
     AERO_DECIMALS: 10n ** 18n,
@@ -261,12 +265,44 @@ async function testConfirmedRebalanceSkipsRemainingLogsInSameBlock() {
   assert.equal(state.sim.rows.at(-1).event, "price change");
 }
 
+async function testConfirmationBufferSuppressesBoundaryChurn() {
+  const state = makeStepState({ closes: [100, 100.03, 100.03] });
+  const findSwapExitCalls = [];
+  const engine = makeStepEngine(state, findSwapExitCalls, { confirmationBufferBps: 5 });
+
+  assert.equal(await engine.stepForward({ render: false }), true, "step should advance without a rebalance inside buffer");
+  assert.equal(state.sim.rows.at(-1).event, "price change");
+  assert.equal(state.sim.lastExitBlockNumber, 11);
+  assert.equal(state.sim.lastExitLogIndex, 5);
+}
+
+async function testTwoMinuteConfirmationRequiresPreviousCloseOutsideBuffer() {
+  const state = makeStepState({ closes: [100, 100.2, 100.2] });
+  const findSwapExitCalls = [];
+  const engine = makeStepEngine(state, findSwapExitCalls, {
+    confirmationBufferBps: 5,
+    confirmationMinutes: 2,
+    exits: [
+      { blockNumber: 11, logIndex: 5, tick: 120, sqrtPriceX96: 120n },
+      { blockNumber: 12, logIndex: 1, tick: 120, sqrtPriceX96: 120n },
+    ],
+  });
+
+  assert.equal(await engine.stepForward({ render: false }), true, "first outside close should wait for confirmation");
+  assert.equal(state.sim.rows.at(-1).event, "price change");
+
+  assert.equal(await engine.stepForward({ render: false }), true, "second outside close should confirm rebalance");
+  assert.match(state.sim.rows.at(-1).event, /^rebalance /);
+}
+
 async function main() {
   await testMonotonicMinuteTimestampsUseCursorEstimate();
   await testDuplicateTimestampsReturnFirstAllowedDuplicate();
   await testAfterBlockFloorIsRespected();
   await testVariableBlockTimesFallBackToBoundedSearch();
   await testConfirmedRebalanceSkipsRemainingLogsInSameBlock();
+  await testConfirmationBufferSuppressesBoundaryChurn();
+  await testTwoMinuteConfirmationRequiresPreviousCloseOutsideBuffer();
 }
 
 main().catch((error) => {

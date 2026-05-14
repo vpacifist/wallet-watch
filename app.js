@@ -138,6 +138,8 @@ const REBALANCE_MANUAL_FEE_BPS = Number(RUNTIME_CONFIG.rebalanceManualFeeBps ?? 
 const REBALANCE_GAS_UNITS = BigInt(RUNTIME_CONFIG.rebalanceGasUnits ?? 1450000);
 const REBALANCE_L1_DATA_FEE_ETH = Number(RUNTIME_CONFIG.rebalanceL1DataFeeEth ?? 0.000012);
 const REBALANCE_FALLBACK_SLIPPAGE_BPS = Number(RUNTIME_CONFIG.rebalanceFallbackSlippageBps ?? 5);
+const REBALANCE_CONFIRMATION_BUFFER_BPS = Number(RUNTIME_CONFIG.rebalanceConfirmationBufferBps ?? 5);
+const REBALANCE_CONFIRMATION_MINUTES = Number(RUNTIME_CONFIG.rebalanceConfirmationMinutes ?? 2);
 const AERO_IMPACT_HAIRCUT_MAX = Number(RUNTIME_CONFIG.aeroImpactHaircutMax ?? 0.5);
 const SERVER_SIMULATION_POLL_MS = Number(RUNTIME_CONFIG.serverSimulationPollMs ?? 2500);
 const BASE_RPC_URLS = ["/rpc"];
@@ -943,7 +945,11 @@ function simulationChartTooltip(row, marketRow) {
   if (row?.event) lines.push(row.event);
   if (row?.rebalance) {
     const rb = row.rebalance;
+    const confirmationBufferBps = Number(rb.confirmationBufferBps);
     lines.push(`range ${rb.oldTickLower}..${rb.oldTickUpper} → ${rb.newTickLower}..${rb.newTickUpper}`);
+    lines.push(`trigger ${fmtPrice(priceForTick(rb.oldTickLower))}..${fmtPrice(priceForTick(rb.oldTickUpper))}`);
+    if (Number.isFinite(confirmationBufferBps)) lines.push(`buffer ${fmtNumber(confirmationBufferBps, 2)} bps`);
+    if (Number.isFinite(Number(rb.confirmationMinutes))) lines.push(`confirm ${Number(rb.confirmationMinutes)} min`);
     if (rb.swapIsFallback) lines.push(`swap fallback: ${summarizeFallbackReason(rb.quoteFailureReason)}`);
   }
   return lines.join("<br>");
@@ -1928,7 +1934,9 @@ function simulationRowTitle(row) {
   if (!row.rebalance) return details;
   const rb = row.rebalance;
   const quoteFailure = rb.swapIsFallback && rb.quoteFailureReason ? `; fallback reason: ${summarizeFallbackReason(rb.quoteFailureReason)}` : "";
-  return `${details}; swap ${rb.swapDirection} via ${rb.swapSource}; swap loss ${fmtUsdc(rb.swapLossUsdc)}; gas ${fmtUsdc(rb.gasUsdc)}; fee ${fmtUsdc(rb.automationFeeUsdc)}; ticks ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}${quoteFailure}`;
+  const buffer = Number.isFinite(rb.confirmationBufferBps) ? `; confirm buffer ${fmtNumber(rb.confirmationBufferBps, 2)} bps` : "";
+  const confirmMinutes = Number.isFinite(Number(rb.confirmationMinutes)) ? `; confirm ${Number(rb.confirmationMinutes)} min` : "";
+  return `${details}; swap ${rb.swapDirection} via ${rb.swapSource}; swap loss ${fmtUsdc(rb.swapLossUsdc)}; gas ${fmtUsdc(rb.gasUsdc)}; fee ${fmtUsdc(rb.automationFeeUsdc)}; ticks ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}${buffer}${confirmMinutes}${quoteFailure}`;
 }
 
 function compactNumber(value, digits = 8) {
@@ -2013,6 +2021,8 @@ function simulationRowToRaw(row) {
       swapSourceLabel: normalizeSourceLabel(row.rebalance.swapSourceLabel || (row.rebalance.swapIsFallback ? "fallback" : "reconstructed-onchain")),
       swapIsFallback: Boolean(row.rebalance.swapIsFallback),
       fallbackSlippageBps: compactNumber(row.rebalance.fallbackSlippageBps, 4),
+      confirmationBufferBps: compactNumber(row.rebalance.confirmationBufferBps ?? REBALANCE_CONFIRMATION_BUFFER_BPS, 4),
+      confirmationMinutes: row.rebalance.confirmationMinutes ?? REBALANCE_CONFIRMATION_MINUTES,
       quoteFailureReason: row.rebalance.quoteFailureReason || "",
       quoteAttempts: row.rebalance.quoteAttempts || 0,
       swapLossUsdc: compactNumber(row.rebalance.swapLossUsdc, 6),
@@ -2281,6 +2291,8 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   REBALANCE_GAS_UNITS,
   REBALANCE_L1_DATA_FEE_ETH,
   REBALANCE_FALLBACK_SLIPPAGE_BPS,
+  REBALANCE_CONFIRMATION_BUFFER_BPS,
+  REBALANCE_CONFIRMATION_MINUTES,
   AERO_IMPACT_HAIRCUT_MAX,
   Q128,
   AERO_DECIMALS,

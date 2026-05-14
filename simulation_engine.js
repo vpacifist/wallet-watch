@@ -28,6 +28,8 @@
       REBALANCE_GAS_UNITS,
       REBALANCE_L1_DATA_FEE_ETH,
       REBALANCE_FALLBACK_SLIPPAGE_BPS,
+      REBALANCE_CONFIRMATION_BUFFER_BPS = 0,
+      REBALANCE_CONFIRMATION_MINUTES = 1,
       AERO_IMPACT_HAIRCUT_MAX,
       Q128,
       AERO_DECIMALS,
@@ -402,6 +404,20 @@
       ]);
     }
 
+    function closeExitSide(closePrice, lowerPrice, upperPrice) {
+      const buffer = Math.max(0, Number(REBALANCE_CONFIRMATION_BUFFER_BPS) || 0) / 10000;
+      if (closePrice < lowerPrice * (1 - buffer)) return "lower";
+      if (closePrice >= upperPrice * (1 + buffer)) return "upper";
+      return "";
+    }
+
+    function isExitConfirmedByClose(closePrice, lowerPrice, upperPrice, previousClosePrice = null) {
+      const side = closeExitSide(closePrice, lowerPrice, upperPrice);
+      if (!side) return false;
+      if (Math.max(1, Number(REBALANCE_CONFIRMATION_MINUTES) || 1) <= 1) return true;
+      return closeExitSide(previousClosePrice, lowerPrice, upperPrice) === side;
+    }
+
     async function buildSimulationRow(index, eventName, blockOverride = null, runToken = null) {
       const rowStartedAt = performance.now();
       const row = state.rows[index];
@@ -658,6 +674,8 @@
           swapSourceLabel: swapQuote.sourceLabel || (swapQuote.source === "fallback" ? "fallback" : "reconstructed-onchain"),
           swapIsFallback: swapQuote.source === "fallback" || swapQuote.source.startsWith("fallback"),
           fallbackSlippageBps: REBALANCE_FALLBACK_SLIPPAGE_BPS,
+          confirmationBufferBps: REBALANCE_CONFIRMATION_BUFFER_BPS,
+          confirmationMinutes: REBALANCE_CONFIRMATION_MINUTES,
           quoteFailureReason: swapQuote.failureReason || "",
           quoteAttempts: swapQuote.quoteAttempts || 0,
           swapLossUsdc: swapQuote.lossUsdc,
@@ -717,9 +735,10 @@
         state.sim.currentIndex = nextIndex;
 
         const closePrice = state.rows[nextIndex].close;
+        const previousClosePrice = state.rows[nextIndex - 1]?.close;
         const lowerPrice = priceForTick(state.sim.tickLower);
         const upperPrice = priceForTick(state.sim.tickUpper);
-        const exitConfirmed = exit && (closePrice < lowerPrice || closePrice >= upperPrice);
+        const exitConfirmed = exit && isExitConfirmedByClose(closePrice, lowerPrice, upperPrice, previousClosePrice);
         if (exit && !exitConfirmed) {
           state.sim.lastExitBlockNumber = exit.blockNumber;
           state.sim.lastExitLogIndex = exit.logIndex;
@@ -835,6 +854,7 @@
       buildRebalanceRow,
       findSequentialBlockAtOrAfter,
       resetSequentialBlockCursor,
+      isExitConfirmedByClose,
     };
   }
 
