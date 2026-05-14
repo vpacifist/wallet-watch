@@ -89,6 +89,12 @@ STATS = {
     "started_at": time.time(),
     "last_log": 0.0,
 }
+RPC_METHODS_FOR_STATS = ("eth_call", "eth_getBlockByNumber", "eth_getLogs", "live", "mixed")
+for _method in RPC_METHODS_FOR_STATS:
+    STATS[f"{_method}_hits"] = 0
+    STATS[f"{_method}_misses"] = 0
+    STATS[f"{_method}_upstream_calls"] = 0
+    STATS[f"{_method}_upstream_seconds"] = 0.0
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 
@@ -575,6 +581,40 @@ def record_stat(name, amount=1):
         STATS[name] += amount
 
 
+def method_stat_key(method):
+    return method if method in RPC_METHODS_FOR_STATS else "live"
+
+
+def record_method_stat(method, suffix, amount=1):
+    record_stat(f"{method_stat_key(method)}_{suffix}", amount)
+
+
+def record_upstream_timing(method, elapsed_seconds):
+    key = method_stat_key(method)
+    record_stat(f"{key}_upstream_seconds", elapsed_seconds)
+    record_stat(f"{key}_upstream_calls", 1)
+
+
+def payload_method(payload):
+    return payload.get("method", "live")
+
+
+def chunk_method(payloads):
+    methods = {payload_method(payload) for payload in payloads}
+    return methods.pop() if len(methods) == 1 else "mixed"
+
+
+def format_method_stats(method):
+    hits = STATS[f"{method}_hits"]
+    misses = STATS[f"{method}_misses"]
+    upstream_calls = STATS[f"{method}_upstream_calls"]
+    upstream_seconds = STATS[f"{method}_upstream_seconds"]
+    total = hits + misses
+    hit_rate = hits / total * 100 if total else 0
+    avg_ms = upstream_seconds / upstream_calls * 1000 if upstream_calls else 0
+    return f"{method}:h={hits}/m={misses}/hr={hit_rate:.0f}%/up={upstream_calls}/avg={avg_ms:.0f}ms"
+
+
 def maybe_log_progress(force=False):
     now = time.time()
     with STATS_LOCK:
@@ -592,7 +632,9 @@ def maybe_log_progress(force=False):
             f"upstream_batches={STATS['upstream_batches']} upstream_items={STATS['upstream_items']} "
             f"errors={STATS['errors']} avg_items_per_sec={STATS['upstream_items'] / elapsed:.1f}"
         )
+        method_message = " | ".join(format_method_stats(method) for method in RPC_METHODS_FOR_STATS)
     print(message, file=sys.stderr, flush=True)
+    print(f"[{time.strftime('%H:%M:%S')}] RPC method stats {method_message}", file=sys.stderr, flush=True)
 
 
 def hex_to_int(value):
@@ -884,6 +926,8 @@ def upstream_post(payload, urls=None, label="RPC"):
     body = json.dumps(payload).encode("utf-8")
     last_error = None
     payloads = payload if isinstance(payload, list) else [payload]
+    stat_method = chunk_method(payloads)
+    started_at = time.time()
     summary = ", ".join(item.get("method", "<unknown>") for item in payloads[:8])
     if len(payloads) > 8:
         summary += f", ... +{len(payloads) - 8}"
@@ -893,6 +937,7 @@ def upstream_post(payload, urls=None, label="RPC"):
     for url in provider_urls:
         success, result = try_one_provider(url, body, summary)
         if success:
+            record_upstream_timing(stat_method, time.time() - started_at)
             return result
         last_error = result
         attempted_errors.append((url, last_error))
@@ -906,6 +951,7 @@ def upstream_post(payload, urls=None, label="RPC"):
                 try:
                     success, result = future.result()
                     if success:
+                        record_upstream_timing(stat_method, time.time() - started_at)
                         return result
                     
                     last_error = result
@@ -934,6 +980,7 @@ def upstream_post(payload, urls=None, label="RPC"):
     if attempted_errors:
         providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(provider_urls):])
         print(f"{label} upstream failed for [{summary}] after parallel retries; last providers: {providers}; last_error={last_error}", file=sys.stderr, flush=True)
+    record_upstream_timing(stat_method, time.time() - started_at)
     raise RuntimeError(json.dumps(last_error or {"message": f"{label} proxy error"}))
 
 
@@ -1025,20 +1072,25 @@ def post_rpc_batch(payloads):
             if result is None:
                 record_stat("cache_misses")
                 record_stat("log_range_misses")
+                record_method_stat("eth_getLogs", "misses")
                 misses.append((index, kind, log_info, None, payload))
             else:
                 record_stat("cache_hits")
                 record_stat("log_range_hits")
+                record_method_stat("eth_getLogs", "hits")
                 results[index] = response_from_result(payload, result)
         elif kind == "exact":
             result = cached_exact_result(key, payload)
             if result is None:
                 record_stat("cache_misses")
+                record_method_stat(payload_method(payload), "misses")
                 misses.append((index, kind, None, key, payload))
             else:
                 record_stat("cache_hits")
+                record_method_stat(payload_method(payload), "hits")
                 results[index] = response_from_result(payload, result)
         else:
+            record_method_stat(payload_method(payload), "misses")
             misses.append((index, kind, None, None, payload))
 
     if misses:
@@ -1067,6 +1119,7 @@ def post_rpc_batch(payloads):
                         )
                         record_stat("cache_hits")
                         record_stat("log_range_hits")
+                        record_method_stat("eth_getLogs", "hits")
                     elif prefetch_info["to_block"] - prefetch_info["from_block"] + 1 > MAX_LOG_BLOCK_SPAN:
                         try:
                             result = fetch_logs_in_chunks(payload_for_log_info(payload, prefetch_info), prefetch_info)
