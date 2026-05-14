@@ -109,9 +109,15 @@ const currentRewardLabel = document.getElementById("currentRewardLabel");
 const currentRewardValue = document.getElementById("currentRewardValue");
 const currentTotalValue = document.getElementById("currentTotalValue");
 const simulationModeSelect = document.getElementById("simulationModeSelect");
+const serverUiModeSelect = document.getElementById("serverUiModeSelect");
 const simNotice = document.getElementById("simNotice");
 const simTableWrap = document.getElementById("simTableWrap");
 const simTableBody = document.getElementById("simTableBody");
+const backgroundProgressPanel = document.getElementById("backgroundProgressPanel");
+const serverBackgroundOverlay = document.getElementById("serverBackgroundOverlay");
+const serverBackgroundOverlayText = document.getElementById("serverBackgroundOverlayText");
+const openLiveViewButton = document.getElementById("openLiveView");
+const closeLiveViewButton = document.getElementById("closeLiveView");
 const serverJobs = document.getElementById("serverJobs");
 const serverJobsList = document.getElementById("serverJobsList");
 const refreshServerJobs = document.getElementById("refreshServerJobs");
@@ -193,6 +199,9 @@ const serverSimulation = {
   rawRows: [],
   startedAtMs: 0,
   lastSimulation: null,
+  uiMode: "live",
+  liveViewOpen: true,
+  finalResultFetched: false,
 };
 const appTabs = {
   active: "new",
@@ -1691,6 +1700,15 @@ function serverProcessingTimestamp(simulation) {
   return formatProgressTimestamp(latest?.time || latest?.timestamp || "");
 }
 
+function serverProcessingLabel(simulation) {
+  const progress = simulation?.progress || {};
+  const result = simulation?.result || {};
+  const latest = result.latestRawRow || progress.latestRawRow || serverSimulation.rawRows.at(-1) || null;
+  const timestamp = formatProgressTimestamp(latest?.time || latest?.timestamp || "");
+  const event = String(latest?.event || "").trim();
+  return [timestamp, event].filter(Boolean).join(" · ");
+}
+
 function serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows) {
   if (!serverSimulation.running || rowsDone <= 0 || totalRows <= rowsDone || elapsedSeconds <= 0) return "—";
   const remainingSeconds = (elapsedSeconds / rowsDone) * (totalRows - rowsDone);
@@ -1896,6 +1914,10 @@ function zoomToSimulationRange(startIndex, endIndex) {
 function updateSimulationControls() {
   updateResetChartViewButton();
   if (simulationModeSelect) simulationModeSelect.value = state.sim.lpMode;
+  if (serverUiModeSelect) {
+    serverUiModeSelect.value = serverSimulation.uiMode;
+    serverUiModeSelect.disabled = Boolean(serverSimulation.id && (serverSimulation.running || serverSimulation.paused));
+  }
   if (SERVER_SIMULATION_MODE) {
     if (serverSimulation.running && !serverSimulation.paused) {
       runSimulation.textContent = "PAUSE";
@@ -2450,7 +2472,7 @@ function serverSimulationText(simulation) {
   const payload = Object.keys(result).length ? result : progress;
   const rawRows = payload.rawRows || progress.rawRows || result.rawRows || [];
   const latestRawRow = payload.latestRawRow || rawRows.at?.(-1) || null;
-  const rows = payload.rows || 0;
+  const rows = payload.rows || payload.rawRowCount || progress.rawRowCount || result.rawRowCount || 0;
   const elapsed = payload.elapsedSeconds ? formatDuration(payload.elapsedSeconds * 1000) : "";
   const notice = (payload.notice || simulation?.error || "").replace(/до даты конца/g, "до конца");
   return {
@@ -2480,6 +2502,97 @@ function serverElapsedSeconds(simulation) {
   return localElapsedSeconds(serverSimulation.startedAtMs);
 }
 
+function isServerLiveRenderingActive() {
+  if (!SERVER_SIMULATION_MODE) return false;
+  if (!serverSimulation.id) return true;
+  if (!serverSimulation.running) return true;
+  return serverSimulation.liveViewOpen;
+}
+
+function setServerUiMode(mode) {
+  serverSimulation.uiMode = mode === "background" ? "background" : "live";
+  serverSimulation.liveViewOpen = serverSimulation.uiMode === "live";
+  if (serverUiModeSelect) serverUiModeSelect.value = serverSimulation.uiMode;
+  renderServerObservationMode();
+}
+
+function serverProgressSummary(simulation) {
+  const info = serverSimulationText(simulation);
+  const elapsedSeconds = serverElapsedSeconds(simulation);
+  const rowsDone = Number(info.rows || 0);
+  const totalRows = estimateServerTotalRows(simulation);
+  return {
+    status: serverSimulation.paused
+      ? "paused"
+      : (rowsDone > 0 ? (simulation?.status || "running") : serverInitializationStage(simulation)),
+    elapsed: formatCompactDurationSeconds(elapsedSeconds),
+    processing: serverProcessingLabel(simulation) || (state.sim.initialRangeReady ? simRangeText() : "Range: calculating..."),
+    rows: (state.sim.skeletonVisible && !serverSimulation.rawRows.length)
+      ? (totalRows > 0 ? `— / ${totalRows}` : "—")
+      : (totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / —` : "—")),
+    eta: serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows),
+  };
+}
+
+function renderBackgroundProgressPanel(summary) {
+  if (!backgroundProgressPanel) return;
+  backgroundProgressPanel.replaceChildren();
+  const rows = [
+    ["Status", summary.status],
+    ["Rows", summary.rows],
+    ["Elapsed", summary.elapsed],
+    ["ETA", summary.eta],
+    ["Processing", summary.processing],
+  ];
+  rows.forEach(([label, value]) => {
+    const item = document.createElement("div");
+    item.className = "backgroundProgressItem";
+    const labelEl = document.createElement("span");
+    labelEl.textContent = label;
+    const valueEl = document.createElement("strong");
+    valueEl.textContent = value || "—";
+    item.append(labelEl, valueEl);
+    backgroundProgressPanel.append(item);
+  });
+}
+
+function renderServerObservationMode(summary = null) {
+  const backgroundActive = SERVER_SIMULATION_MODE
+    && serverSimulation.id
+    && serverSimulation.running
+    && !serverSimulation.liveViewOpen;
+  if (serverBackgroundOverlay) serverBackgroundOverlay.hidden = !backgroundActive;
+  if (backgroundProgressPanel) backgroundProgressPanel.hidden = !backgroundActive;
+  if (simNotice) simNotice.hidden = backgroundActive;
+  if (closeLiveViewButton) closeLiveViewButton.hidden = !(SERVER_SIMULATION_MODE && serverSimulation.id && serverSimulation.running && serverSimulation.liveViewOpen);
+  if (serverBackgroundOverlayText && summary) {
+    serverBackgroundOverlayText.textContent = `${summary.status || "running"} · ${summary.rows || "—"} rows · ETA ${summary.eta || "—"}`;
+  }
+  if (backgroundActive) {
+    if (summary) renderBackgroundProgressPanel(summary);
+    simTableWrap.hidden = true;
+  }
+}
+
+function openServerLiveView() {
+  if (!SERVER_SIMULATION_MODE || !serverSimulation.id) return;
+  serverSimulation.liveViewOpen = true;
+  serverSimulation.uiMode = "live";
+  if (simNotice) simNotice.hidden = false;
+  if (serverUiModeSelect) serverUiModeSelect.value = "live";
+  renderServerObservationMode(serverSimulation.lastSimulation ? serverProgressSummary(serverSimulation.lastSimulation) : null);
+  if (serverSimulation.lastSimulation) renderServerSimulation(serverSimulation.lastSimulation);
+}
+
+function closeServerLiveView() {
+  if (!SERVER_SIMULATION_MODE || !serverSimulation.id || !serverSimulation.running) return;
+  serverSimulation.liveViewOpen = false;
+  serverSimulation.uiMode = "background";
+  if (serverUiModeSelect) serverUiModeSelect.value = "background";
+  renderServerObservationMode(serverSimulation.lastSimulation ? serverProgressSummary(serverSimulation.lastSimulation) : null);
+  updateSimulationControls();
+}
+
 function applyServerRawProgress(simulation) {
   if (!SERVER_SIMULATION_MODE) return;
   const progress = simulation?.progress || {};
@@ -2487,6 +2600,9 @@ function applyServerRawProgress(simulation) {
   const progressRows = progress.rawRows;
   if (!serverSimulation.rawRows.length && progress.initialRange) {
     applyInitialRange(progress.initialRange);
+  }
+  if (!isServerLiveRenderingActive() && !Array.isArray(resultRows)) {
+    return;
   }
   if (Array.isArray(resultRows)) {
     serverSimulation.rawRows = resultRows;
@@ -2925,11 +3041,13 @@ function renderServerSimulation(simulation, options = {}) {
     simulationModeSelect.value = state.sim.lpMode;
   }
   const elapsedSeconds = serverElapsedSeconds(simulation);
+  const rowsDone = Number(info.rows || 0);
+  if (rowsDone > 0 && state.sim.skeletonVisible) setSimulationSkeletonVisible(false);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
   if (info.currentReward) currentRewardValue.textContent = info.currentReward;
   if (info.currentTotalReturn) currentTotalValue.textContent = info.currentTotalReturn;
   if (currentRewardLabel) currentRewardLabel.textContent = state.sim.lpMode === "staked" ? "AERO, $" : "LP fees, $";
-  const rowsDone = Number(info.rows || 0);
+  const progressSummary = serverProgressSummary(simulation);
   const totalRows = estimateServerTotalRows(simulation);
   setServerSimulationProgressNotice({
     status: serverSimulation.paused
@@ -2955,7 +3073,8 @@ function renderServerSimulation(simulation, options = {}) {
   else serverSimulation.jobs.unshift(simulation);
   renderServerJobsList(serverSimulation.jobs);
   syncOpenedSimulation(simulation);
-  renderServerResultTable(simulation);
+  renderServerObservationMode(progressSummary);
+  if (isServerLiveRenderingActive()) renderServerResultTable(simulation);
   if (!rowsDone && serverSimulation.running && !state.sim.skeletonVisible) setSimulationSkeletonVisible(true);
   if (!options.fromTimer) updateSimulationControls();
 }
@@ -2978,7 +3097,8 @@ async function pollServerSimulation(id) {
     renderServerSimulation(simulation);
     if (isServerSimulationTerminal(simulation.status)) {
       stopServerSimulationPolling();
-      loadServerJobs();
+      if (simulation.status === "completed") await renderCompletedServerSimulation(id);
+      else loadServerJobs();
     }
   } catch (error) {
     if ((error.status === 429 || error.retryAfterSeconds) && serverSimulation.running) {
@@ -3027,14 +3147,26 @@ async function watchServerSimulation(id) {
       if (isServerSimulationTerminal(simulation.status)) {
         stopServerSimulationEvents();
         stopServerSimulationPolling();
+        if (simulation.status === "completed") renderCompletedServerSimulation(id).catch((error) => console.error(error));
       }
       serverSimulation.pollBackoffMs = Math.max(5000, SERVER_SIMULATION_POLL_MS);
     } catch (_) { }
   });
-  source.addEventListener("terminal", () => {
+  source.addEventListener("terminal", (event) => {
     stopServerSimulationEvents();
     stopServerSimulationPolling();
-    loadServerJobs();
+    let terminalStatus = "";
+    try {
+      terminalStatus = JSON.parse(event.data || "{}")?.status || "";
+    } catch (_) { }
+    if (terminalStatus === "completed") {
+      renderCompletedServerSimulation(id).catch((error) => {
+        console.error(error);
+        loadServerJobs();
+      });
+    } else {
+      loadServerJobs();
+    }
   });
   source.onerror = () => {
     stopServerSimulationEvents();
@@ -3147,6 +3279,8 @@ async function deleteServerSimulation(id, row = null) {
       serverSimulation.paused = false;
       serverSimulation.rawRows = [];
       serverSimulation.lastSimulation = null;
+      serverSimulation.finalResultFetched = false;
+      setServerUiMode(serverUiModeSelect?.value || "live");
       stopServerSimulationPolling();
       stopSimulationElapsedTimer();
       setSimulationSkeletonVisible(false);
@@ -3202,11 +3336,13 @@ async function startServerSimulation() {
     return;
   }
   resetSimulationRows();
+  setServerUiMode(serverUiModeSelect?.value || "live");
   serverSimulation.running = true;
   serverSimulation.paused = false;
   serverSimulation.startedAtMs = Date.now();
   serverSimulation.lastSimulation = null;
   serverSimulation.rawRows = [];
+  serverSimulation.finalResultFetched = false;
   if (state.rows.length) {
     const startIndex = rowIndexForTimestamp(inputTimestamp, "atOrAfter");
     const endIndex = rowIndexForTimestamp(endTimestamp, "atOrBefore");
@@ -3232,6 +3368,13 @@ async function startServerSimulation() {
   setSimulationSkeletonVisible(true);
   startSimulationElapsedTimer(serverSimulation.startedAtMs);
   const totalRows = Math.max(0, state.sim.endIndex - state.sim.startIndex + 1);
+  renderServerObservationMode({
+    status: "starting",
+    elapsed: "0s",
+    processing: "starting",
+    rows: totalRows > 0 ? `0 / ${totalRows}` : "0 / -",
+    eta: "-",
+  });
   setServerSimulationProgressNotice({
     status: "starting",
     elapsed: "0s",
@@ -3422,6 +3565,8 @@ function stepSimulationBack() {
 function resetSimulation() {
   resetSimulationRows();
   serverSimulation.rawRows = [];
+  serverSimulation.finalResultFetched = false;
+  if (SERVER_SIMULATION_MODE) setServerUiMode(serverUiModeSelect?.value || "live");
   setSimulationNotice("Симуляция сброшена. Нажми START, чтобы начать заново.");
 }
 
@@ -3471,6 +3616,22 @@ canvas.addEventListener("wheel", (event) => {
 
 if (resetChartViewButton) {
   resetChartViewButton.addEventListener("click", resetToSimulationInitialChartView);
+}
+
+async function renderCompletedServerSimulation(id) {
+  if (!SERVER_SIMULATION_MODE || !id || serverSimulation.finalResultFetched) return;
+  serverSimulation.finalResultFetched = true;
+  try {
+    const simulation = await fetchJson(`/api/simulations/${id}`);
+    serverSimulation.liveViewOpen = true;
+    serverSimulation.uiMode = "live";
+    if (simNotice) simNotice.hidden = false;
+    if (serverUiModeSelect) serverUiModeSelect.value = "live";
+    renderServerSimulation(simulation);
+    openSimulationResultTab(simulation);
+  } finally {
+    loadServerJobs();
+  }
 }
 
 canvas.addEventListener("click", (event) => {
@@ -3676,6 +3837,14 @@ simulationModeSelect.addEventListener("change", () => {
   resetSimulationRows();
   updateSimulationControls();
 });
+if (serverUiModeSelect) {
+  serverUiModeSelect.addEventListener("change", () => {
+    setServerUiMode(serverUiModeSelect.value);
+    updateSimulationControls();
+  });
+}
+if (openLiveViewButton) openLiveViewButton.addEventListener("click", openServerLiveView);
+if (closeLiveViewButton) closeLiveViewButton.addEventListener("click", closeServerLiveView);
 runSimulation.addEventListener("click", startServerSimulation);
 if (resetSimulationButton) resetSimulationButton.addEventListener("click", resetOrStopSimulation);
 if (refreshServerJobs) refreshServerJobs.addEventListener("click", () => loadServerJobs({ feedback: true }));

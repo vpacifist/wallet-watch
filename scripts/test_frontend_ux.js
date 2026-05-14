@@ -4,6 +4,7 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
 const app = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
+const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
 const engine = fs.readFileSync(path.join(ROOT, "simulation_engine.js"), "utf8");
 const runtime = fs.readFileSync(path.join(ROOT, "scripts", "simulation_runtime.js"), "utf8");
 const styles = fs.readFileSync(path.join(ROOT, "styles.css"), "utf8");
@@ -104,6 +105,29 @@ function testSimulationModes() {
   assert.match(engine, /totalReturnUsdc/);
 }
 
+function testServerObservationModes() {
+  assert.match(html, /id="serverUiModeSelect"/);
+  assert.match(html, /value="live">Live view/);
+  assert.match(html, /value="background">Background/);
+  assert.match(html, /id="serverBackgroundOverlay"/);
+  assert.match(html, /id="openLiveView"/);
+  assert.match(html, /id="closeLiveView"/);
+  assert.match(html, /id="backgroundProgressPanel"/);
+
+  assert.match(app, /uiMode: "live"/);
+  assert.match(app, /liveViewOpen: true/);
+  assert.match(app, /function setServerUiMode\(mode\)/);
+  assert.match(app, /function openServerLiveView\(\)/);
+  assert.match(app, /function closeServerLiveView\(\)/);
+  assert.match(app, /function isServerLiveRenderingActive\(\)/);
+  assert.match(app, /if \(!isServerLiveRenderingActive\(\) && !Array\.isArray\(resultRows\)\) \{/);
+  assert.match(app, /if \(isServerLiveRenderingActive\(\)\) renderServerResultTable\(simulation\)/);
+  assert.match(app, /renderCompletedServerSimulation\(id\)/);
+  assert.match(app, /fetchJson\(`\/api\/simulations\/\$\{id\}`\)/);
+  assert.match(styles, /\.chartOverlay/);
+  assert.match(styles, /\.backgroundProgressPanel/);
+}
+
 
 testLocalElapsedTimer();
 testInitializationStages();
@@ -113,3 +137,4 @@ testSseDelayedStartHandling();
 testBlockByNumberCacheLifecycle();
 testSimulationTimingInstrumentation();
 testSimulationModes();
+testServerObservationModes();
