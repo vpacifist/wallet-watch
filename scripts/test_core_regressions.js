@@ -143,6 +143,49 @@ function testFeeGrowthInsideAccounting() {
   assert.equal(wrapped.feeGrowthInside1X128, 26n, "token1 fee growth inside should support uint256 wraparound");
 }
 
+function testRewardGrowthInsideAccounting() {
+  const inside = core.rewardGrowthInsideFromState({
+    tickLower: -100,
+    tickUpper: 100,
+    tickCurrent: 0,
+    rewardGrowthGlobalX128: 1000n,
+    lowerTick: { rewardGrowthOutsideX128: 100n },
+    upperTick: { rewardGrowthOutsideX128: 250n },
+  });
+  assert.equal(inside.rewardGrowthInsideX128, 650n, "reward growth inside should subtract below and above");
+
+  const belowRange = core.rewardGrowthInsideFromState({
+    tickLower: -100,
+    tickUpper: 100,
+    tickCurrent: -200,
+    rewardGrowthGlobalX128: 1000n,
+    lowerTick: { rewardGrowthOutsideX128: 400n },
+    upperTick: { rewardGrowthOutsideX128: 100n },
+  });
+  assert.equal(belowRange.rewardGrowthInsideX128, 300n, "below-range reward growth follows tick outside accounting");
+
+  const aboveRange = core.rewardGrowthInsideFromState({
+    tickLower: -100,
+    tickUpper: 100,
+    tickCurrent: 200,
+    rewardGrowthGlobalX128: 1000n,
+    lowerTick: { rewardGrowthOutsideX128: 100n },
+    upperTick: { rewardGrowthOutsideX128: 700n },
+  });
+  assert.equal(aboveRange.rewardGrowthInsideX128, 600n, "above-range reward growth follows tick outside accounting");
+
+  const uint256 = 1n << 256n;
+  const wrapped = core.rewardGrowthInsideFromState({
+    tickLower: -100,
+    tickUpper: 100,
+    tickCurrent: 0,
+    rewardGrowthGlobalX128: 5n,
+    lowerTick: { rewardGrowthOutsideX128: uint256 - 10n },
+    upperTick: { rewardGrowthOutsideX128: 2n },
+  });
+  assert.equal(wrapped.rewardGrowthInsideX128, 13n, "reward growth inside should support uint256 wraparound");
+}
+
 function testDilutedGrowthDelta() {
   const result = core.applyGrowthDelta({
     liquidityRaw: 100n,
@@ -186,6 +229,10 @@ async function testFindBlockAtOrAfter() {
   assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 111 })).number, 8, "after anchor should return first block at or after timestamp");
   assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 100 })).number, 1, "duplicate timestamps should return first duplicate");
   assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 100, afterBlock: 2 })).number, 2, "afterBlock should be part of lookup semantics");
+
+  const cache = new Map();
+  assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 100, afterBlock: 1, cache })).number, 1, "cached lookup should keep first duplicate semantics");
+  assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 100, afterBlock: 2, cache })).number, 2, "cached lookup should include afterBlock in cache key");
 }
 
 testTickPriceRoundTrip();
@@ -195,6 +242,7 @@ testReliabilityFloors();
 testAeroUsdcPriceOrder();
 testDataQualitySummary();
 testFeeGrowthInsideAccounting();
+testRewardGrowthInsideAccounting();
 testDilutedGrowthDelta();
 testFindBlockAtOrAfter().catch((error) => {
   console.error(error);

@@ -44,6 +44,15 @@
         </div>
         <div class="chartWrap">
           <canvas id="priceChart" width="1400" height="560"></canvas>
+          <button id="closeLiveView" class="closeLiveViewButton" type="button" hidden>Close Live View</button>
+          <button id="resetChartView" class="resetChartViewButton" type="button" hidden>RESET VIEW</button>
+          <div class="chartOverlay" id="serverBackgroundOverlay" hidden>
+            <div class="backgroundOverlayPanel">
+              <strong>Background mode</strong>
+              <div id="serverBackgroundOverlayText">Server simulation is running.</div>
+              <button id="openLiveView" type="button">Open Live View</button>
+            </div>
+          </div>
           <div class="tooltip" id="tooltip" hidden></div>
           <div class="tooltip simTooltip" id="simTooltip" hidden></div>
           <div class="tooltip tableTooltip" id="tableTooltip" hidden></div>
@@ -101,6 +110,7 @@
           </div>
         </div>
         <div class="simNotice" id="simNotice"></div>
+        <div class="backgroundProgressPanel" id="backgroundProgressPanel" hidden></div>
         <div class="simTableWrap" id="simTableWrap" hidden>
           <table class="simTable">
             <colgroup>

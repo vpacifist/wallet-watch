@@ -66,7 +66,9 @@ const state = {
     lpMode: "staked",
     rows: [],
     blockCache: new Map(),
+    blockByNumberCache: new Map(),
     aeroPriceCache: new Map(),
+    timing: { startedAtMs: 0, items: {} },
     aeroPriceReliability: 100,
     aeroPriceAgeSeconds: 0,
     tableHoverIndex: -1,
@@ -78,6 +80,8 @@ const state = {
     skeletonVisible: false,
     chartPriceMin: null,
     chartPriceMax: null,
+    initialChartView: null,
+    userAdjustedChartView: false,
   },
 };
 
@@ -86,6 +90,7 @@ const ctx = canvas.getContext("2d");
 const tooltip = document.getElementById("tooltip");
 const simTooltip = document.getElementById("simTooltip");
 const tableTooltip = document.getElementById("tableTooltip");
+const resetChartViewButton = document.getElementById("resetChartView");
 const statusEl = document.getElementById("status");
 const rangeNavigator = document.getElementById("rangeNavigator");
 const rangeTrack = document.getElementById("rangeTrack");
@@ -107,6 +112,11 @@ const simulationModeSelect = document.getElementById("simulationModeSelect");
 const simNotice = document.getElementById("simNotice");
 const simTableWrap = document.getElementById("simTableWrap");
 const simTableBody = document.getElementById("simTableBody");
+const backgroundProgressPanel = document.getElementById("backgroundProgressPanel");
+const serverBackgroundOverlay = document.getElementById("serverBackgroundOverlay");
+const serverBackgroundOverlayText = document.getElementById("serverBackgroundOverlayText");
+const openLiveViewButton = document.getElementById("openLiveView");
+const closeLiveViewButton = document.getElementById("closeLiveView");
 const serverJobs = document.getElementById("serverJobs");
 const serverJobsList = document.getElementById("serverJobsList");
 const refreshServerJobs = document.getElementById("refreshServerJobs");
@@ -136,6 +146,8 @@ const REBALANCE_MANUAL_FEE_BPS = Number(RUNTIME_CONFIG.rebalanceManualFeeBps ?? 
 const REBALANCE_GAS_UNITS = BigInt(RUNTIME_CONFIG.rebalanceGasUnits ?? 1450000);
 const REBALANCE_L1_DATA_FEE_ETH = Number(RUNTIME_CONFIG.rebalanceL1DataFeeEth ?? 0.000012);
 const REBALANCE_FALLBACK_SLIPPAGE_BPS = Number(RUNTIME_CONFIG.rebalanceFallbackSlippageBps ?? 5);
+const REBALANCE_CONFIRMATION_BUFFER_BPS = Number(RUNTIME_CONFIG.rebalanceConfirmationBufferBps ?? 5);
+const REBALANCE_CONFIRMATION_MINUTES = Number(RUNTIME_CONFIG.rebalanceConfirmationMinutes ?? 2);
 const AERO_IMPACT_HAIRCUT_MAX = Number(RUNTIME_CONFIG.aeroImpactHaircutMax ?? 0.5);
 const SERVER_SIMULATION_POLL_MS = Number(RUNTIME_CONFIG.serverSimulationPollMs ?? 2500);
 const BASE_RPC_URLS = ["/rpc"];
@@ -145,6 +157,7 @@ let baseRpcIndex = 0;
 const POOL_ADDRESS = "0xb2cc224c1c9fee385f8ad6a55b4d94e92359dc59";
 const AERO_USDC_POOL_ADDRESS = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1";
 const AERO_SLIPSTREAM_QUOTER = "0x254cF9E1E6e233aa1AC962CB9B05b2cfeAaE15b0";
+const MULTICALL3_ADDRESS = "0xca11bde05977b3631167028862be2a173976ca11";
 const AERO_ADDRESS = "0x940181a94A35A4569E4529A3CDfB74e38FD98631";
 const WETH_ADDRESS = "0x4200000000000000000000000000000000000006";
 const USDC_ADDRESS = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
@@ -164,14 +177,13 @@ const SELECTORS = {
   lastUpdated: "0xd0b06f5d",
   stakedLiquidity: "0x3ab04b20",
   liquidity: "0x1a686502",
-  fee: "0xddca3f43",
   feeGrowthGlobal0X128: "0xf3058399",
   feeGrowthGlobal1X128: "0x46141319",
   ticks: "0xf30dba93",
-  getRewardGrowthInside: "0xa16368c9",
   quoteExactInputSingle: "0x9e7defe6",
   token0: "0x0dfe1681",
   token1: "0xd21220a7",
+  aggregate3: "0x82ad56cb",
 };
 let aeroUsdcTokenOrder = null;
 const serverSimulation = {
@@ -186,6 +198,9 @@ const serverSimulation = {
   rawRows: [],
   startedAtMs: 0,
   lastSimulation: null,
+  uiMode: "live",
+  liveViewOpen: true,
+  finalResultFetched: false,
 };
 const appTabs = {
   active: "new",
@@ -236,6 +251,7 @@ const {
   rewardStateReliability,
   scoreFromThresholds,
   feeGrowthInsideFromState,
+  rewardGrowthInsideFromState,
   growthDeltaIn256,
   applyGrowthDelta,
   normalizeSourceLabel,
@@ -279,16 +295,88 @@ function isPlanLimitError(error) {
   return msg.includes("archive") || msg.includes("plan") || msg.includes("allowance") || msg.includes("limit") || msg.includes("method not allowed") || msg.includes("debug") || msg.includes("trace");
 }
 
+function resetSimulationTiming() {
+  state.sim.timing = { startedAtMs: performance.now(), items: {} };
+}
+
+function recordSimulationTiming(name, startedAt) {
+  const elapsedMs = Math.max(0, performance.now() - startedAt);
+  const items = state.sim.timing.items || (state.sim.timing.items = {});
+  const item = items[name] || { count: 0, totalMs: 0, maxMs: 0 };
+  item.count += 1;
+  item.totalMs += elapsedMs;
+  item.maxMs = Math.max(item.maxMs, elapsedMs);
+  items[name] = item;
+}
+
+function getSimulationTiming() {
+  const items = Object.entries(state.sim.timing.items || {}).map(([name, item]) => ({
+    name,
+    count: item.count,
+    totalMs: Number(item.totalMs.toFixed(1)),
+    avgMs: Number((item.totalMs / Math.max(1, item.count)).toFixed(1)),
+    maxMs: Number(item.maxMs.toFixed(1)),
+  })).sort((a, b) => b.totalMs - a.totalMs);
+  return {
+    elapsedMs: state.sim.timing.startedAtMs ? Number((performance.now() - state.sim.timing.startedAtMs).toFixed(1)) : 0,
+    items,
+  };
+}
+
 function chartPriceBounds(rows) {
   const bounds = priceBounds(rows);
-  if (Number.isFinite(state.sim.chartPriceMin)) bounds.min = Math.min(bounds.min, state.sim.chartPriceMin);
-  if (Number.isFinite(state.sim.chartPriceMax)) bounds.max = Math.max(bounds.max, state.sim.chartPriceMax);
-  if (state.sim.started) {
+  const useSimulationInitialView = hasSimulationInitialChartView() && !state.sim.userAdjustedChartView;
+  if (useSimulationInitialView && Number.isFinite(state.sim.chartPriceMin)) bounds.min = Math.min(bounds.min, state.sim.chartPriceMin);
+  if (useSimulationInitialView && Number.isFinite(state.sim.chartPriceMax)) bounds.max = Math.max(bounds.max, state.sim.chartPriceMax);
+  if (state.sim.started && !state.sim.userAdjustedChartView) {
     const prices = simRangePrices();
     bounds.min = Math.min(bounds.min, prices.lower);
     bounds.max = Math.max(bounds.max, prices.upper);
   }
   return bounds;
+}
+
+function hasSimulationInitialChartView() {
+  const view = state.sim.initialChartView;
+  return Boolean(view && Number.isFinite(view.zoomStart) && Number.isFinite(view.zoomEnd));
+}
+
+function updateResetChartViewButton() {
+  if (!resetChartViewButton) return;
+  const simulationActive = state.sim.started || state.sim.initializing || state.sim.autoRunning || serverSimulation.running || serverSimulation.paused;
+  resetChartViewButton.hidden = !(simulationActive && state.sim.userAdjustedChartView && hasSimulationInitialChartView());
+}
+
+function captureSimulationInitialChartView() {
+  state.sim.initialChartView = {
+    zoomStart: state.zoomStart,
+    zoomEnd: state.zoomEnd,
+    chartPriceMin: state.sim.chartPriceMin,
+    chartPriceMax: state.sim.chartPriceMax,
+  };
+  state.sim.userAdjustedChartView = false;
+  updateResetChartViewButton();
+}
+
+function updateSimulationInitialChartBounds() {
+  if (!hasSimulationInitialChartView()) return;
+  state.sim.initialChartView.chartPriceMin = state.sim.chartPriceMin;
+  state.sim.initialChartView.chartPriceMax = state.sim.chartPriceMax;
+}
+
+function resetToSimulationInitialChartView() {
+  if (!hasSimulationInitialChartView()) return;
+  const view = state.sim.initialChartView;
+  state.zoomStart = view.zoomStart;
+  state.zoomEnd = view.zoomEnd;
+  state.sim.chartPriceMin = view.chartPriceMin;
+  state.sim.chartPriceMax = view.chartPriceMax;
+  state.sim.userAdjustedChartView = false;
+  state.hoverIndex = -1;
+  state.releaseRows = null;
+  updateMetrics(getVisibleRows());
+  updateResetChartViewButton();
+  draw();
 }
 
 function setSimulationChartPriceBounds(startIndex, endIndex) {
@@ -311,6 +399,7 @@ function setSimulationChartPriceBounds(startIndex, endIndex) {
   });
   state.sim.chartPriceMin = min;
   state.sim.chartPriceMax = max;
+  updateSimulationInitialChartBounds();
 }
 
 async function rpcCall(method, params) {
@@ -371,13 +460,98 @@ async function rpcBatch(calls) {
   throw lastError || new Error("Base RPC batch error");
 }
 
+function hexNoPrefix(value) {
+  return String(value || "").replace(/^0x/i, "");
+}
+
+function abiWord(value) {
+  return BigInt(value).toString(16).padStart(64, "0");
+}
+
+function abiAddress(address) {
+  return hexNoPrefix(address).toLowerCase().padStart(64, "0");
+}
+
+function abiBool(value) {
+  return value ? abiWord(1n) : abiWord(0n);
+}
+
+function abiBytes(hexData) {
+  const clean = hexNoPrefix(hexData);
+  const paddedLength = Math.ceil(clean.length / 64) * 64;
+  return `${abiWord(BigInt(clean.length / 2))}${clean.padEnd(paddedLength, "0")}`;
+}
+
+function encodeAggregate3Call(calls) {
+  const heads = [];
+  const tails = [];
+  let offset = BigInt(32 * calls.length);
+  for (const call of calls) {
+    const encodedCall = `${abiAddress(call.target)}${abiBool(call.allowFailure)}${abiWord(96n)}${abiBytes(call.callData)}`;
+    heads.push(abiWord(offset));
+    tails.push(encodedCall);
+    offset += BigInt(encodedCall.length / 2);
+  }
+  return `0x${SELECTORS.aggregate3.slice(2)}${abiWord(32n)}${abiWord(BigInt(calls.length))}${heads.join("")}${tails.join("")}`;
+}
+
+function decodeAggregate3Result(data, expectedLength) {
+  const clean = hexNoPrefix(data);
+  const arrayOffset = Number(BigInt(`0x${clean.slice(0, 64)}`)) * 2;
+  const length = Number(BigInt(`0x${clean.slice(arrayOffset, arrayOffset + 64)}`));
+  if (length !== expectedLength) throw new Error("Multicall result length mismatch");
+  const results = [];
+  const base = arrayOffset + 64;
+  for (let index = 0; index < length; index += 1) {
+    const tupleOffset = Number(BigInt(`0x${clean.slice(base + index * 64, base + (index + 1) * 64)}`)) * 2;
+    const tupleStart = base + tupleOffset;
+    const success = BigInt(`0x${clean.slice(tupleStart, tupleStart + 64)}`) !== 0n;
+    const returnOffset = Number(BigInt(`0x${clean.slice(tupleStart + 64, tupleStart + 128)}`)) * 2;
+    const returnLengthOffset = tupleStart + returnOffset;
+    const returnLength = Number(BigInt(`0x${clean.slice(returnLengthOffset, returnLengthOffset + 64)}`)) * 2;
+    const returnStart = returnLengthOffset + 64;
+    if (!success) throw new Error("Multicall subcall failed");
+    results.push(`0x${clean.slice(returnStart, returnStart + returnLength)}`);
+  }
+  return results;
+}
+
+async function readPoolStateBatch(tag, callDataItems) {
+  const startedAt = performance.now();
+  const calls = callDataItems.map((data) => ({
+    target: POOL_ADDRESS,
+    allowFailure: false,
+    callData: data,
+  }));
+  try {
+    const result = await rpcCall("eth_call", [{ to: MULTICALL3_ADDRESS, data: encodeAggregate3Call(calls) }, tag]);
+    return decodeAggregate3Result(result, calls.length);
+  } catch (error) {
+    return await rpcBatch(callDataItems.map((data) => ({
+      method: "eth_call",
+      params: [{ to: POOL_ADDRESS, data }, tag],
+    })));
+  } finally {
+    recordSimulationTiming("readPoolStateBatch", startedAt);
+  }
+}
+
 async function getBlock(blockNumber) {
+  const cached = state.sim.blockByNumberCache.get(blockNumber);
+  if (cached) {
+    recordSimulationTiming("getBlock.cacheHit", performance.now());
+    return cached;
+  }
+  const startedAt = performance.now();
   const block = await rpcCall("eth_getBlockByNumber", [blockTag(blockNumber), false]);
-  return {
+  const normalized = {
     number: Number(BigInt(block.number)),
     timestamp: Number(BigInt(block.timestamp)),
     baseFeePerGas: block.baseFeePerGas ? BigInt(block.baseFeePerGas) : 0n,
   };
+  state.sim.blockByNumberCache.set(blockNumber, normalized);
+  recordSimulationTiming("getBlock.rpc", startedAt);
+  return normalized;
 }
 
 async function latestBlockNumber() {
@@ -385,14 +559,19 @@ async function latestBlockNumber() {
 }
 
 async function findBlockAtOrAfter(timestampSeconds, afterBlock = 1) {
-  return await findBlockAtOrAfterWithGetter({
-    timestampSeconds,
-    afterBlock,
-    anchor: BASE_BLOCK_ANCHOR,
-    secondsPerBlock: BASE_SECONDS_PER_BLOCK,
-    getBlock,
-    cache: state.sim.blockCache,
-  });
+  const startedAt = performance.now();
+  try {
+    return await findBlockAtOrAfterWithGetter({
+      timestampSeconds,
+      afterBlock,
+      anchor: BASE_BLOCK_ANCHOR,
+      secondsPerBlock: BASE_SECONDS_PER_BLOCK,
+      getBlock,
+      cache: state.sim.blockCache,
+    });
+  } finally {
+    recordSimulationTiming("findBlockAtOrAfter", startedAt);
+  }
 }
 
 function decodeSlot0(data) {
@@ -415,27 +594,32 @@ function decodeTickInfo(data) {
 }
 
 async function readPoolSlot0(poolAddress, blockNumber) {
-  const data = await rpcCall("eth_call", [{ to: poolAddress, data: SELECTORS.slot0 }, blockTag(blockNumber)]);
-  return decodeSlot0(data);
+  const startedAt = performance.now();
+  try {
+    const data = await rpcCall("eth_call", [{ to: poolAddress, data: SELECTORS.slot0 }, blockTag(blockNumber)]);
+    return decodeSlot0(data);
+  } finally {
+    recordSimulationTiming(poolAddress === AERO_USDC_POOL_ADDRESS ? "readAeroPoolSlot0" : "readPoolSlot0", startedAt);
+  }
 }
 
 async function readRewardInside(blockNumber, tickLower, tickUpper) {
+  const startedAt = performance.now();
   const tag = blockTag(blockNumber);
   const tickLowerData = `${SELECTORS.ticks}${encodeInt24(tickLower)}`;
   const tickUpperData = `${SELECTORS.ticks}${encodeInt24(tickUpper)}`;
-  const [slotData, globalData, rateData, reserveData, lastUpdatedData, stakedData, activeLiquidityData, feeData, feeGlobal0Data, feeGlobal1Data, lowerTickData, upperTickData] = await rpcBatch([
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.slot0 }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.rewardGrowthGlobal }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.rewardRate }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.rewardReserve }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.lastUpdated }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.stakedLiquidity }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.liquidity }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.fee }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.feeGrowthGlobal0X128 }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: SELECTORS.feeGrowthGlobal1X128 }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: tickLowerData }, tag] },
-    { method: "eth_call", params: [{ to: POOL_ADDRESS, data: tickUpperData }, tag] },
+  const [slotData, globalData, rateData, reserveData, lastUpdatedData, stakedData, activeLiquidityData, feeGlobal0Data, feeGlobal1Data, lowerTickData, upperTickData] = await readPoolStateBatch(tag, [
+    SELECTORS.slot0,
+    SELECTORS.rewardGrowthGlobal,
+    SELECTORS.rewardRate,
+    SELECTORS.rewardReserve,
+    SELECTORS.lastUpdated,
+    SELECTORS.stakedLiquidity,
+    SELECTORS.liquidity,
+    SELECTORS.feeGrowthGlobal0X128,
+    SELECTORS.feeGrowthGlobal1X128,
+    tickLowerData,
+    tickUpperData,
   ]);
   const block = await getBlock(blockNumber);
   const slot = decodeSlot0(slotData);
@@ -445,7 +629,6 @@ async function readRewardInside(blockNumber, tickLower, tickUpper) {
   const lastUpdated = hexToBigInt(lastUpdatedData);
   const stakedLiquidity = hexToBigInt(stakedData);
   const activeLiquidity = hexToBigInt(activeLiquidityData);
-  const feeRate = Number(hexToBigInt(feeData)) / 1_000_000;
   const feeGrowthGlobal0X128 = hexToBigInt(feeGlobal0Data);
   const feeGrowthGlobal1X128 = hexToBigInt(feeGlobal1Data);
   const lowerTick = decodeTickInfo(lowerTickData);
@@ -465,22 +648,31 @@ async function readRewardInside(blockNumber, tickLower, tickUpper) {
   let reward = expectedReward;
   if (reward > rewardReserve) reward = rewardReserve;
   const calculatedGlobal = stakedLiquidity > 0n ? storedGlobal + reward * Q128 / stakedLiquidity : storedGlobal;
-  const data = `${SELECTORS.getRewardGrowthInside}${encodeInt24(tickLower)}${encodeInt24(tickUpper)}${encodeUint256(calculatedGlobal)}`;
-  const rewardInside = hexToBigInt(await rpcCall("eth_call", [{ to: POOL_ADDRESS, data }, tag]));
-  return {
-    rewardInside,
-    stakedLiquidity,
-    activeLiquidity,
-    tick: slot.tick,
-    sqrtPriceX96: slot.sqrtPriceX96,
-    block,
-    rewardElapsedSeconds,
-    rewardReserveCapped: expectedReward > rewardReserve,
-    feeRate,
-    feeGrowthGlobal0X128,
-    feeGrowthGlobal1X128,
-    ...feeGrowthInside,
-  };
+  const rewardInside = rewardGrowthInsideFromState({
+    tickLower,
+    tickUpper,
+    tickCurrent: slot.tick,
+    rewardGrowthGlobalX128: calculatedGlobal,
+    lowerTick,
+    upperTick,
+  }).rewardGrowthInsideX128;
+  try {
+    return {
+      rewardInside,
+      stakedLiquidity,
+      activeLiquidity,
+      tick: slot.tick,
+      sqrtPriceX96: slot.sqrtPriceX96,
+      block,
+      rewardElapsedSeconds,
+      rewardReserveCapped: expectedReward > rewardReserve,
+      feeGrowthGlobal0X128,
+      feeGrowthGlobal1X128,
+      ...feeGrowthInside,
+    };
+  } finally {
+    recordSimulationTiming("readRewardInside", startedAt);
+  }
 }
 
 async function getAeroUsdcTokenOrder(blockNumber) {
@@ -497,10 +689,12 @@ async function getAeroUsdcTokenOrder(blockNumber) {
 }
 
 async function getAeroPrice(blockNumber) {
+  const startedAt = performance.now();
   const cached = state.sim.aeroPriceCache.get(blockNumber);
   if (cached) {
     state.sim.aeroPriceReliability = cached.reliability;
     state.sim.aeroPriceAgeSeconds = 0;
+    recordSimulationTiming("getAeroPrice.cacheHit", startedAt);
     return cached.price;
   }
   try {
@@ -514,6 +708,7 @@ async function getAeroPrice(blockNumber) {
     state.sim.aeroPriceCache.set(blockNumber, { price, reliability });
     state.sim.aeroPriceReliability = reliability;
     state.sim.aeroPriceAgeSeconds = 0;
+    recordSimulationTiming("getAeroPrice", startedAt);
     return price;
   } catch (error) {
     let nearest = null;
@@ -529,13 +724,17 @@ async function getAeroPrice(blockNumber) {
       const ageSeconds = nearestBlockDistance * BASE_SECONDS_PER_BLOCK;
       state.sim.aeroPriceReliability = Math.min(nearest.reliability, aeroPriceReliability(ageSeconds) - 8);
       state.sim.aeroPriceAgeSeconds = ageSeconds;
+      recordSimulationTiming("getAeroPrice.fallback", startedAt);
       return nearest.price;
     }
+    recordSimulationTiming("getAeroPrice.error", startedAt);
     throw error;
   }
 }
 
 async function findSwapExit(fromBlock, toBlock, tickLower, tickUpper, after = null) {
+  const startedAt = performance.now();
+  try {
   if (toBlock < fromBlock) return null;
   const logs = await getSwapLogs(fromBlock, toBlock);
   for (const log of logs) {
@@ -554,9 +753,14 @@ async function findSwapExit(fromBlock, toBlock, tickLower, tickUpper, after = nu
     }
   }
   return null;
+  } finally {
+    recordSimulationTiming("findSwapExit", startedAt);
+  }
 }
 
 async function getSwapLogs(fromBlock, toBlock) {
+  const startedAt = performance.now();
+  try {
   if (toBlock < fromBlock) return [];
   const logs = await rpcCall("eth_getLogs", [{
     address: POOL_ADDRESS,
@@ -573,6 +777,9 @@ async function getSwapLogs(fromBlock, toBlock) {
     if (leftTx !== rightTx) return leftTx - rightTx;
     return Number(BigInt(left.logIndex || "0x0")) - Number(BigInt(right.logIndex || "0x0"));
   });
+  } finally {
+    recordSimulationTiming("getSwapLogs", startedAt);
+  }
 }
 
 function decodeSwapLog(log) {
@@ -588,6 +795,8 @@ function decodeSwapLog(log) {
 }
 
 async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
+  const startedAt = performance.now();
+  try {
   if (toBlock < fromBlock || state.sim.liquidityRaw <= 0n) {
     return { weth: 0, usdc: 0, usdcValue: 0, source: "no-block-range", sourceLabel: "exact-onchain", reliability: 100, swapCount: 0 };
   }
@@ -668,9 +877,14 @@ async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
     reliability: swapCount ? 68 : 92,
     swapCount,
   };
+  } finally {
+    recordSimulationTiming("estimateLpFees", startedAt);
+  }
 }
 
 async function quoteAerodromeSwap(tokenIn, tokenOut, amountInRaw, blockNumber) {
+  const startedAt = performance.now();
+  try {
   if (amountInRaw <= 0n) return { amountOutRaw: 0n, source: "no-swap", reliability: 100, sourceLabel: "exact-onchain" };
   const validPair = new Set([tokenIn.toLowerCase(), tokenOut.toLowerCase()]);
   if (!validPair.has(WETH_ADDRESS.toLowerCase()) || !validPair.has(USDC_ADDRESS.toLowerCase())) {
@@ -698,9 +912,14 @@ async function quoteAerodromeSwap(tokenIn, tokenOut, amountInRaw, blockNumber) {
     `calldata=${data}`,
   ].join(" ");
   throw new Error(`historical swap quote failed after 2 attempts: ${context}`);
+  } finally {
+    recordSimulationTiming("quoteAerodromeSwap", startedAt);
+  }
 }
 
 async function estimateHistoricalSwap(swap, price, blockNumber) {
+  const startedAt = performance.now();
+  try {
   if (swap.amount <= 0) {
     return { outputAmount: 0, lossUsdc: 0, source: "no-swap", sourceLabel: "exact-onchain", reliability: 100 };
   }
@@ -728,6 +947,9 @@ async function estimateHistoricalSwap(swap, price, blockNumber) {
     reliability: quote.reliability,
     quoteAttempts: quote.attempts,
   };
+  } finally {
+    recordSimulationTiming("estimateHistoricalSwap", startedAt);
+  }
 }
 
 async function buildRebalanceRow(index, exit, block, runToken = null) {
@@ -772,14 +994,31 @@ function activeChartSimulationRow() {
 }
 
 function simulationChartTooltip(row, marketRow) {
+  const marketClose = Number(marketRow?.close);
+  const executionPrice = Number(row?.price);
+  const displayPrice = row?.rebalance && Number.isFinite(marketClose)
+    ? marketClose
+    : (Number.isFinite(executionPrice) ? executionPrice : marketRow?.close);
   const lines = [
     `${fmtTime(row?.time || marketRow?.time || "")}`,
-    `<strong>${fmtPrice(row?.price ?? marketRow?.close)}</strong>`,
+    `<strong>${fmtPrice(displayPrice)}</strong>`,
   ];
   if (row?.event) lines.push(row.event);
   if (row?.rebalance) {
     const rb = row.rebalance;
+    const confirmationBufferBps = Number(rb.confirmationBufferBps);
+    if (
+      Number.isFinite(marketClose)
+      && Number.isFinite(executionPrice)
+      && Math.abs(executionPrice - marketClose) / Math.max(1, marketClose) > 0.001
+    ) {
+      lines.push(`execution ${fmtPrice(executionPrice)}`);
+      lines.push(`candle close ${fmtPrice(marketClose)}`);
+    }
     lines.push(`range ${rb.oldTickLower}..${rb.oldTickUpper} → ${rb.newTickLower}..${rb.newTickUpper}`);
+    lines.push(`trigger ${fmtPrice(priceForTick(rb.oldTickLower))}..${fmtPrice(priceForTick(rb.oldTickUpper))}`);
+    if (Number.isFinite(confirmationBufferBps)) lines.push(`buffer ${fmtNumber(confirmationBufferBps, 2)} bps`);
+    if (Number.isFinite(Number(rb.confirmationMinutes))) lines.push(`confirm ${Number(rb.confirmationMinutes)} min`);
     if (rb.swapIsFallback) lines.push(`swap fallback: ${summarizeFallbackReason(rb.quoteFailureReason)}`);
   }
   return lines.join("<br>");
@@ -1223,7 +1462,8 @@ function draw() {
     rebalanceRows.forEach((simRow) => {
       const timestamp = simRow.timestamp ? simRow.timestamp * 1000 : new Date(simRow.time || state.rows[simRow.index]?.time || "").getTime();
       if (!Number.isFinite(timestamp) || timestamp < firstTime || timestamp > lastTime) return;
-      const price = Number.isFinite(simRow.price) ? simRow.price : state.rows[simRow.index]?.close;
+      const marketClose = Number(state.rows[simRow.index]?.close);
+      const price = Number.isFinite(marketClose) ? marketClose : Number(simRow.price);
       if (!Number.isFinite(price)) return;
       const x = xForTime(timestamp);
       const y = yFor(price);
@@ -1459,6 +1699,15 @@ function serverProcessingTimestamp(simulation) {
   return formatProgressTimestamp(latest?.time || latest?.timestamp || "");
 }
 
+function serverProcessingLabel(simulation) {
+  const progress = simulation?.progress || {};
+  const result = simulation?.result || {};
+  const latest = result.latestRawRow || progress.latestRawRow || serverSimulation.rawRows.at(-1) || null;
+  const timestamp = formatProgressTimestamp(latest?.time || latest?.timestamp || "");
+  const event = String(latest?.event || "").trim();
+  return [timestamp, event].filter(Boolean).join(" · ");
+}
+
 function serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows) {
   if (!serverSimulation.running || rowsDone <= 0 || totalRows <= rowsDone || elapsedSeconds <= 0) return "—";
   const remainingSeconds = (elapsedSeconds / rowsDone) * (totalRows - rowsDone);
@@ -1569,6 +1818,7 @@ function applyInitialRange(range) {
   if (Number.isFinite(Number(range.rangeWidth))) state.sim.rangeWidth = Number(range.rangeWidth);
   state.sim.initialRangeReady = true;
   setSimulationChartPriceBounds(state.sim.startIndex, state.sim.endIndex);
+  if (!hasSimulationInitialChartView()) captureSimulationInitialChartView();
   draw();
   return true;
 }
@@ -1661,6 +1911,7 @@ function zoomToSimulationRange(startIndex, endIndex) {
 }
 
 function updateSimulationControls() {
+  updateResetChartViewButton();
   if (simulationModeSelect) simulationModeSelect.value = state.sim.lpMode;
   if (SERVER_SIMULATION_MODE) {
     if (serverSimulation.running && !serverSimulation.paused) {
@@ -1711,6 +1962,10 @@ function resetSimulationRows() {
   state.sim.stepDurations = [];
   state.sim.etaMs = 0;
   state.sim.rows = [];
+  resetSimulationTiming();
+  simulationEngine.resetSequentialBlockCursor();
+  state.sim.blockCache = new Map();
+  state.sim.blockByNumberCache = new Map();
   state.sim.started = false;
   state.sim.stopped = false;
   state.sim.rewardStart = 0n;
@@ -1742,6 +1997,9 @@ function resetSimulationRows() {
   state.sim.skeletonVisible = false;
   state.sim.chartPriceMin = null;
   state.sim.chartPriceMax = null;
+  state.sim.initialChartView = null;
+  state.sim.userAdjustedChartView = false;
+  updateResetChartViewButton();
   document.body?.classList?.toggle("simSkeletonActive", false);
   simTableBody.innerHTML = "";
   simTableWrap.hidden = true;
@@ -1760,7 +2018,9 @@ function simulationRowTitle(row) {
   if (!row.rebalance) return details;
   const rb = row.rebalance;
   const quoteFailure = rb.swapIsFallback && rb.quoteFailureReason ? `; fallback reason: ${summarizeFallbackReason(rb.quoteFailureReason)}` : "";
-  return `${details}; swap ${rb.swapDirection} via ${rb.swapSource}; swap loss ${fmtUsdc(rb.swapLossUsdc)}; gas ${fmtUsdc(rb.gasUsdc)}; fee ${fmtUsdc(rb.automationFeeUsdc)}; ticks ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}${quoteFailure}`;
+  const buffer = Number.isFinite(rb.confirmationBufferBps) ? `; confirm buffer ${fmtNumber(rb.confirmationBufferBps, 2)} bps` : "";
+  const confirmMinutes = Number.isFinite(Number(rb.confirmationMinutes)) ? `; confirm ${Number(rb.confirmationMinutes)} min` : "";
+  return `${details}; swap ${rb.swapDirection} via ${rb.swapSource}; swap loss ${fmtUsdc(rb.swapLossUsdc)}; gas ${fmtUsdc(rb.gasUsdc)}; fee ${fmtUsdc(rb.automationFeeUsdc)}; ticks ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}${buffer}${confirmMinutes}${quoteFailure}`;
 }
 
 function compactNumber(value, digits = 8) {
@@ -1845,6 +2105,8 @@ function simulationRowToRaw(row) {
       swapSourceLabel: normalizeSourceLabel(row.rebalance.swapSourceLabel || (row.rebalance.swapIsFallback ? "fallback" : "reconstructed-onchain")),
       swapIsFallback: Boolean(row.rebalance.swapIsFallback),
       fallbackSlippageBps: compactNumber(row.rebalance.fallbackSlippageBps, 4),
+      confirmationBufferBps: compactNumber(row.rebalance.confirmationBufferBps ?? REBALANCE_CONFIRMATION_BUFFER_BPS, 4),
+      confirmationMinutes: row.rebalance.confirmationMinutes ?? REBALANCE_CONFIRMATION_MINUTES,
       quoteFailureReason: row.rebalance.quoteFailureReason || "",
       quoteAttempts: row.rebalance.quoteAttempts || 0,
       swapLossUsdc: compactNumber(row.rebalance.swapLossUsdc, 6),
@@ -1868,6 +2130,33 @@ function simulationRowToRaw(row) {
 
 function getSimulationRawRows() {
   return state.sim.rows.map(simulationRowToRaw).filter(Boolean);
+}
+
+function getSimulationRawRowsFrom(startIndex = 0) {
+  return state.sim.rows.slice(Math.max(0, startIndex)).map(simulationRowToRaw).filter(Boolean);
+}
+
+function getSimulationDisplayRows() {
+  return getSimulationRawRows().map((row) => simulationRawRowToCells(row).join("\t"));
+}
+
+function getSimulationDisplayState() {
+  const last = state.sim.rows.at(-1);
+  const raw = last ? simulationRowToRaw(last) : null;
+  const isStaked = state.sim.lpMode === "staked";
+  const rewardValue = last ? (isStaked ? last.aeroTotalUsdc ?? last.aeroUsdc : last.lpFeesTotalUsdc ?? 0) : 0;
+  const totalReturnValue = last ? last.totalReturnUsdc ?? rewardValue : 0;
+  return {
+    rowCount: state.sim.rows.length,
+    lastRow: raw ? simulationRawRowToCells(raw).join("\t") : "",
+    currentValue: last ? fmtUsdc(last.value) : currentPositionValue.textContent || "",
+    currentReward: last ? fmtUsdc(rewardValue) : currentRewardValue.textContent || "",
+    currentTotalReturn: last ? fmtUsdc(totalReturnValue) : currentTotalValue.textContent || "",
+  };
+}
+
+function getSimulationRawRowCount() {
+  return state.sim.rows.length;
 }
 
 function getSimulationDataQuality() {
@@ -1908,6 +2197,24 @@ function simulationRawRowToCells(row) {
 }
 
 function renderSimulationTable(scrollToLatest = false) {
+  const startedAt = performance.now();
+  try {
+  if (IS_SERVER_WORKER) {
+    const last = state.sim.rows[state.sim.rows.length - 1];
+    simTableWrap.hidden = state.sim.rows.length === 0;
+    if (last) {
+      setSimulationSkeletonVisible(false);
+      currentPositionValue.textContent = fmtUsdc(last.value);
+      const isStaked = state.sim.lpMode === "staked";
+      const rewardValue = isStaked ? last.aeroTotalUsdc ?? last.aeroUsdc : last.lpFeesTotalUsdc ?? 0;
+      const totalReturnValue = last.totalReturnUsdc ?? rewardValue;
+      currentRewardLabel.textContent = isStaked ? "AERO, $" : "LP fees, $";
+      currentRewardValue.textContent = fmtUsdc(rewardValue);
+      currentTotalValue.textContent = fmtUsdc(totalReturnValue);
+    }
+    updateSimulationControls();
+    return;
+  }
   if (!state.sim.rows.length && state.sim.skeletonVisible) {
     renderSimulationTableSkeleton();
     updateSimulationControls();
@@ -1968,6 +2275,9 @@ function renderSimulationTable(scrollToLatest = false) {
     }
   }
   draw();
+  } finally {
+    recordSimulationTiming("renderSimulationTable", startedAt);
+  }
 }
 
 function setSimulationNotice(message, isError = false) {
@@ -2065,14 +2375,19 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   REBALANCE_GAS_UNITS,
   REBALANCE_L1_DATA_FEE_ETH,
   REBALANCE_FALLBACK_SLIPPAGE_BPS,
+  REBALANCE_CONFIRMATION_BUFFER_BPS,
+  REBALANCE_CONFIRMATION_MINUTES,
   AERO_IMPACT_HAIRCUT_MAX,
   Q128,
   AERO_DECIMALS,
   recordSimulationStepDuration,
+  recordSimulationTiming,
   simulationProgressText,
   setSimulationNotice,
   renderSimulationTable,
   updateSimulationControls,
+  isServerWorker: IS_SERVER_WORKER,
+  secondsPerBlock: BASE_SECONDS_PER_BLOCK,
 });
 
 function showTokenPrompt() {
@@ -2152,7 +2467,7 @@ function serverSimulationText(simulation) {
   const payload = Object.keys(result).length ? result : progress;
   const rawRows = payload.rawRows || progress.rawRows || result.rawRows || [];
   const latestRawRow = payload.latestRawRow || rawRows.at?.(-1) || null;
-  const rows = payload.rows || 0;
+  const rows = payload.rows || payload.rawRowCount || progress.rawRowCount || result.rawRowCount || 0;
   const elapsed = payload.elapsedSeconds ? formatDuration(payload.elapsedSeconds * 1000) : "";
   const notice = (payload.notice || simulation?.error || "").replace(/до даты конца/g, "до конца");
   return {
@@ -2182,6 +2497,94 @@ function serverElapsedSeconds(simulation) {
   return localElapsedSeconds(serverSimulation.startedAtMs);
 }
 
+function isServerLiveRenderingActive() {
+  if (!SERVER_SIMULATION_MODE) return false;
+  if (!serverSimulation.id) return true;
+  if (!serverSimulation.running) return true;
+  return serverSimulation.liveViewOpen;
+}
+
+function setServerUiMode(mode) {
+  serverSimulation.uiMode = mode === "background" ? "background" : "live";
+  serverSimulation.liveViewOpen = serverSimulation.uiMode === "live";
+  renderServerObservationMode();
+}
+
+function serverProgressSummary(simulation) {
+  const info = serverSimulationText(simulation);
+  const elapsedSeconds = serverElapsedSeconds(simulation);
+  const rowsDone = Number(info.rows || 0);
+  const totalRows = estimateServerTotalRows(simulation);
+  return {
+    status: serverSimulation.paused
+      ? "paused"
+      : (rowsDone > 0 ? (simulation?.status || "running") : serverInitializationStage(simulation)),
+    elapsed: formatCompactDurationSeconds(elapsedSeconds),
+    processing: serverProcessingLabel(simulation) || (state.sim.initialRangeReady ? simRangeText() : "Range: calculating..."),
+    rows: (state.sim.skeletonVisible && !serverSimulation.rawRows.length)
+      ? (totalRows > 0 ? `— / ${totalRows}` : "—")
+      : (totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / —` : "—")),
+    eta: serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows),
+  };
+}
+
+function renderBackgroundProgressPanel(summary) {
+  if (!backgroundProgressPanel) return;
+  backgroundProgressPanel.replaceChildren();
+  const rows = [
+    ["Status", summary.status],
+    ["Rows", summary.rows],
+    ["Elapsed", summary.elapsed],
+    ["ETA", summary.eta],
+    ["Processing", summary.processing],
+  ];
+  rows.forEach(([label, value]) => {
+    const item = document.createElement("div");
+    item.className = "backgroundProgressItem";
+    const labelEl = document.createElement("span");
+    labelEl.textContent = label;
+    const valueEl = document.createElement("strong");
+    valueEl.textContent = value || "—";
+    item.append(labelEl, valueEl);
+    backgroundProgressPanel.append(item);
+  });
+}
+
+function renderServerObservationMode(summary = null) {
+  const backgroundActive = SERVER_SIMULATION_MODE
+    && serverSimulation.id
+    && serverSimulation.running
+    && !serverSimulation.liveViewOpen;
+  if (serverBackgroundOverlay) serverBackgroundOverlay.hidden = !backgroundActive;
+  if (backgroundProgressPanel) backgroundProgressPanel.hidden = !backgroundActive;
+  if (simNotice) simNotice.hidden = backgroundActive;
+  if (closeLiveViewButton) closeLiveViewButton.hidden = !(SERVER_SIMULATION_MODE && serverSimulation.id && serverSimulation.running && serverSimulation.liveViewOpen);
+  if (serverBackgroundOverlayText && summary) {
+    serverBackgroundOverlayText.textContent = `${summary.status || "running"} · ${summary.rows || "—"} rows · ETA ${summary.eta || "—"}`;
+  }
+  if (backgroundActive) {
+    if (summary) renderBackgroundProgressPanel(summary);
+    simTableWrap.hidden = true;
+  }
+}
+
+function openServerLiveView() {
+  if (!SERVER_SIMULATION_MODE || !serverSimulation.id) return;
+  serverSimulation.liveViewOpen = true;
+  serverSimulation.uiMode = "live";
+  if (simNotice) simNotice.hidden = false;
+  renderServerObservationMode(serverSimulation.lastSimulation ? serverProgressSummary(serverSimulation.lastSimulation) : null);
+  if (serverSimulation.lastSimulation) renderServerSimulation(serverSimulation.lastSimulation);
+}
+
+function closeServerLiveView() {
+  if (!SERVER_SIMULATION_MODE || !serverSimulation.id || !serverSimulation.running) return;
+  serverSimulation.liveViewOpen = false;
+  serverSimulation.uiMode = "background";
+  renderServerObservationMode(serverSimulation.lastSimulation ? serverProgressSummary(serverSimulation.lastSimulation) : null);
+  updateSimulationControls();
+}
+
 function applyServerRawProgress(simulation) {
   if (!SERVER_SIMULATION_MODE) return;
   const progress = simulation?.progress || {};
@@ -2189,6 +2592,9 @@ function applyServerRawProgress(simulation) {
   const progressRows = progress.rawRows;
   if (!serverSimulation.rawRows.length && progress.initialRange) {
     applyInitialRange(progress.initialRange);
+  }
+  if (!isServerLiveRenderingActive() && !Array.isArray(resultRows)) {
+    return;
   }
   if (Array.isArray(resultRows)) {
     serverSimulation.rawRows = resultRows;
@@ -2627,11 +3033,13 @@ function renderServerSimulation(simulation, options = {}) {
     simulationModeSelect.value = state.sim.lpMode;
   }
   const elapsedSeconds = serverElapsedSeconds(simulation);
+  const rowsDone = Number(info.rows || 0);
+  if (rowsDone > 0 && state.sim.skeletonVisible) setSimulationSkeletonVisible(false);
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
   if (info.currentReward) currentRewardValue.textContent = info.currentReward;
   if (info.currentTotalReturn) currentTotalValue.textContent = info.currentTotalReturn;
   if (currentRewardLabel) currentRewardLabel.textContent = state.sim.lpMode === "staked" ? "AERO, $" : "LP fees, $";
-  const rowsDone = Number(info.rows || 0);
+  const progressSummary = serverProgressSummary(simulation);
   const totalRows = estimateServerTotalRows(simulation);
   setServerSimulationProgressNotice({
     status: serverSimulation.paused
@@ -2657,7 +3065,8 @@ function renderServerSimulation(simulation, options = {}) {
   else serverSimulation.jobs.unshift(simulation);
   renderServerJobsList(serverSimulation.jobs);
   syncOpenedSimulation(simulation);
-  renderServerResultTable(simulation);
+  renderServerObservationMode(progressSummary);
+  if (isServerLiveRenderingActive()) renderServerResultTable(simulation);
   if (!rowsDone && serverSimulation.running && !state.sim.skeletonVisible) setSimulationSkeletonVisible(true);
   if (!options.fromTimer) updateSimulationControls();
 }
@@ -2676,11 +3085,12 @@ function stopServerSimulationEvents() {
 async function pollServerSimulation(id) {
   if (!SERVER_SIMULATION_MODE || !id) return;
   try {
-    const simulation = await fetchJson(`/api/simulations/${id}`);
+    const simulation = await fetchJson(`/api/simulations/${id}?compact=1`);
     renderServerSimulation(simulation);
     if (isServerSimulationTerminal(simulation.status)) {
       stopServerSimulationPolling();
-      loadServerJobs();
+      if (simulation.status === "completed") await renderCompletedServerSimulation(id);
+      else loadServerJobs();
     }
   } catch (error) {
     if ((error.status === 429 || error.retryAfterSeconds) && serverSimulation.running) {
@@ -2729,14 +3139,26 @@ async function watchServerSimulation(id) {
       if (isServerSimulationTerminal(simulation.status)) {
         stopServerSimulationEvents();
         stopServerSimulationPolling();
+        if (simulation.status === "completed") renderCompletedServerSimulation(id).catch((error) => console.error(error));
       }
       serverSimulation.pollBackoffMs = Math.max(5000, SERVER_SIMULATION_POLL_MS);
     } catch (_) { }
   });
-  source.addEventListener("terminal", () => {
+  source.addEventListener("terminal", (event) => {
     stopServerSimulationEvents();
     stopServerSimulationPolling();
-    loadServerJobs();
+    let terminalStatus = "";
+    try {
+      terminalStatus = JSON.parse(event.data || "{}")?.status || "";
+    } catch (_) { }
+    if (terminalStatus === "completed") {
+      renderCompletedServerSimulation(id).catch((error) => {
+        console.error(error);
+        loadServerJobs();
+      });
+    } else {
+      loadServerJobs();
+    }
   });
   source.onerror = () => {
     stopServerSimulationEvents();
@@ -2849,6 +3271,8 @@ async function deleteServerSimulation(id, row = null) {
       serverSimulation.paused = false;
       serverSimulation.rawRows = [];
       serverSimulation.lastSimulation = null;
+      serverSimulation.finalResultFetched = false;
+      setServerUiMode("live");
       stopServerSimulationPolling();
       stopSimulationElapsedTimer();
       setSimulationSkeletonVisible(false);
@@ -2904,11 +3328,13 @@ async function startServerSimulation() {
     return;
   }
   resetSimulationRows();
+  setServerUiMode("live");
   serverSimulation.running = true;
   serverSimulation.paused = false;
   serverSimulation.startedAtMs = Date.now();
   serverSimulation.lastSimulation = null;
   serverSimulation.rawRows = [];
+  serverSimulation.finalResultFetched = false;
   if (state.rows.length) {
     const startIndex = rowIndexForTimestamp(inputTimestamp, "atOrAfter");
     const endIndex = rowIndexForTimestamp(endTimestamp, "atOrBefore");
@@ -2924,6 +3350,7 @@ async function startServerSimulation() {
     simStartInput.value = fmtInputTime(state.rows[startIndex].time);
     simEndInput.value = fmtInputTime(state.rows[endIndex].time);
     zoomToSimulationRange(startIndex, endIndex);
+    captureSimulationInitialChartView();
     draw();
   }
   updateSimulationControls();
@@ -2933,6 +3360,13 @@ async function startServerSimulation() {
   setSimulationSkeletonVisible(true);
   startSimulationElapsedTimer(serverSimulation.startedAtMs);
   const totalRows = Math.max(0, state.sim.endIndex - state.sim.startIndex + 1);
+  renderServerObservationMode({
+    status: "starting",
+    elapsed: "0s",
+    processing: "starting",
+    rows: totalRows > 0 ? `0 / ${totalRows}` : "0 / -",
+    eta: "-",
+  });
   setServerSimulationProgressNotice({
     status: "starting",
     elapsed: "0s",
@@ -3040,6 +3474,7 @@ async function startSimulation() {
   simStartInput.value = fmtInputTime(startRow.time);
   simEndInput.value = fmtInputTime(state.rows[endIndex].time);
   zoomToSimulationRange(startIndex, endIndex);
+  captureSimulationInitialChartView();
   state.sim.initializing = true;
   state.sim.autoRunning = true;
   state.sim.elapsedStartedAtMs = Date.now();
@@ -3071,6 +3506,7 @@ async function startSimulation() {
     );
     state.sim.initialRangeReady = true;
     setSimulationChartPriceBounds(startIndex, endIndex);
+    updateSimulationInitialChartBounds();
     renderStartupNotice();
     draw();
     state.sim.liquidityRaw = plan.liquidityRaw;
@@ -3121,6 +3557,8 @@ function stepSimulationBack() {
 function resetSimulation() {
   resetSimulationRows();
   serverSimulation.rawRows = [];
+  serverSimulation.finalResultFetched = false;
+  if (SERVER_SIMULATION_MODE) setServerUiMode("live");
   setSimulationNotice("Симуляция сброшена. Нажми START, чтобы начать заново.");
 }
 
@@ -3157,12 +3595,35 @@ canvas.addEventListener("wheel", (event) => {
   const plotW = canvas.clientWidth - padLeft - padRight;
   const ratio = Math.min(1, Math.max(0, (x - padLeft) / plotW));
   event.preventDefault();
+  if (simulationActive && hasSimulationInitialChartView()) {
+    state.sim.userAdjustedChartView = true;
+    updateResetChartViewButton();
+  }
   state.hoverIndex = -1;
   zoomAt(ratio, event.deltaY);
   state.releaseRows = null;
   updateMetrics(getVisibleRows());
   draw();
 }, { passive: false });
+
+if (resetChartViewButton) {
+  resetChartViewButton.addEventListener("click", resetToSimulationInitialChartView);
+}
+
+async function renderCompletedServerSimulation(id) {
+  if (!SERVER_SIMULATION_MODE || !id || serverSimulation.finalResultFetched) return;
+  serverSimulation.finalResultFetched = true;
+  try {
+    const simulation = await fetchJson(`/api/simulations/${id}`);
+    serverSimulation.liveViewOpen = true;
+    serverSimulation.uiMode = "live";
+    if (simNotice) simNotice.hidden = false;
+    renderServerSimulation(simulation);
+    openSimulationResultTab(simulation);
+  } finally {
+    loadServerJobs();
+  }
+}
 
 canvas.addEventListener("click", (event) => {
   if (state.suppressNextClick) {
@@ -3367,6 +3828,8 @@ simulationModeSelect.addEventListener("change", () => {
   resetSimulationRows();
   updateSimulationControls();
 });
+if (openLiveViewButton) openLiveViewButton.addEventListener("click", openServerLiveView);
+if (closeLiveViewButton) closeLiveViewButton.addEventListener("click", closeServerLiveView);
 runSimulation.addEventListener("click", startServerSimulation);
 if (resetSimulationButton) resetSimulationButton.addEventListener("click", resetOrStopSimulation);
 if (refreshServerJobs) refreshServerJobs.addEventListener("click", () => loadServerJobs({ feedback: true }));
@@ -3473,5 +3936,10 @@ loadCsvWithProgress(CSV_FILE)
   });
 
 globalThis.getSimulationRawRows = getSimulationRawRows;
+globalThis.getSimulationRawRowsFrom = getSimulationRawRowsFrom;
+globalThis.getSimulationRawRowCount = getSimulationRawRowCount;
+globalThis.getSimulationDisplayRows = getSimulationDisplayRows;
+globalThis.getSimulationDisplayState = getSimulationDisplayState;
 globalThis.getSimulationDataQuality = getSimulationDataQuality;
+globalThis.getSimulationTiming = getSimulationTiming;
 globalThis.buildCompleteMinuteRows = buildCompleteMinuteRows;

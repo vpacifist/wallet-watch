@@ -4,6 +4,7 @@ import datetime
 import http.server
 import json
 import os
+import ssl
 import subprocess
 import sqlite3
 import sys
@@ -55,6 +56,7 @@ PORT = int(os.environ.get("PORT", "8003"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", f"http://127.0.0.1:{PORT}")
 MAX_UPSTREAM_BATCH_SIZE = int(os.environ.get("MAX_UPSTREAM_BATCH_SIZE", "3"))
 MAX_LOG_BLOCK_SPAN = int(os.environ.get("MAX_LOG_BLOCK_SPAN", "2000"))
+LOG_PREFETCH_BLOCK_SPAN = int(os.environ.get("LOG_PREFETCH_BLOCK_SPAN", "600"))
 MAX_EXACT_RESULT_BYTES = int(os.environ.get("MAX_EXACT_RESULT_BYTES", str(512 * 1024)))
 DEBUG_RPC_ERRORS = os.environ.get("DEBUG_RPC_ERRORS", "").lower() in {"1", "true", "yes", "on"}
 ADMIN_API_TOKEN = os.environ.get("ADMIN_API_TOKEN", "").strip()
@@ -65,6 +67,9 @@ API_RATE_LIMIT_PER_MINUTE = int(os.environ.get("API_RATE_LIMIT_PER_MINUTE", "60"
 SSE_RATE_LIMIT_PER_MINUTE = int(os.environ.get("SSE_RATE_LIMIT_PER_MINUTE", "180"))
 SSE_HEARTBEAT_SECONDS = int(os.environ.get("SSE_HEARTBEAT_SECONDS", "20"))
 SSE_MAX_CONNECTIONS_PER_IP = int(os.environ.get("SSE_MAX_CONNECTIONS_PER_IP", "6"))
+UPSTREAM_RETRY_ATTEMPTS = int(os.environ.get("UPSTREAM_RETRY_ATTEMPTS", "8"))
+UPSTREAM_RETRY_BASE_SECONDS = float(os.environ.get("UPSTREAM_RETRY_BASE_SECONDS", "2"))
+UPSTREAM_RETRY_MAX_SECONDS = float(os.environ.get("UPSTREAM_RETRY_MAX_SECONDS", "20"))
 
 AERO_USDC_POOL = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1"
 AERO_PRICE_CACHE = {}
@@ -88,6 +93,12 @@ STATS = {
     "started_at": time.time(),
     "last_log": 0.0,
 }
+RPC_METHODS_FOR_STATS = ("eth_call", "eth_getBlockByNumber", "eth_getLogs", "live", "mixed")
+for _method in RPC_METHODS_FOR_STATS:
+    STATS[f"{_method}_hits"] = 0
+    STATS[f"{_method}_misses"] = 0
+    STATS[f"{_method}_upstream_calls"] = 0
+    STATS[f"{_method}_upstream_seconds"] = 0.0
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
 
@@ -243,6 +254,17 @@ def compact_simulation_payload(payload):
     return compact
 
 
+def compact_simulation_response(simulation):
+    if not isinstance(simulation, dict):
+        return simulation
+    compact = dict(simulation)
+    if isinstance(compact.get("progress"), dict):
+        compact["progress"] = compact_simulation_payload(compact["progress"])
+    if isinstance(compact.get("result"), dict):
+        compact["result"] = compact_simulation_payload(compact["result"])
+    return compact
+
+
 def simulation_row_to_dict(row, compact=False):
     if not row:
         return None
@@ -280,6 +302,11 @@ def get_simulation(simulation_id):
             (simulation_id,),
         ).fetchone()
     return simulation_row_to_dict(row)
+
+
+def wants_compact_response(parsed):
+    params = urllib.parse.parse_qs(parsed.query)
+    return params.get("compact", ["0"])[0].lower() in {"1", "true", "yes"}
 
 
 def get_latest_simulation():
@@ -387,6 +414,8 @@ def normalize_simulation_params(payload):
         "rebalanceGasUnits": int(payload.get("rebalanceGasUnits", os.environ.get("REBALANCE_GAS_UNITS", "1450000"))),
         "rebalanceL1DataFeeEth": float(payload.get("rebalanceL1DataFeeEth", os.environ.get("REBALANCE_L1_DATA_FEE_ETH", "0.000012"))),
         "rebalanceFallbackSlippageBps": float(payload.get("rebalanceFallbackSlippageBps", os.environ.get("REBALANCE_FALLBACK_SLIPPAGE_BPS", "5"))),
+        "rebalanceConfirmationBufferBps": float(payload.get("rebalanceConfirmationBufferBps", os.environ.get("REBALANCE_CONFIRMATION_BUFFER_BPS", "5"))),
+        "rebalanceConfirmationMinutes": int(payload.get("rebalanceConfirmationMinutes", os.environ.get("REBALANCE_CONFIRMATION_MINUTES", "2"))),
         "aeroImpactHaircutMax": float(payload.get("aeroImpactHaircutMax", os.environ.get("AERO_IMPACT_HAIRCUT_MAX", "0.5"))),
         "serverSimulationPollMs": int(payload.get("serverSimulationPollMs", os.environ.get("SERVER_SIMULATION_POLL_MS", "2500"))),
         "lpFeeRate": float(payload.get("lpFeeRate", os.environ.get("LP_FEE_RATE", "0.0005"))),
@@ -574,6 +603,40 @@ def record_stat(name, amount=1):
         STATS[name] += amount
 
 
+def method_stat_key(method):
+    return method if method in RPC_METHODS_FOR_STATS else "live"
+
+
+def record_method_stat(method, suffix, amount=1):
+    record_stat(f"{method_stat_key(method)}_{suffix}", amount)
+
+
+def record_upstream_timing(method, elapsed_seconds):
+    key = method_stat_key(method)
+    record_stat(f"{key}_upstream_seconds", elapsed_seconds)
+    record_stat(f"{key}_upstream_calls", 1)
+
+
+def payload_method(payload):
+    return payload.get("method", "live")
+
+
+def chunk_method(payloads):
+    methods = {payload_method(payload) for payload in payloads}
+    return methods.pop() if len(methods) == 1 else "mixed"
+
+
+def format_method_stats(method):
+    hits = STATS[f"{method}_hits"]
+    misses = STATS[f"{method}_misses"]
+    upstream_calls = STATS[f"{method}_upstream_calls"]
+    upstream_seconds = STATS[f"{method}_upstream_seconds"]
+    total = hits + misses
+    hit_rate = hits / total * 100 if total else 0
+    avg_ms = upstream_seconds / upstream_calls * 1000 if upstream_calls else 0
+    return f"{method}:h={hits}/m={misses}/hr={hit_rate:.0f}%/up={upstream_calls}/avg={avg_ms:.0f}ms"
+
+
 def maybe_log_progress(force=False):
     now = time.time()
     with STATS_LOCK:
@@ -591,7 +654,9 @@ def maybe_log_progress(force=False):
             f"upstream_batches={STATS['upstream_batches']} upstream_items={STATS['upstream_items']} "
             f"errors={STATS['errors']} avg_items_per_sec={STATS['upstream_items'] / elapsed:.1f}"
         )
+        method_message = " | ".join(format_method_stats(method) for method in RPC_METHODS_FOR_STATS)
     print(message, file=sys.stderr, flush=True)
+    print(f"[{time.strftime('%H:%M:%S')}] RPC method stats {method_message}", file=sys.stderr, flush=True)
 
 
 def hex_to_int(value):
@@ -710,6 +775,32 @@ def cached_log_result(info):
     return [json.loads(row[0]) for row in rows]
 
 
+def filter_logs_for_range(logs, from_block, to_block):
+    return [
+        log for log in logs or []
+        if from_block <= hex_to_int(log.get("blockNumber", "0x0")) <= to_block
+    ]
+
+
+def expanded_log_info(info):
+    span = max(1, LOG_PREFETCH_BLOCK_SPAN)
+    requested_span = info["to_block"] - info["from_block"] + 1
+    if span <= requested_span:
+        return dict(info)
+    start = (info["from_block"] // span) * span
+    end = start + span - 1
+    while end < info["to_block"]:
+        end += span
+    return dict(info, from_block=start, to_block=end)
+
+
+def payload_for_log_info(payload, info):
+    expanded = json.loads(json.dumps(payload))
+    expanded["params"][0]["fromBlock"] = int_to_block_tag(info["from_block"])
+    expanded["params"][0]["toBlock"] = int_to_block_tag(info["to_block"])
+    return expanded
+
+
 def cached_exact_result(key, payload):
     method = payload.get("method")
     params = payload.get("params", [])
@@ -813,6 +904,51 @@ def response_from_error(payload, error):
     return {"jsonrpc": "2.0", "id": payload.get("id"), "error": error or {"message": "RPC proxy error"}}
 
 
+def upstream_error_message(error):
+    if isinstance(error, dict):
+        return str(error.get("message", error))
+    return str(error)
+
+
+def is_transient_upstream_error(error):
+    message = upstream_error_message(error).lower()
+    return any(token in message for token in [
+        "urlopen error",
+        "ssl",
+        "tlsv1_alert_internal_error",
+        "tlsv1 alert internal error",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection aborted",
+        "remote end closed",
+        "temporarily unavailable",
+        "too many requests",
+        "rate limit",
+        "429",
+        "502",
+        "503",
+        "504",
+    ])
+
+
+def is_plan_limit_error(error):
+    message = upstream_error_message(error).lower()
+    return any(token in message for token in [
+        "plan",
+        "archive",
+        "limit",
+        "allowance",
+        "method not allowed",
+        "debug",
+        "trace",
+    ])
+
+
+def retry_delay_seconds(attempt):
+    return min(UPSTREAM_RETRY_MAX_SECONDS, UPSTREAM_RETRY_BASE_SECONDS * (attempt + 1))
+
+
 def try_one_provider(url, body, summary):
     try:
         req = urllib.request.Request(
@@ -846,7 +982,7 @@ def try_one_provider(url, body, summary):
         except:
             body_text = "unreadable body"
         return False, {"code": exc.code, "message": body_text}
-    except (urllib.error.URLError, TimeoutError) as exc:
+    except (urllib.error.URLError, TimeoutError, ssl.SSLError, OSError) as exc:
         return False, {"message": str(exc)}
 
 
@@ -857,6 +993,8 @@ def upstream_post(payload, urls=None, label="RPC"):
     body = json.dumps(payload).encode("utf-8")
     last_error = None
     payloads = payload if isinstance(payload, list) else [payload]
+    stat_method = chunk_method(payloads)
+    started_at = time.time()
     summary = ", ".join(item.get("method", "<unknown>") for item in payloads[:8])
     if len(payloads) > 8:
         summary += f", ... +{len(payloads) - 8}"
@@ -866,29 +1004,31 @@ def upstream_post(payload, urls=None, label="RPC"):
     for url in provider_urls:
         success, result = try_one_provider(url, body, summary)
         if success:
+            record_upstream_timing(stat_method, time.time() - started_at)
             return result
         last_error = result
         attempted_errors.append((url, last_error))
 
-    # If all failed once, use parallelism for retries to find a working one fast
+    # If all failed once, use parallelism for retries to find a working one fast.
+    # TLS alerts and connection resets from RPC providers are common transient
+    # failures during long simulations, so do not let one short outage kill the job.
     with ThreadPoolExecutor(max_workers=min(len(provider_urls), 8)) as executor:
-        for attempt in range(3):
+        for attempt in range(max(0, UPSTREAM_RETRY_ATTEMPTS)):
             futures = {executor.submit(try_one_provider, url, body, summary): url for url in provider_urls}
             for future in as_completed(futures):
                 url = futures[future]
                 try:
                     success, result = future.result()
                     if success:
+                        record_upstream_timing(stat_method, time.time() - started_at)
                         return result
                     
                     last_error = result
                     attempted_errors.append((url, last_error))
                     
                     # Detailed logging for specific error types
-                    err_msg = str(last_error.get("message", "")) if isinstance(last_error, dict) else str(last_error)
-                    is_plan_error = any(token in err_msg.lower() for token in ["plan", "archive", "limit", "allowance", "method not allowed", "debug", "trace"])
-                    
-                    if is_plan_error:
+                    err_msg = upstream_error_message(last_error)
+                    if is_plan_limit_error(last_error):
                         print(f"\n!!! PLAN LIMIT DETECTED !!!", file=sys.stderr, flush=True)
                         print(f"Provider: {redact_url(url)}", file=sys.stderr, flush=True)
                         print(f"Methods: [{summary}]", file=sys.stderr, flush=True)
@@ -901,13 +1041,43 @@ def upstream_post(payload, urls=None, label="RPC"):
                     attempted_errors.append((url, last_error))
                     print(f"[{time.strftime('%H:%M:%S')}] RPC Exception from {redact_url(url)}: {exc}", file=sys.stderr, flush=True)
             
-            if attempt < 2:
-                time.sleep(2.0 * (attempt + 1))
+            if attempt < UPSTREAM_RETRY_ATTEMPTS - 1:
+                if any(is_transient_upstream_error(error) for _, error in attempted_errors[-len(provider_urls):]):
+                    time.sleep(retry_delay_seconds(attempt))
+                else:
+                    time.sleep(min(2.0, retry_delay_seconds(attempt)))
     
     if attempted_errors:
         providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(provider_urls):])
         print(f"{label} upstream failed for [{summary}] after parallel retries; last providers: {providers}; last_error={last_error}", file=sys.stderr, flush=True)
+    record_upstream_timing(stat_method, time.time() - started_at)
     raise RuntimeError(json.dumps(last_error or {"message": f"{label} proxy error"}))
+
+
+def fetch_json_url(url, label):
+    last_error = None
+    for attempt in range(max(1, UPSTREAM_RETRY_ATTEMPTS + 1)):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "wallet-watch/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            try:
+                body_text = exc.read().decode("utf-8", errors="replace")
+            except:
+                body_text = "unreadable body"
+            last_error = {"code": exc.code, "message": body_text}
+        except (urllib.error.URLError, TimeoutError, ssl.SSLError, OSError, json.JSONDecodeError) as exc:
+            last_error = {"message": str(exc)}
+
+        if attempt >= UPSTREAM_RETRY_ATTEMPTS:
+            break
+        if is_transient_upstream_error(last_error):
+            time.sleep(retry_delay_seconds(attempt))
+        else:
+            time.sleep(min(2.0, retry_delay_seconds(attempt)))
+
+    raise RuntimeError(json.dumps(last_error or {"message": f"{label} request failed"}))
 
 
 def fetch_logs_in_chunks(payload, info):
@@ -998,20 +1168,25 @@ def post_rpc_batch(payloads):
             if result is None:
                 record_stat("cache_misses")
                 record_stat("log_range_misses")
+                record_method_stat("eth_getLogs", "misses")
                 misses.append((index, kind, log_info, None, payload))
             else:
                 record_stat("cache_hits")
                 record_stat("log_range_hits")
+                record_method_stat("eth_getLogs", "hits")
                 results[index] = response_from_result(payload, result)
         elif kind == "exact":
             result = cached_exact_result(key, payload)
             if result is None:
                 record_stat("cache_misses")
+                record_method_stat(payload_method(payload), "misses")
                 misses.append((index, kind, None, key, payload))
             else:
                 record_stat("cache_hits")
+                record_method_stat(payload_method(payload), "hits")
                 results[index] = response_from_result(payload, result)
         else:
+            record_method_stat(payload_method(payload), "misses")
             misses.append((index, kind, None, None, payload))
 
     if misses:
@@ -1029,6 +1204,37 @@ def post_rpc_batch(payloads):
                     except json.JSONDecodeError:
                         error = {"message": str(exc)}
                     results[index] = response_from_error(payload, error)
+            elif kind == "logs" and log_info:
+                prefetch_info = expanded_log_info(log_info)
+                if prefetch_info != log_info:
+                    cached_prefetch = cached_log_result(prefetch_info)
+                    if cached_prefetch is not None:
+                        results[index] = response_from_result(
+                            payload,
+                            filter_logs_for_range(cached_prefetch, log_info["from_block"], log_info["to_block"]),
+                        )
+                        record_stat("cache_hits")
+                        record_stat("log_range_hits")
+                        record_method_stat("eth_getLogs", "hits")
+                    elif prefetch_info["to_block"] - prefetch_info["from_block"] + 1 > MAX_LOG_BLOCK_SPAN:
+                        try:
+                            result = fetch_logs_in_chunks(payload_for_log_info(payload, prefetch_info), prefetch_info)
+                            results[index] = response_from_result(
+                                payload,
+                                filter_logs_for_range(result, log_info["from_block"], log_info["to_block"]),
+                            )
+                            record_stat("upstream_items", len(result))
+                        except RuntimeError as exc:
+                            record_stat("errors")
+                            try:
+                                error = json.loads(str(exc))
+                            except json.JSONDecodeError:
+                                error = {"message": str(exc)}
+                            results[index] = response_from_error(payload, error)
+                    else:
+                        deferred_misses.append((index, kind, prefetch_info, None, payload_for_log_info(payload, prefetch_info), log_info))
+                else:
+                    deferred_misses.append((index, kind, log_info, key, payload))
             else:
                 deferred_misses.append((index, kind, log_info, key, payload))
         misses = deferred_misses
@@ -1050,7 +1256,9 @@ def post_rpc_batch(payloads):
                 by_id = {item.get("id"): item for item in upstream_responses}
                 record_stat("upstream_batches")
                 record_stat("upstream_items", len(chunk))
-                for upstream_id, (index, kind, log_info, key, payload) in zip([item["id"] for item in chunk], chunk_misses):
+                for upstream_id, miss in zip([item["id"] for item in chunk], chunk_misses):
+                    index, kind, log_info, key, payload = miss[:5]
+                    requested_log_info = miss[5] if len(miss) > 5 else log_info
                     item = by_id.get(upstream_id)
                     if not item:
                         results[index] = response_from_error(payload, {"message": "missing RPC batch response"})
@@ -1060,6 +1268,7 @@ def post_rpc_batch(payloads):
                         result = item.get("result")
                         if kind == "logs" and log_info is not None:
                             store_log_result(log_info, result)
+                            result = filter_logs_for_range(result, requested_log_info["from_block"], requested_log_info["to_block"])
                         elif kind == "exact" and key is not None:
                             store_exact_result(key, payload, result)
                         results[index] = response_from_result(payload, result)
@@ -1069,7 +1278,8 @@ def post_rpc_batch(payloads):
                     error = json.loads(str(exc))
                 except json.JSONDecodeError:
                     error = {"message": str(exc)}
-                for index, _, _, _, payload in chunk_misses:
+                for miss in chunk_misses:
+                    index, _, _, _, payload = miss[:5]
                     results[index] = response_from_error(payload, error)
 
     maybe_log_progress()
@@ -1251,6 +1461,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not simulation:
                 self.send_json(404, {"error": "simulation not found"})
             else:
+                if wants_compact_response(parsed):
+                    simulation = compact_simulation_response(simulation)
                 self.send_json(200, simulation)
             return
         if parsed.path == "/aero-price":
@@ -1312,6 +1524,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not simulation:
                     self.send_sse("error", {"error": "simulation not found"})
                     break
+                simulation = compact_simulation_response(simulation)
                 snapshot = json.dumps(simulation, sort_keys=True, ensure_ascii=False)
                 if snapshot != last_snapshot:
                     self.send_sse("simulation", simulation)
@@ -1345,9 +1558,7 @@ def get_aero_price(timestamp):
         }
     )
     url = f"https://api.geckoterminal.com/api/v2/networks/base/pools/{AERO_USDC_POOL}/ohlcv/minute?{query}"
-    req = urllib.request.Request(url, headers={"User-Agent": "wallet-watch/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as response:
-        payload = json.load(response)
+    payload = fetch_json_url(url, "AERO price")
 
     rows = payload.get("data", {}).get("attributes", {}).get("ohlcv_list", [])
     if not rows:

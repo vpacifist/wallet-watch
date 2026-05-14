@@ -78,6 +78,8 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual(params["timeoutSeconds"], 60)
       self.assertEqual(params["progressEverySeconds"], 2)
       self.assertIn("rebalanceFallbackSlippageBps", params)
+      self.assertIn("rebalanceConfirmationBufferBps", params)
+      self.assertEqual(params["rebalanceConfirmationMinutes"], 2)
       self.assertIn("aeroImpactHaircutMax", params)
       self.assertEqual(params["serverSimulationPollMs"], 2500)
       self.assertIn("lpFeeRate", params)
@@ -182,6 +184,27 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual([row["index"] for row in simulation["progress"]["rawRows"]], [0, 1])
       self.assertEqual(simulation["progress"]["latestRawRow"]["index"], 1)
 
+    def test_compact_simulation_response_removes_stored_row_arrays(self):
+      simulation = {
+          "id": "sim-compact",
+          "progress": {
+              "rows": 2,
+              "newRawRows": [{"index": 1}],
+              "rawRows": [{"index": 0}, {"index": 1}],
+          },
+          "result": {
+              "rawRows": [{"index": 0}, {"index": 1}],
+          },
+      }
+
+      compact = self.server.compact_simulation_response(simulation)
+
+      self.assertNotIn("rawRows", compact["progress"])
+      self.assertNotIn("rawRows", compact["result"])
+      self.assertEqual(compact["progress"]["rawRowCount"], 2)
+      self.assertEqual(compact["result"]["rawRowCount"], 2)
+      self.assertEqual(compact["progress"]["newRawRows"], [{"index": 1}])
+
     def test_merge_progress_deduplicates_rows(self):
       self.server.insert_simulation("sim-dedupe", {"start": "2026-02-01 00:00", "end": "2026-02-01 00:02"})
       first = {"rows": 1, "newRawRows": [{"index": 1, "blockNumber": 10, "event": "tick"}]}
@@ -272,6 +295,50 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual(calls, [("0x1", "0x2"), ("0x3", "0x4")])
       self.assertEqual([log["transactionHash"] for log in logs], ["0xaaa", "0xbbb", "0xccc"])
 
+    def test_log_prefetch_expands_small_misses_and_filters_response(self):
+      self.server.LOG_PREFETCH_BLOCK_SPAN = 10
+      calls = []
+
+      def fake_upstream(payload, urls=None, label="RPC"):
+        calls.append((payload["params"][0]["fromBlock"], payload["params"][0]["toBlock"]))
+        return {
+            "jsonrpc": "2.0",
+            "id": payload.get("id"),
+            "result": [
+                {"address": "0xpool", "topics": ["0xtopic"], "blockNumber": "0xa", "transactionIndex": "0x0", "logIndex": "0x0", "transactionHash": "0xaaa", "data": "0x"},
+                {"address": "0xpool", "topics": ["0xtopic"], "blockNumber": "0xf", "transactionIndex": "0x0", "logIndex": "0x0", "transactionHash": "0xbbb", "data": "0x"},
+            ],
+        }
+
+      self.server.upstream_post = fake_upstream
+      payload = {
+          "jsonrpc": "2.0",
+          "id": 1,
+          "method": "eth_getLogs",
+          "params": [{
+              "address": "0xpool",
+              "fromBlock": "0xc",
+              "toBlock": "0xd",
+              "topics": ["0xtopic"],
+          }],
+      }
+
+      response = self.server.post_rpc(payload)
+      self.assertEqual(calls, [("0xa", "0x13")])
+      self.assertEqual(response["result"], [])
+
+      cached = self.server.post_rpc({
+          **payload,
+          "params": [{
+              "address": "0xpool",
+              "fromBlock": "0xf",
+              "toBlock": "0xf",
+              "topics": ["0xtopic"],
+          }],
+      })
+      self.assertEqual(calls, [("0xa", "0x13")])
+      self.assertEqual([log["transactionHash"] for log in cached["result"]], ["0xbbb"])
+
     def test_historical_eth_call_uses_archive_route(self):
       self.server.RPC_URLS = ["https://regular.example"]
       self.server.ARCHIVE_RPC_URLS = ["https://archive.example"]
@@ -313,6 +380,52 @@ class ServerContractTests(unittest.TestCase):
     def test_empty_route_raises_configuration_error(self):
       with self.assertRaisesRegex(RuntimeError, "Archive RPC URLs are not configured"):
         self.server.upstream_post({"method": "eth_call", "params": [{"to": "0xabc", "data": "0x"}, "0x123"]}, urls=[], label="Archive RPC")
+
+    def test_upstream_retries_transient_tls_urlopen_error(self):
+      calls = []
+      self.server.UPSTREAM_RETRY_ATTEMPTS = 3
+      self.server.time.sleep = lambda _seconds: None
+
+      def fake_try_one_provider(url, body, summary):
+        calls.append((url, summary))
+        if len(calls) < 3:
+          return False, {"message": "<urlopen error [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1077)>"}
+        return True, {"jsonrpc": "2.0", "id": 1, "result": "0x1"}
+
+      self.server.try_one_provider = fake_try_one_provider
+
+      response = self.server.upstream_post({"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []}, urls=["https://rpc.example"], label="RPC")
+
+      self.assertEqual(response["result"], "0x1")
+      self.assertGreaterEqual(len(calls), 3)
+
+    def test_fetch_json_url_retries_transient_tls_urlopen_error(self):
+      calls = []
+      self.server.UPSTREAM_RETRY_ATTEMPTS = 2
+      self.server.time.sleep = lambda _seconds: None
+
+      class FakeResponse:
+        def __enter__(self):
+          return self
+
+        def __exit__(self, exc_type, exc, tb):
+          return False
+
+        def read(self):
+          return b'{"ok": true}'
+
+      def fake_urlopen(req, timeout=30):
+        calls.append(req.full_url)
+        if len(calls) == 1:
+          raise self.server.urllib.error.URLError("[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1077)")
+        return FakeResponse()
+
+      self.server.urllib.request.urlopen = fake_urlopen
+
+      payload = self.server.fetch_json_url("https://api.example/data", "test endpoint")
+
+      self.assertEqual(payload, {"ok": True})
+      self.assertEqual(calls, ["https://api.example/data", "https://api.example/data"])
 
 
 if __name__ == "__main__":

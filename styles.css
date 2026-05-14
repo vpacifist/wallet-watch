@@ -323,6 +323,89 @@ h2 {
   height: clamp(300px, 34vh, 380px);
 }
 
+.chartOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.74);
+  backdrop-filter: blur(2px);
+}
+
+.backgroundOverlayPanel {
+  width: min(360px, calc(100% - 48px));
+  padding: 16px;
+  border: 1px solid rgba(15, 139, 141, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 16px 36px rgba(23, 32, 51, 0.14);
+  display: grid;
+  gap: 10px;
+  color: var(--ink);
+}
+
+.backgroundOverlayPanel strong {
+  font-size: 15px;
+}
+
+.backgroundOverlayPanel div {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.backgroundOverlayPanel button,
+.closeLiveViewButton {
+  height: 32px;
+  border: 1px solid rgba(15, 139, 141, 0.36);
+  border-radius: 6px;
+  color: #0f172a;
+  background: #ffffff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.backgroundOverlayPanel button:hover,
+.closeLiveViewButton:hover {
+  border-color: rgba(15, 139, 141, 0.62);
+  background: rgba(15, 139, 141, 0.08);
+}
+
+.closeLiveViewButton {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 4;
+  padding: 0 12px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.12);
+}
+
+.resetChartViewButton {
+  position: absolute;
+  top: 14px;
+  right: 86px;
+  z-index: 4;
+  padding: 8px 12px;
+  border: 1px solid rgba(15, 139, 141, 0.36);
+  border-radius: 6px;
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.12);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.resetChartViewButton:hover {
+  border-color: rgba(15, 139, 141, 0.62);
+  background: #ffffff;
+}
+
 canvas {
   display: block;
   width: 100%;
@@ -647,6 +730,49 @@ canvas {
 
 .simNotice:empty {
   display: none;
+}
+
+.backgroundProgressPanel {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: minmax(80px, 0.9fr) minmax(82px, 0.75fr) minmax(72px, 0.7fr) minmax(64px, 0.6fr) minmax(126px, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.backgroundProgressItem {
+  min-width: 0;
+  padding: 8px 10px;
+  border-left: 1px solid var(--line);
+}
+
+.backgroundProgressItem:first-child {
+  border-left: 0;
+}
+
+.backgroundProgressItem span,
+.backgroundProgressItem strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backgroundProgressItem span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.backgroundProgressItem strong {
+  margin-top: 2px;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.25;
+  font-weight: 700;
 }
 
 .simNoticeStatus,

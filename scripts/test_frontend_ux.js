@@ -4,6 +4,7 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
 const app = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
+const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
 const engine = fs.readFileSync(path.join(ROOT, "simulation_engine.js"), "utf8");
 const runtime = fs.readFileSync(path.join(ROOT, "scripts", "simulation_runtime.js"), "utf8");
 const styles = fs.readFileSync(path.join(ROOT, "styles.css"), "utf8");
@@ -61,6 +62,29 @@ function testSseDelayedStartHandling() {
   assert.match(app, /Range: calculating\.\.\./);
 }
 
+function testBlockByNumberCacheLifecycle() {
+  assert.match(app, /blockByNumberCache: new Map\(\)/);
+  assert.match(app, /state\.sim\.blockByNumberCache\.get\(blockNumber\)/);
+  assert.match(app, /state\.sim\.blockByNumberCache\.set\(blockNumber, normalized\)/);
+  assert.match(app, /state\.sim\.blockByNumberCache = new Map\(\)/);
+}
+
+function testSimulationTimingInstrumentation() {
+  assert.match(app, /function recordSimulationTiming\(name, startedAt\)/);
+  assert.match(app, /globalThis\.getSimulationTiming = getSimulationTiming/);
+  assert.match(engine, /recordSimulationTiming\("stepForward"/);
+  assert.match(engine, /recordSimulationTiming\("buildSimulationRow"/);
+  assert.match(engine, /recordSimulationTiming\("runAutoLoop\.renderSimulationTable"/);
+  assert.match(engine, /runAutoLoop\.workerProgressSkip/);
+  assert.match(app, /if \(IS_SERVER_WORKER\) \{/);
+  assert.match(app, /isServerWorker: IS_SERVER_WORKER/);
+  assert.match(runtime, /timing: readTiming\(sandbox\)/);
+  assert.match(runtime, /progressRowBatchSize/);
+  assert.match(app, /\/api\/simulations\/\$\{id\}\?compact=1/);
+  assert.match(runtime, /getSimulationRawRowsFrom/);
+  assert.match(runtime, /getSimulationDisplayState/);
+}
+
 
 function testSimulationModes() {
   // UI mode controls in app.js
@@ -81,9 +105,36 @@ function testSimulationModes() {
   assert.match(engine, /totalReturnUsdc/);
 }
 
+function testServerObservationModes() {
+  assert.doesNotMatch(html, /id="serverUiModeSelect"/);
+  assert.doesNotMatch(html, />UI mode</);
+  assert.match(html, /id="serverBackgroundOverlay"/);
+  assert.match(html, /id="openLiveView"/);
+  assert.match(html, /id="closeLiveView"/);
+  assert.match(html, /id="backgroundProgressPanel"/);
+
+  assert.match(app, /uiMode: "live"/);
+  assert.match(app, /liveViewOpen: true/);
+  assert.match(app, /function setServerUiMode\(mode\)/);
+  assert.match(app, /setServerUiMode\("live"\)/);
+  assert.match(app, /function openServerLiveView\(\)/);
+  assert.match(app, /function closeServerLiveView\(\)/);
+  assert.match(app, /function isServerLiveRenderingActive\(\)/);
+  assert.match(app, /if \(!isServerLiveRenderingActive\(\) && !Array\.isArray\(resultRows\)\) \{/);
+  assert.match(app, /if \(isServerLiveRenderingActive\(\)\) renderServerResultTable\(simulation\)/);
+  assert.match(app, /renderCompletedServerSimulation\(id\)/);
+  assert.match(app, /fetchJson\(`\/api\/simulations\/\$\{id\}`\)/);
+  assert.match(styles, /\.chartOverlay/);
+  assert.match(styles, /\.backgroundProgressPanel/);
+}
+
 
 testLocalElapsedTimer();
 testInitializationStages();
 testSkeletonLifecycle();
 testEarlyRangeRendering();
 testSseDelayedStartHandling();
+testBlockByNumberCacheLifecycle();
+testSimulationTimingInstrumentation();
+testSimulationModes();
+testServerObservationModes();
