@@ -446,16 +446,29 @@ async function runSimulation(config, emit = () => { }) {
 
   let lastHeartbeatAt = 0;
   let lastEmittedRawCount = 0;
+  let lastRowEmitAtMs = 0;
   const timeoutMs = (config.timeoutSeconds || 21600) * 1000;
+  const progressEveryMs = Math.max(250, progressEverySeconds * 1000);
+  const progressRowBatchSize = Math.max(1, Number(config.progressRowBatchSize || 60));
   while (Date.now() - startedAt < timeoutMs) {
     await sleep(250);
     const state = readUi(document, sandbox);
     const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
+    const nowMs = Date.now();
     const rawRowCount = readRawRowCount(sandbox);
     if (rawRowCount > lastEmittedRawCount) {
-      const newRawRows = readRawRowsFrom(sandbox, lastEmittedRawCount);
-      lastEmittedRawCount = rawRowCount;
-      emit(progressEvent(config, startedAt, state, newRawRows, newRawRows, "new_rows", sandbox));
+      const pendingRows = rawRowCount - lastEmittedRawCount;
+      if (
+        !lastRowEmitAtMs
+        || nowMs - lastRowEmitAtMs >= progressEveryMs
+        || pendingRows >= progressRowBatchSize
+      ) {
+        const newRawRows = readRawRowsFrom(sandbox, lastEmittedRawCount);
+        lastEmittedRawCount = rawRowCount;
+        lastRowEmitAtMs = nowMs;
+        lastHeartbeatAt = elapsedSeconds;
+        emit(progressEvent(config, startedAt, state, newRawRows, newRawRows, "new_rows", sandbox));
+      }
     } else if (elapsedSeconds - lastHeartbeatAt >= progressEverySeconds) {
       lastHeartbeatAt = elapsedSeconds;
       const latestRows = readRawRowsFrom(sandbox, Math.max(0, rawRowCount - 1));

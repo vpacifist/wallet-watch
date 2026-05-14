@@ -184,6 +184,27 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual([row["index"] for row in simulation["progress"]["rawRows"]], [0, 1])
       self.assertEqual(simulation["progress"]["latestRawRow"]["index"], 1)
 
+    def test_compact_simulation_response_removes_stored_row_arrays(self):
+      simulation = {
+          "id": "sim-compact",
+          "progress": {
+              "rows": 2,
+              "newRawRows": [{"index": 1}],
+              "rawRows": [{"index": 0}, {"index": 1}],
+          },
+          "result": {
+              "rawRows": [{"index": 0}, {"index": 1}],
+          },
+      }
+
+      compact = self.server.compact_simulation_response(simulation)
+
+      self.assertNotIn("rawRows", compact["progress"])
+      self.assertNotIn("rawRows", compact["result"])
+      self.assertEqual(compact["progress"]["rawRowCount"], 2)
+      self.assertEqual(compact["result"]["rawRowCount"], 2)
+      self.assertEqual(compact["progress"]["newRawRows"], [{"index": 1}])
+
     def test_merge_progress_deduplicates_rows(self):
       self.server.insert_simulation("sim-dedupe", {"start": "2026-02-01 00:00", "end": "2026-02-01 00:02"})
       first = {"rows": 1, "newRawRows": [{"index": 1, "blockNumber": 10, "event": "tick"}]}

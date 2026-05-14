@@ -78,6 +78,8 @@ function testSimulationTimingInstrumentation() {
   assert.match(app, /if \(IS_SERVER_WORKER\) \{/);
   assert.match(app, /isServerWorker: IS_SERVER_WORKER/);
   assert.match(runtime, /timing: readTiming\(sandbox\)/);
+  assert.match(runtime, /progressRowBatchSize/);
+  assert.match(app, /\/api\/simulations\/\$\{id\}\?compact=1/);
   assert.match(runtime, /getSimulationRawRowsFrom/);
   assert.match(runtime, /getSimulationDisplayState/);
 }

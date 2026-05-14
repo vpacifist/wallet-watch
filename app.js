@@ -986,14 +986,27 @@ function activeChartSimulationRow() {
 }
 
 function simulationChartTooltip(row, marketRow) {
+  const marketClose = Number(marketRow?.close);
+  const executionPrice = Number(row?.price);
+  const displayPrice = row?.rebalance && Number.isFinite(marketClose)
+    ? marketClose
+    : (Number.isFinite(executionPrice) ? executionPrice : marketRow?.close);
   const lines = [
     `${fmtTime(row?.time || marketRow?.time || "")}`,
-    `<strong>${fmtPrice(row?.price ?? marketRow?.close)}</strong>`,
+    `<strong>${fmtPrice(displayPrice)}</strong>`,
   ];
   if (row?.event) lines.push(row.event);
   if (row?.rebalance) {
     const rb = row.rebalance;
     const confirmationBufferBps = Number(rb.confirmationBufferBps);
+    if (
+      Number.isFinite(marketClose)
+      && Number.isFinite(executionPrice)
+      && Math.abs(executionPrice - marketClose) / Math.max(1, marketClose) > 0.001
+    ) {
+      lines.push(`execution ${fmtPrice(executionPrice)}`);
+      lines.push(`candle close ${fmtPrice(marketClose)}`);
+    }
     lines.push(`range ${rb.oldTickLower}..${rb.oldTickUpper} → ${rb.newTickLower}..${rb.newTickUpper}`);
     lines.push(`trigger ${fmtPrice(priceForTick(rb.oldTickLower))}..${fmtPrice(priceForTick(rb.oldTickUpper))}`);
     if (Number.isFinite(confirmationBufferBps)) lines.push(`buffer ${fmtNumber(confirmationBufferBps, 2)} bps`);
@@ -1441,7 +1454,8 @@ function draw() {
     rebalanceRows.forEach((simRow) => {
       const timestamp = simRow.timestamp ? simRow.timestamp * 1000 : new Date(simRow.time || state.rows[simRow.index]?.time || "").getTime();
       if (!Number.isFinite(timestamp) || timestamp < firstTime || timestamp > lastTime) return;
-      const price = Number.isFinite(simRow.price) ? simRow.price : state.rows[simRow.index]?.close;
+      const marketClose = Number(state.rows[simRow.index]?.close);
+      const price = Number.isFinite(marketClose) ? marketClose : Number(simRow.price);
       if (!Number.isFinite(price)) return;
       const x = xForTime(timestamp);
       const y = yFor(price);
@@ -2960,7 +2974,7 @@ function stopServerSimulationEvents() {
 async function pollServerSimulation(id) {
   if (!SERVER_SIMULATION_MODE || !id) return;
   try {
-    const simulation = await fetchJson(`/api/simulations/${id}`);
+    const simulation = await fetchJson(`/api/simulations/${id}?compact=1`);
     renderServerSimulation(simulation);
     if (isServerSimulationTerminal(simulation.status)) {
       stopServerSimulationPolling();

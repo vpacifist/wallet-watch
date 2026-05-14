@@ -250,6 +250,17 @@ def compact_simulation_payload(payload):
     return compact
 
 
+def compact_simulation_response(simulation):
+    if not isinstance(simulation, dict):
+        return simulation
+    compact = dict(simulation)
+    if isinstance(compact.get("progress"), dict):
+        compact["progress"] = compact_simulation_payload(compact["progress"])
+    if isinstance(compact.get("result"), dict):
+        compact["result"] = compact_simulation_payload(compact["result"])
+    return compact
+
+
 def simulation_row_to_dict(row, compact=False):
     if not row:
         return None
@@ -287,6 +298,11 @@ def get_simulation(simulation_id):
             (simulation_id,),
         ).fetchone()
     return simulation_row_to_dict(row)
+
+
+def wants_compact_response(parsed):
+    params = urllib.parse.parse_qs(parsed.query)
+    return params.get("compact", ["0"])[0].lower() in {"1", "true", "yes"}
 
 
 def get_latest_simulation():
@@ -1367,6 +1383,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if not simulation:
                 self.send_json(404, {"error": "simulation not found"})
             else:
+                if wants_compact_response(parsed):
+                    simulation = compact_simulation_response(simulation)
                 self.send_json(200, simulation)
             return
         if parsed.path == "/aero-price":
@@ -1428,6 +1446,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not simulation:
                     self.send_sse("error", {"error": "simulation not found"})
                     break
+                simulation = compact_simulation_response(simulation)
                 snapshot = json.dumps(simulation, sort_keys=True, ensure_ascii=False)
                 if snapshot != last_snapshot:
                     self.send_sse("simulation", simulation)
