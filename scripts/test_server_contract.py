@@ -381,6 +381,52 @@ class ServerContractTests(unittest.TestCase):
       with self.assertRaisesRegex(RuntimeError, "Archive RPC URLs are not configured"):
         self.server.upstream_post({"method": "eth_call", "params": [{"to": "0xabc", "data": "0x"}, "0x123"]}, urls=[], label="Archive RPC")
 
+    def test_upstream_retries_transient_tls_urlopen_error(self):
+      calls = []
+      self.server.UPSTREAM_RETRY_ATTEMPTS = 3
+      self.server.time.sleep = lambda _seconds: None
+
+      def fake_try_one_provider(url, body, summary):
+        calls.append((url, summary))
+        if len(calls) < 3:
+          return False, {"message": "<urlopen error [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1077)>"}
+        return True, {"jsonrpc": "2.0", "id": 1, "result": "0x1"}
+
+      self.server.try_one_provider = fake_try_one_provider
+
+      response = self.server.upstream_post({"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber", "params": []}, urls=["https://rpc.example"], label="RPC")
+
+      self.assertEqual(response["result"], "0x1")
+      self.assertGreaterEqual(len(calls), 3)
+
+    def test_fetch_json_url_retries_transient_tls_urlopen_error(self):
+      calls = []
+      self.server.UPSTREAM_RETRY_ATTEMPTS = 2
+      self.server.time.sleep = lambda _seconds: None
+
+      class FakeResponse:
+        def __enter__(self):
+          return self
+
+        def __exit__(self, exc_type, exc, tb):
+          return False
+
+        def read(self):
+          return b'{"ok": true}'
+
+      def fake_urlopen(req, timeout=30):
+        calls.append(req.full_url)
+        if len(calls) == 1:
+          raise self.server.urllib.error.URLError("[SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1077)")
+        return FakeResponse()
+
+      self.server.urllib.request.urlopen = fake_urlopen
+
+      payload = self.server.fetch_json_url("https://api.example/data", "test endpoint")
+
+      self.assertEqual(payload, {"ok": True})
+      self.assertEqual(calls, ["https://api.example/data", "https://api.example/data"])
+
 
 if __name__ == "__main__":
     unittest.main()

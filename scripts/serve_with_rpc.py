@@ -4,6 +4,7 @@ import datetime
 import http.server
 import json
 import os
+import ssl
 import subprocess
 import sqlite3
 import sys
@@ -66,6 +67,9 @@ API_RATE_LIMIT_PER_MINUTE = int(os.environ.get("API_RATE_LIMIT_PER_MINUTE", "60"
 SSE_RATE_LIMIT_PER_MINUTE = int(os.environ.get("SSE_RATE_LIMIT_PER_MINUTE", "180"))
 SSE_HEARTBEAT_SECONDS = int(os.environ.get("SSE_HEARTBEAT_SECONDS", "20"))
 SSE_MAX_CONNECTIONS_PER_IP = int(os.environ.get("SSE_MAX_CONNECTIONS_PER_IP", "6"))
+UPSTREAM_RETRY_ATTEMPTS = int(os.environ.get("UPSTREAM_RETRY_ATTEMPTS", "8"))
+UPSTREAM_RETRY_BASE_SECONDS = float(os.environ.get("UPSTREAM_RETRY_BASE_SECONDS", "2"))
+UPSTREAM_RETRY_MAX_SECONDS = float(os.environ.get("UPSTREAM_RETRY_MAX_SECONDS", "20"))
 
 AERO_USDC_POOL = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1"
 AERO_PRICE_CACHE = {}
@@ -900,6 +904,51 @@ def response_from_error(payload, error):
     return {"jsonrpc": "2.0", "id": payload.get("id"), "error": error or {"message": "RPC proxy error"}}
 
 
+def upstream_error_message(error):
+    if isinstance(error, dict):
+        return str(error.get("message", error))
+    return str(error)
+
+
+def is_transient_upstream_error(error):
+    message = upstream_error_message(error).lower()
+    return any(token in message for token in [
+        "urlopen error",
+        "ssl",
+        "tlsv1_alert_internal_error",
+        "tlsv1 alert internal error",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection aborted",
+        "remote end closed",
+        "temporarily unavailable",
+        "too many requests",
+        "rate limit",
+        "429",
+        "502",
+        "503",
+        "504",
+    ])
+
+
+def is_plan_limit_error(error):
+    message = upstream_error_message(error).lower()
+    return any(token in message for token in [
+        "plan",
+        "archive",
+        "limit",
+        "allowance",
+        "method not allowed",
+        "debug",
+        "trace",
+    ])
+
+
+def retry_delay_seconds(attempt):
+    return min(UPSTREAM_RETRY_MAX_SECONDS, UPSTREAM_RETRY_BASE_SECONDS * (attempt + 1))
+
+
 def try_one_provider(url, body, summary):
     try:
         req = urllib.request.Request(
@@ -933,7 +982,7 @@ def try_one_provider(url, body, summary):
         except:
             body_text = "unreadable body"
         return False, {"code": exc.code, "message": body_text}
-    except (urllib.error.URLError, TimeoutError) as exc:
+    except (urllib.error.URLError, TimeoutError, ssl.SSLError, OSError) as exc:
         return False, {"message": str(exc)}
 
 
@@ -960,9 +1009,11 @@ def upstream_post(payload, urls=None, label="RPC"):
         last_error = result
         attempted_errors.append((url, last_error))
 
-    # If all failed once, use parallelism for retries to find a working one fast
+    # If all failed once, use parallelism for retries to find a working one fast.
+    # TLS alerts and connection resets from RPC providers are common transient
+    # failures during long simulations, so do not let one short outage kill the job.
     with ThreadPoolExecutor(max_workers=min(len(provider_urls), 8)) as executor:
-        for attempt in range(3):
+        for attempt in range(max(0, UPSTREAM_RETRY_ATTEMPTS)):
             futures = {executor.submit(try_one_provider, url, body, summary): url for url in provider_urls}
             for future in as_completed(futures):
                 url = futures[future]
@@ -976,10 +1027,8 @@ def upstream_post(payload, urls=None, label="RPC"):
                     attempted_errors.append((url, last_error))
                     
                     # Detailed logging for specific error types
-                    err_msg = str(last_error.get("message", "")) if isinstance(last_error, dict) else str(last_error)
-                    is_plan_error = any(token in err_msg.lower() for token in ["plan", "archive", "limit", "allowance", "method not allowed", "debug", "trace"])
-                    
-                    if is_plan_error:
+                    err_msg = upstream_error_message(last_error)
+                    if is_plan_limit_error(last_error):
                         print(f"\n!!! PLAN LIMIT DETECTED !!!", file=sys.stderr, flush=True)
                         print(f"Provider: {redact_url(url)}", file=sys.stderr, flush=True)
                         print(f"Methods: [{summary}]", file=sys.stderr, flush=True)
@@ -992,14 +1041,43 @@ def upstream_post(payload, urls=None, label="RPC"):
                     attempted_errors.append((url, last_error))
                     print(f"[{time.strftime('%H:%M:%S')}] RPC Exception from {redact_url(url)}: {exc}", file=sys.stderr, flush=True)
             
-            if attempt < 2:
-                time.sleep(2.0 * (attempt + 1))
+            if attempt < UPSTREAM_RETRY_ATTEMPTS - 1:
+                if any(is_transient_upstream_error(error) for _, error in attempted_errors[-len(provider_urls):]):
+                    time.sleep(retry_delay_seconds(attempt))
+                else:
+                    time.sleep(min(2.0, retry_delay_seconds(attempt)))
     
     if attempted_errors:
         providers = ", ".join(redact_url(url) for url, _ in attempted_errors[-len(provider_urls):])
         print(f"{label} upstream failed for [{summary}] after parallel retries; last providers: {providers}; last_error={last_error}", file=sys.stderr, flush=True)
     record_upstream_timing(stat_method, time.time() - started_at)
     raise RuntimeError(json.dumps(last_error or {"message": f"{label} proxy error"}))
+
+
+def fetch_json_url(url, label):
+    last_error = None
+    for attempt in range(max(1, UPSTREAM_RETRY_ATTEMPTS + 1)):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "wallet-watch/1.0"})
+            with urllib.request.urlopen(req, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            try:
+                body_text = exc.read().decode("utf-8", errors="replace")
+            except:
+                body_text = "unreadable body"
+            last_error = {"code": exc.code, "message": body_text}
+        except (urllib.error.URLError, TimeoutError, ssl.SSLError, OSError, json.JSONDecodeError) as exc:
+            last_error = {"message": str(exc)}
+
+        if attempt >= UPSTREAM_RETRY_ATTEMPTS:
+            break
+        if is_transient_upstream_error(last_error):
+            time.sleep(retry_delay_seconds(attempt))
+        else:
+            time.sleep(min(2.0, retry_delay_seconds(attempt)))
+
+    raise RuntimeError(json.dumps(last_error or {"message": f"{label} request failed"}))
 
 
 def fetch_logs_in_chunks(payload, info):
@@ -1480,9 +1558,7 @@ def get_aero_price(timestamp):
         }
     )
     url = f"https://api.geckoterminal.com/api/v2/networks/base/pools/{AERO_USDC_POOL}/ohlcv/minute?{query}"
-    req = urllib.request.Request(url, headers={"User-Agent": "wallet-watch/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as response:
-        payload = json.load(response)
+    payload = fetch_json_url(url, "AERO price")
 
     rows = payload.get("data", {}).get("attributes", {}).get("ohlcv_list", [])
     if not rows:
