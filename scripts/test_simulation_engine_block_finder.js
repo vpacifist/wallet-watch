@@ -75,7 +75,7 @@ async function testMonotonicMinuteTimestampsUseCursorEstimate() {
     assert.equal(block.timestamp, 1000 + minute * 60);
     previous = block;
   }
-  assert.ok(rpcCalls() <= 10, `expected about two uncached getBlock calls per minute with duplicate checks, got ${rpcCalls()}`);
+  assert.ok(rpcCalls() <= 6, `expected one confirmed scan then fast exact-cadence lookups, got ${rpcCalls()} getBlock calls`);
 }
 
 async function testDuplicateTimestampsReturnFirstAllowedDuplicate() {

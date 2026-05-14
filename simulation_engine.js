@@ -44,9 +44,15 @@
     const SEQUENTIAL_FORWARD_SCAN_LIMIT = 4;
     let sequentialBlockCursor = null;
 
-    function rememberSequentialBlockCursor(block) {
+    function rememberSequentialBlockCursor(block, metadata = null) {
       if (block && Number.isFinite(block.number) && Number.isFinite(block.timestamp)) {
-        sequentialBlockCursor = { block };
+        const existingHits = sequentialBlockCursor?.block?.number === block.number
+          ? sequentialBlockCursor.exactCadenceHits || 0
+          : 0;
+        sequentialBlockCursor = {
+          block,
+          exactCadenceHits: metadata?.exactCadenceHits ?? existingHits,
+        };
       }
     }
 
@@ -69,7 +75,7 @@
         let candidate = estimateBlock;
         for (let offset = 1; offset <= SEQUENTIAL_FORWARD_SCAN_LIMIT; offset += 1) {
           candidate = await getBlock(estimateBlock.number + offset);
-          if (candidate.timestamp >= timestampSeconds) return candidate;
+          if (candidate.timestamp >= timestampSeconds) return { block: candidate, exactEstimate: false };
         }
         return null;
       }
@@ -77,10 +83,14 @@
       let firstAtOrAfter = estimateBlock;
       for (let offset = 1; offset <= SEQUENTIAL_FORWARD_SCAN_LIMIT && estimateBlock.number - offset >= afterBlock; offset += 1) {
         const previous = await getBlock(estimateBlock.number - offset);
-        if (previous.timestamp < timestampSeconds) return firstAtOrAfter;
+        if (previous.timestamp < timestampSeconds) {
+          return { block: firstAtOrAfter, exactEstimate: firstAtOrAfter.number === estimateBlock.number };
+        }
         firstAtOrAfter = previous;
       }
-      if (firstAtOrAfter.number === afterBlock) return firstAtOrAfter;
+      if (firstAtOrAfter.number === afterBlock) {
+        return { block: firstAtOrAfter, exactEstimate: firstAtOrAfter.number === estimateBlock.number };
+      }
       return null;
     }
 
@@ -115,10 +125,26 @@
         const estimatedOffset = Math.max(1, Math.ceil((timestampSeconds - cursorBlock.timestamp) / effectiveSecondsPerBlock));
         let estimateNumber = Math.max(floorBlock, cursorBlock.number + estimatedOffset);
         let estimateBlock = await getBlock(estimateNumber);
+        const blockDelta = estimateNumber - cursorBlock.number;
+        const timestampDelta = estimateBlock.timestamp - cursorBlock.timestamp;
+        const estimateMatchesCadence = blockDelta > 0
+          && timestampDelta === blockDelta * effectiveSecondsPerBlock
+          && estimateBlock.timestamp >= timestampSeconds
+          && estimateBlock.timestamp - timestampSeconds < effectiveSecondsPerBlock;
+        if (estimateMatchesCadence && (sequentialBlockCursor?.exactCadenceHits || 0) > 0) {
+          rememberSequentialBlockCursor(estimateBlock, {
+            exactCadenceHits: sequentialBlockCursor.exactCadenceHits + 1,
+          });
+          return estimateBlock;
+        }
+
         const localResult = await scanAroundEstimateForSequentialBlock(timestampSeconds, floorBlock, estimateBlock);
         if (localResult) {
-          rememberSequentialBlockCursor(localResult);
-          return localResult;
+          const nextExactCadenceHits = estimateMatchesCadence && localResult.exactEstimate
+            ? (sequentialBlockCursor?.exactCadenceHits || 0) + 1
+            : 0;
+          rememberSequentialBlockCursor(localResult.block, { exactCadenceHits: nextExactCadenceHits });
+          return localResult.block;
         }
 
         let low = cursorBlock.number + 1;
