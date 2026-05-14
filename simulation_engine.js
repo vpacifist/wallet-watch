@@ -32,10 +32,12 @@
       Q128,
       AERO_DECIMALS,
       recordSimulationStepDuration,
+      recordSimulationTiming,
       simulationProgressText,
       setSimulationNotice,
       renderSimulationTable,
       updateSimulationControls,
+      isServerWorker = false,
     } = deps;
 
     function snapshotState() {
@@ -271,13 +273,20 @@
     }
 
     async function buildSimulationRow(index, eventName, blockOverride = null, runToken = null) {
+      const rowStartedAt = performance.now();
       const row = state.rows[index];
       const timestamp = Math.floor(new Date(row.time).getTime() / 1000);
       const previousRow = state.sim.rows.length ? state.sim.rows[state.sim.rows.length - 1] : null;
       const afterBlock = previousRow ? previousRow.blockNumber : 1;
+      let phaseStartedAt = performance.now();
       const block = blockOverride || await findBlockAtOrAfter(timestamp, afterBlock);
+      recordSimulationTiming("buildSimulationRow.findBlock", phaseStartedAt);
+      phaseStartedAt = performance.now();
       const rewardState = await readRewardInside(block.number, state.sim.tickLower, state.sim.tickUpper);
+      recordSimulationTiming("buildSimulationRow.readRewardInside", phaseStartedAt);
+      phaseStartedAt = performance.now();
       const aeroPrice = await getAeroPrice(block.number);
+      recordSimulationTiming("buildSimulationRow.getAeroPrice", phaseStartedAt);
       ensureActiveSimulation(runToken);
       const previousAeroAmounts = {
         conservative: state.sim.aeroUnharvested,
@@ -302,9 +311,11 @@
       };
       const price = priceFromSqrtX96(rewardState.sqrtPriceX96);
       const previousFeeTotals = lpFeeTotals(price);
+      phaseStartedAt = performance.now();
       const lpFeeEstimate = previousRow
         ? await estimateLpFees(previousRow.blockNumber + 1, block.number, rewardState, price)
         : { weth: 0, usdc: 0, usdcValue: 0, source: "initial-row", reliability: 100, swapCount: 0 };
+      recordSimulationTiming("buildSimulationRow.estimateLpFees", phaseStartedAt);
       ensureActiveSimulation(runToken);
       const lpFeeTotalsAfter = accrueLpFees(lpFeeEstimate, price);
       const lpFeeEvent = {
@@ -314,7 +325,7 @@
       };
       const amounts = amountsForPosition(price);
       const reliability = simulationReliability(row, block, rewardState);
-      return {
+      const result = {
         event: eventName,
         index,
         blockNumber: block.number,
@@ -362,17 +373,24 @@
         totalReturnUsdc: amounts.value + (state.sim.lpMode === "staked" ? aeroTotals.conservative : lpFeeTotalsAfter.usdcValue),
         stateAfter: snapshotState(),
       };
+      recordSimulationTiming("buildSimulationRow", rowStartedAt);
+      return result;
     }
 
     async function buildRebalanceRow(index, exit, block, runToken = null) {
+      const rowStartedAt = performance.now();
       const previousRow = state.sim.rows.length ? state.sim.rows[state.sim.rows.length - 1] : null;
       const oldTickLower = state.sim.tickLower;
       const oldTickUpper = state.sim.tickUpper;
       const oldSpanTicks = Math.max(AERODROME_TICK_SPACING, oldTickUpper - oldTickLower);
       const exitPrice = priceFromSqrtX96(exit.sqrtPriceX96);
+      let phaseStartedAt = performance.now();
       const rewardState = await readRewardInside(block.number, oldTickLower, oldTickUpper);
+      recordSimulationTiming("buildRebalanceRow.readOldRewardInside", phaseStartedAt);
       rewardState.rangeCrossed = true;
+      phaseStartedAt = performance.now();
       const aeroPrice = await getAeroPrice(block.number);
+      recordSimulationTiming("buildRebalanceRow.getAeroPrice", phaseStartedAt);
       ensureActiveSimulation(runToken);
       const previousAeroAmounts = {
         conservative: state.sim.aeroUnharvested,
@@ -393,9 +411,11 @@
       const harvestedAeroUsdc = aeroTotals.conservative;
       const oldAmounts = amountsForPosition(exitPrice);
       const previousFeeTotals = lpFeeTotals(exitPrice);
+      phaseStartedAt = performance.now();
       const lpFeeEstimate = previousRow
         ? await estimateLpFees(previousRow.blockNumber + 1, block.number, rewardState, exitPrice)
         : { weth: 0, usdc: 0, usdcValue: 0, source: "initial-row", reliability: 100, swapCount: 0 };
+      recordSimulationTiming("buildRebalanceRow.estimateLpFees", phaseStartedAt);
       ensureActiveSimulation(runToken);
       const lpFeeTotalsAfter = accrueLpFees(lpFeeEstimate, exitPrice);
       const lpFeeEvent = {
@@ -415,7 +435,9 @@
       let swap = { direction: "NONE", amount: 0 };
       if (excessWeth > 0) swap = { direction: "WETH_TO_USDC", amount: excessWeth };
       if (excessUsdc > 0) swap = { direction: "USDC_TO_WETH", amount: excessUsdc };
+      phaseStartedAt = performance.now();
       const swapQuote = await estimateHistoricalSwap(swap, exitPrice, block.number);
+      recordSimulationTiming("buildRebalanceRow.estimateHistoricalSwap", phaseStartedAt);
       ensureActiveSimulation(runToken);
       const gasDetails = estimateRebalanceGasDetails(block, exitPrice);
       const gasUsdc = gasDetails.gasUsdc;
@@ -423,7 +445,9 @@
       const totalCostUsdc = swapQuote.lossUsdc + gasUsdc + automationFeeUsdc;
       const netCapital = Math.max(0, grossCapital - totalCostUsdc);
       const newPlan = computePositionPlanForRange(netCapital, exitPrice, newTickLower, newTickUpper, newAnchorTick);
+      phaseStartedAt = performance.now();
       const nextRewardState = await readRewardInside(block.number, newTickLower, newTickUpper);
+      recordSimulationTiming("buildRebalanceRow.readNewRewardInside", phaseStartedAt);
       ensureActiveSimulation(runToken);
       const reliability = rebalanceReliability(rewardState, swapQuote.reliability, swap.amount > 0, block);
       const impactDetails = impactRiskDetails(rewardState, aeroPrice, aeroEvent);
@@ -445,7 +469,7 @@
       state.sim.aeroBaseHarvestedUsdc = aeroTotals.base;
       state.sim.aeroHaircutUsdc = aeroTotals.haircut;
       state.sim.lpFeesUsdcValue = lpFeeTotalsAfter.usdcValue;
-      return {
+      const result = {
         event: `rebalance -${fmtUsdc(totalCostUsdc)}`,
         index,
         blockNumber: block.number,
@@ -521,9 +545,12 @@
           quoteReliability: swapQuote.reliability,
         },
       };
+      recordSimulationTiming("buildRebalanceRow", rowStartedAt);
+      return result;
     }
 
     async function stepForward(options = {}) {
+      const stepTotalStartedAt = performance.now();
       const shouldRender = options.render !== false;
       if (!state.sim.started || state.sim.stopped || state.sim.stepInProgress) return false;
       const nextIndex = state.sim.currentIndex + 1;
@@ -546,11 +573,15 @@
       if (shouldRender) setSimulationNotice({ status: "Считаю следующую свечу...", details: simulationProgressText(), estimate: "" });
 
       try {
+        let phaseStartedAt = performance.now();
         const nextBlock = await findBlockAtOrAfter(nextTimestamp, previous.blockNumber);
+        recordSimulationTiming("stepForward.findBlockAtOrAfter", phaseStartedAt);
         const lastExit = state.sim.lastExitBlockNumber > 0
           ? { blockNumber: state.sim.lastExitBlockNumber, logIndex: state.sim.lastExitLogIndex }
           : null;
+        phaseStartedAt = performance.now();
         const exit = await findSwapExit(previous.blockNumber, nextBlock.number, state.sim.tickLower, state.sim.tickUpper, lastExit);
+        recordSimulationTiming("stepForward.findSwapExit", phaseStartedAt);
         if (runToken !== state.sim.runToken || !state.sim.started) return false;
         state.sim.currentIndex = nextIndex;
 
@@ -564,9 +595,13 @@
         }
 
         if (exitConfirmed) {
+          phaseStartedAt = performance.now();
           const rebalanceBlock = await getBlock(exit.blockNumber);
+          recordSimulationTiming("stepForward.getRebalanceBlock", phaseStartedAt);
           if (runToken !== state.sim.runToken || !state.sim.started) return false;
+          phaseStartedAt = performance.now();
           const rebalanceRow = await buildRebalanceRow(nextIndex, exit, rebalanceBlock, runToken);
+          recordSimulationTiming("stepForward.buildRebalanceRow", phaseStartedAt);
           if (runToken !== state.sim.runToken || !state.sim.started) return false;
           state.sim.lastExitBlockNumber = exit.blockNumber;
           state.sim.lastExitLogIndex = exit.logIndex;
@@ -576,7 +611,9 @@
           state.sim.stopped = false;
           if (shouldRender) setSimulationNotice({ status: "Rebalance рассчитан.", details: simulationProgressText(), estimate: "" });
         } else {
+          phaseStartedAt = performance.now();
           const simulationRow = await buildSimulationRow(nextIndex, "price change", nextBlock, runToken);
+          recordSimulationTiming("stepForward.buildSimulationRow", phaseStartedAt);
           if (runToken !== state.sim.runToken || !state.sim.started) return false;
           state.sim.rows.push(simulationRow);
           state.sim.activeRowIndex = nextIndex;
@@ -598,6 +635,7 @@
         renderSimulationTable();
         return false;
       } finally {
+        recordSimulationTiming("stepForward", stepTotalStartedAt);
         if (runToken === state.sim.runToken) {
           state.sim.stepInProgress = false;
           if (shouldRender) updateSimulationControls();
@@ -619,21 +657,35 @@
         const now = performance.now();
         if (now - state.sim.lastFastRenderAt >= state.sim.fastRenderEveryMs) {
           state.sim.lastFastRenderAt = now;
+          if (isServerWorker) {
+            recordSimulationTiming("runAutoLoop.workerProgressSkip", performance.now());
+            continue;
+          }
+          let phaseStartedAt = performance.now();
           setSimulationNotice({
             status: "Симуляция считается...",
             details: simulationProgressText(),
             estimate: "",
           });
+          recordSimulationTiming("runAutoLoop.setNotice", phaseStartedAt);
+          phaseStartedAt = performance.now();
           renderSimulationTable(true);
+          recordSimulationTiming("runAutoLoop.renderSimulationTable", phaseStartedAt);
+          phaseStartedAt = performance.now();
           await new Promise((resolve) => setTimeout(resolve, 0));
+          recordSimulationTiming("runAutoLoop.yield", phaseStartedAt);
         }
       }
       if (runToken === state.sim.runToken && loopId === state.sim.autoLoopId) {
         state.sim.autoRunning = false;
         if (state.sim.currentIndex >= state.sim.endIndex) {
+          const phaseStartedAt = performance.now();
           setSimulationNotice({ status: "Симуляция дошла до конца.", details: simulationProgressText(), estimate: "" });
+          recordSimulationTiming("runAutoLoop.finalNotice", phaseStartedAt);
         }
+        const renderStartedAt = performance.now();
         renderSimulationTable(true);
+        recordSimulationTiming("runAutoLoop.finalRenderSimulationTable", renderStartedAt);
         updateSimulationControls();
       }
     }

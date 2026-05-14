@@ -61,6 +61,27 @@ function testSseDelayedStartHandling() {
   assert.match(app, /Range: calculating\.\.\./);
 }
 
+function testBlockByNumberCacheLifecycle() {
+  assert.match(app, /blockByNumberCache: new Map\(\)/);
+  assert.match(app, /state\.sim\.blockByNumberCache\.get\(blockNumber\)/);
+  assert.match(app, /state\.sim\.blockByNumberCache\.set\(blockNumber, normalized\)/);
+  assert.match(app, /state\.sim\.blockByNumberCache = new Map\(\)/);
+}
+
+function testSimulationTimingInstrumentation() {
+  assert.match(app, /function recordSimulationTiming\(name, startedAt\)/);
+  assert.match(app, /globalThis\.getSimulationTiming = getSimulationTiming/);
+  assert.match(engine, /recordSimulationTiming\("stepForward"/);
+  assert.match(engine, /recordSimulationTiming\("buildSimulationRow"/);
+  assert.match(engine, /recordSimulationTiming\("runAutoLoop\.renderSimulationTable"/);
+  assert.match(engine, /runAutoLoop\.workerProgressSkip/);
+  assert.match(app, /if \(IS_SERVER_WORKER\) \{/);
+  assert.match(app, /isServerWorker: IS_SERVER_WORKER/);
+  assert.match(runtime, /timing: readTiming\(sandbox\)/);
+  assert.match(runtime, /getSimulationRawRowsFrom/);
+  assert.match(runtime, /getSimulationDisplayState/);
+}
+
 
 function testSimulationModes() {
   // UI mode controls in app.js
@@ -87,3 +108,6 @@ testInitializationStages();
 testSkeletonLifecycle();
 testEarlyRangeRendering();
 testSseDelayedStartHandling();
+testBlockByNumberCacheLifecycle();
+testSimulationTimingInstrumentation();
+testSimulationModes();

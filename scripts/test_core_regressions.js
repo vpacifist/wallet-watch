@@ -229,6 +229,10 @@ async function testFindBlockAtOrAfter() {
   assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 111 })).number, 8, "after anchor should return first block at or after timestamp");
   assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 100 })).number, 1, "duplicate timestamps should return first duplicate");
   assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 100, afterBlock: 2 })).number, 2, "afterBlock should be part of lookup semantics");
+
+  const cache = new Map();
+  assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 100, afterBlock: 1, cache })).number, 1, "cached lookup should keep first duplicate semantics");
+  assert.equal((await core.findBlockAtOrAfterWithGetter({ ...options, timestampSeconds: 100, afterBlock: 2, cache })).number, 2, "cached lookup should include afterBlock in cache key");
 }
 
 testTickPriceRoundTrip();

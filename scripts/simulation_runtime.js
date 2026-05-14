@@ -252,22 +252,37 @@ async function workerFetch(config, url, options = {}) {
   return await fetch(normalizeUrl(config, textUrl), options);
 }
 
-function readUi(document) {
+function readDisplayRows(sandbox) {
+  if (typeof sandbox?.getSimulationDisplayRows !== "function") return null;
+  return sandbox.getSimulationDisplayRows();
+}
+
+function readDisplayState(sandbox) {
+  if (typeof sandbox?.getSimulationDisplayState !== "function") return null;
+  return sandbox.getSimulationDisplayState();
+}
+
+function readUi(document, sandbox = null) {
+  const displayState = readDisplayState(sandbox);
+  const displayRows = displayState ? null : readDisplayRows(sandbox);
   const table = document.getElementById("simTableBody");
-  const rows = table.querySelectorAll("tr");
-  const lastRow = rows.length ? rows[rows.length - 1].textContent : "";
+  const rows = displayRows || table.querySelectorAll("tr");
+  const rowCount = displayState ? displayState.rowCount : rows.length;
+  const lastRow = displayState
+    ? displayState.lastRow
+    : (rows.length ? (displayRows ? rows.at(-1) : rows[rows.length - 1].textContent) : "");
   const notice = document.getElementById("simNotice");
   const noticeText = notice.children.length
     ? notice.children.map((child) => child.textContent || "").filter(Boolean).join("\n")
     : notice.textContent || "";
   return {
     notice: noticeText,
-    rowCount: rows.length,
+    rowCount,
     lastRow,
     button: document.getElementById("runSimulation").textContent || "",
-    currentValue: document.getElementById("currentPositionValue").textContent || "",
-    currentReward: document.getElementById("currentRewardValue").textContent || "",
-    currentTotalReturn: document.getElementById("currentTotalValue").textContent || "",
+    currentValue: displayState?.currentValue || document.getElementById("currentPositionValue").textContent || "",
+    currentReward: displayState?.currentReward || document.getElementById("currentRewardValue").textContent || "",
+    currentTotalReturn: displayState?.currentTotalReturn || document.getElementById("currentTotalValue").textContent || "",
   };
 }
 
@@ -279,6 +294,17 @@ function readTableRows(document) {
 function readRawRows(sandbox) {
   if (typeof sandbox.getSimulationRawRows !== "function") return [];
   return sandbox.getSimulationRawRows();
+}
+
+function readRawRowsFrom(sandbox, startIndex) {
+  if (typeof sandbox.getSimulationRawRowsFrom === "function") return sandbox.getSimulationRawRowsFrom(startIndex);
+  return readRawRows(sandbox).slice(startIndex);
+}
+
+function readRawRowCount(sandbox) {
+  if (typeof sandbox.getSimulationRawRowCount === "function") return sandbox.getSimulationRawRowCount();
+  if (typeof sandbox.getSimulationDisplayRows === "function") return sandbox.getSimulationDisplayRows().length;
+  return readRawRows(sandbox).length;
 }
 
 function readStartupState(sandbox) {
@@ -311,6 +337,11 @@ function progressEvent(config, startedAt, state, rawRows, newRawRows, reason = "
 function readDataQuality(sandbox) {
   if (typeof sandbox.getSimulationDataQuality !== "function") return null;
   return sandbox.getSimulationDataQuality();
+}
+
+function readTiming(sandbox) {
+  if (typeof sandbox.getSimulationTiming !== "function") return null;
+  return sandbox.getSimulationTiming();
 }
 
 async function runSimulation(config, emit = () => { }) {
@@ -402,7 +433,7 @@ async function runSimulation(config, emit = () => { }) {
   const progressEverySeconds = config.progressEverySeconds || 2;
   while (!startSettled) {
     await sleep(250);
-    const state = readUi(document);
+    const state = readUi(document, sandbox);
     const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
     if (elapsedSeconds - lastStartHeartbeatAt >= progressEverySeconds) {
       lastStartHeartbeatAt = elapsedSeconds;
@@ -411,23 +442,24 @@ async function runSimulation(config, emit = () => { }) {
   }
   await startPromise;
   if (startError) throw startError;
-  emit({ type: "started", id: config.id, ...readUi(document) });
+  emit({ type: "started", id: config.id, ...readUi(document, sandbox) });
 
   let lastHeartbeatAt = 0;
   let lastEmittedRawCount = 0;
   const timeoutMs = (config.timeoutSeconds || 21600) * 1000;
   while (Date.now() - startedAt < timeoutMs) {
     await sleep(250);
-    const state = readUi(document);
+    const state = readUi(document, sandbox);
     const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
-    const rawRows = readRawRows(sandbox);
-    if (rawRows.length > lastEmittedRawCount) {
-      const newRawRows = rawRows.slice(lastEmittedRawCount);
-      lastEmittedRawCount = rawRows.length;
-      emit(progressEvent(config, startedAt, state, rawRows, newRawRows, "new_rows", sandbox));
+    const rawRowCount = readRawRowCount(sandbox);
+    if (rawRowCount > lastEmittedRawCount) {
+      const newRawRows = readRawRowsFrom(sandbox, lastEmittedRawCount);
+      lastEmittedRawCount = rawRowCount;
+      emit(progressEvent(config, startedAt, state, newRawRows, newRawRows, "new_rows", sandbox));
     } else if (elapsedSeconds - lastHeartbeatAt >= progressEverySeconds) {
       lastHeartbeatAt = elapsedSeconds;
-      emit(progressEvent(config, startedAt, state, rawRows, [], "heartbeat", sandbox));
+      const latestRows = readRawRowsFrom(sandbox, Math.max(0, rawRowCount - 1));
+      emit(progressEvent(config, startedAt, state, latestRows, [], "heartbeat", sandbox));
     }
     if (state.notice.includes("Симуляция дошла до конца") || state.notice.includes("Симуляция дошла до даты конца")) {
       emit({
@@ -443,6 +475,7 @@ async function runSimulation(config, emit = () => { }) {
         currentTotalReturn: state.currentTotalReturn,
         rawRows: readRawRows(sandbox),
         dataQuality: readDataQuality(sandbox),
+        timing: readTiming(sandbox),
       });
       return { exitCode: 0 };
     }
@@ -460,12 +493,13 @@ async function runSimulation(config, emit = () => { }) {
         currentTotalReturn: state.currentTotalReturn,
         rawRows: readRawRows(sandbox),
         dataQuality: readDataQuality(sandbox),
+        timing: readTiming(sandbox),
       });
       return { exitCode: 2 };
     }
   }
 
-  const state = readUi(document);
+  const state = readUi(document, sandbox);
   emit({
     type: "result",
     id: config.id,
@@ -477,6 +511,7 @@ async function runSimulation(config, emit = () => { }) {
     currentValue: state.currentValue,
     currentReward: state.currentReward,
     currentTotalReturn: state.currentTotalReturn,
+    timing: readTiming(sandbox),
   });
   return { exitCode: 3 };
 }
