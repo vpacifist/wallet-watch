@@ -1876,6 +1876,7 @@ function resetSimulationRows() {
   state.sim.etaMs = 0;
   state.sim.rows = [];
   resetSimulationTiming();
+  simulationEngine.resetSequentialBlockCursor();
   state.sim.blockCache = new Map();
   state.sim.blockByNumberCache = new Map();
   state.sim.started = false;
@@ -2290,6 +2291,7 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   renderSimulationTable,
   updateSimulationControls,
   isServerWorker: IS_SERVER_WORKER,
+  secondsPerBlock: BASE_SECONDS_PER_BLOCK,
 });
 
 function showTokenPrompt() {

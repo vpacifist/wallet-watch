@@ -38,7 +38,111 @@
       renderSimulationTable,
       updateSimulationControls,
       isServerWorker = false,
+      secondsPerBlock = 2,
     } = deps;
+
+    const SEQUENTIAL_FORWARD_SCAN_LIMIT = 4;
+    let sequentialBlockCursor = null;
+
+    function rememberSequentialBlockCursor(block) {
+      if (block && Number.isFinite(block.number) && Number.isFinite(block.timestamp)) {
+        sequentialBlockCursor = { block };
+      }
+    }
+
+    function resetSequentialBlockCursor() {
+      sequentialBlockCursor = null;
+    }
+
+    async function binarySearchFirstBlockAtOrAfter(timestampSeconds, low, high) {
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2);
+        const block = await getBlock(mid);
+        if (block.timestamp < timestampSeconds) low = mid + 1;
+        else high = mid;
+      }
+      return await getBlock(low);
+    }
+
+    async function scanAroundEstimateForSequentialBlock(timestampSeconds, afterBlock, estimateBlock) {
+      if (estimateBlock.timestamp < timestampSeconds) {
+        let candidate = estimateBlock;
+        for (let offset = 1; offset <= SEQUENTIAL_FORWARD_SCAN_LIMIT; offset += 1) {
+          candidate = await getBlock(estimateBlock.number + offset);
+          if (candidate.timestamp >= timestampSeconds) return candidate;
+        }
+        return null;
+      }
+
+      let firstAtOrAfter = estimateBlock;
+      for (let offset = 1; offset <= SEQUENTIAL_FORWARD_SCAN_LIMIT && estimateBlock.number - offset >= afterBlock; offset += 1) {
+        const previous = await getBlock(estimateBlock.number - offset);
+        if (previous.timestamp < timestampSeconds) return firstAtOrAfter;
+        firstAtOrAfter = previous;
+      }
+      if (firstAtOrAfter.number === afterBlock) return firstAtOrAfter;
+      return null;
+    }
+
+    async function findSequentialBlockAtOrAfter(timestampSeconds, afterBlock = 1) {
+      const startedAt = performance.now();
+      try {
+        const floorBlock = Math.max(1, afterBlock || 1);
+        let cursorBlock = sequentialBlockCursor?.block;
+        if (!cursorBlock || cursorBlock.number !== floorBlock) {
+          cursorBlock = await getBlock(floorBlock);
+        }
+        if (cursorBlock.timestamp >= timestampSeconds) {
+          rememberSequentialBlockCursor(cursorBlock);
+          return cursorBlock;
+        }
+
+        const directScanSeconds = SEQUENTIAL_FORWARD_SCAN_LIMIT * Math.max(1, secondsPerBlock);
+        if (timestampSeconds - cursorBlock.timestamp <= directScanSeconds) {
+          let previous = cursorBlock;
+          for (let offset = 1; offset <= SEQUENTIAL_FORWARD_SCAN_LIMIT; offset += 1) {
+            const candidate = await getBlock(cursorBlock.number + offset);
+            if (candidate.timestamp >= timestampSeconds) {
+              rememberSequentialBlockCursor(candidate);
+              return candidate;
+            }
+            previous = candidate;
+          }
+          cursorBlock = previous;
+        }
+
+        const effectiveSecondsPerBlock = Math.max(1, secondsPerBlock);
+        const estimatedOffset = Math.max(1, Math.ceil((timestampSeconds - cursorBlock.timestamp) / effectiveSecondsPerBlock));
+        let estimateNumber = Math.max(floorBlock, cursorBlock.number + estimatedOffset);
+        let estimateBlock = await getBlock(estimateNumber);
+        const localResult = await scanAroundEstimateForSequentialBlock(timestampSeconds, floorBlock, estimateBlock);
+        if (localResult) {
+          rememberSequentialBlockCursor(localResult);
+          return localResult;
+        }
+
+        let low = cursorBlock.number + 1;
+        let high = estimateNumber;
+        if (estimateBlock.timestamp < timestampSeconds) {
+          low = estimateNumber + 1;
+          let span = Math.max(SEQUENTIAL_FORWARD_SCAN_LIMIT, estimatedOffset);
+          do {
+            high = estimateNumber + span;
+            estimateBlock = await getBlock(high);
+            if (estimateBlock.timestamp >= timestampSeconds) break;
+            low = high + 1;
+            estimateNumber = high;
+            span *= 2;
+          } while (true);
+        }
+
+        const result = await binarySearchFirstBlockAtOrAfter(timestampSeconds, Math.max(low, floorBlock), high);
+        rememberSequentialBlockCursor(result);
+        return result;
+      } finally {
+        recordSimulationTiming("findBlockAtOrAfter", startedAt);
+      }
+    }
 
     function snapshotState() {
       return {
@@ -280,6 +384,7 @@
       const afterBlock = previousRow ? previousRow.blockNumber : 1;
       let phaseStartedAt = performance.now();
       const block = blockOverride || await findBlockAtOrAfter(timestamp, afterBlock);
+      rememberSequentialBlockCursor(block);
       recordSimulationTiming("buildSimulationRow.findBlock", phaseStartedAt);
       phaseStartedAt = performance.now();
       const rewardState = await readRewardInside(block.number, state.sim.tickLower, state.sim.tickUpper);
@@ -574,7 +679,7 @@
 
       try {
         let phaseStartedAt = performance.now();
-        const nextBlock = await findBlockAtOrAfter(nextTimestamp, previous.blockNumber);
+        const nextBlock = await findSequentialBlockAtOrAfter(nextTimestamp, previous.blockNumber);
         recordSimulationTiming("stepForward.findBlockAtOrAfter", phaseStartedAt);
         const lastExit = state.sim.lastExitBlockNumber > 0
           ? { blockNumber: state.sim.lastExitBlockNumber, logIndex: state.sim.lastExitLogIndex }
@@ -702,6 +807,8 @@
       aeroEventUsdc,
       buildSimulationRow,
       buildRebalanceRow,
+      findSequentialBlockAtOrAfter,
+      resetSequentialBlockCursor,
     };
   }
 
