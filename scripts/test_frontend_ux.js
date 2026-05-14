@@ -106,9 +106,8 @@ function testSimulationModes() {
 }
 
 function testServerObservationModes() {
-  assert.match(html, /id="serverUiModeSelect"/);
-  assert.match(html, /value="live">Live view/);
-  assert.match(html, /value="background">Background/);
+  assert.doesNotMatch(html, /id="serverUiModeSelect"/);
+  assert.doesNotMatch(html, />UI mode</);
   assert.match(html, /id="serverBackgroundOverlay"/);
   assert.match(html, /id="openLiveView"/);
   assert.match(html, /id="closeLiveView"/);
@@ -117,6 +116,7 @@ function testServerObservationModes() {
   assert.match(app, /uiMode: "live"/);
   assert.match(app, /liveViewOpen: true/);
   assert.match(app, /function setServerUiMode\(mode\)/);
+  assert.match(app, /setServerUiMode\("live"\)/);
   assert.match(app, /function openServerLiveView\(\)/);
   assert.match(app, /function closeServerLiveView\(\)/);
   assert.match(app, /function isServerLiveRenderingActive\(\)/);

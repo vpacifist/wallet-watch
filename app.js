@@ -109,7 +109,6 @@ const currentRewardLabel = document.getElementById("currentRewardLabel");
 const currentRewardValue = document.getElementById("currentRewardValue");
 const currentTotalValue = document.getElementById("currentTotalValue");
 const simulationModeSelect = document.getElementById("simulationModeSelect");
-const serverUiModeSelect = document.getElementById("serverUiModeSelect");
 const simNotice = document.getElementById("simNotice");
 const simTableWrap = document.getElementById("simTableWrap");
 const simTableBody = document.getElementById("simTableBody");
@@ -1914,10 +1913,6 @@ function zoomToSimulationRange(startIndex, endIndex) {
 function updateSimulationControls() {
   updateResetChartViewButton();
   if (simulationModeSelect) simulationModeSelect.value = state.sim.lpMode;
-  if (serverUiModeSelect) {
-    serverUiModeSelect.value = serverSimulation.uiMode;
-    serverUiModeSelect.disabled = Boolean(serverSimulation.id && (serverSimulation.running || serverSimulation.paused));
-  }
   if (SERVER_SIMULATION_MODE) {
     if (serverSimulation.running && !serverSimulation.paused) {
       runSimulation.textContent = "PAUSE";
@@ -2512,7 +2507,6 @@ function isServerLiveRenderingActive() {
 function setServerUiMode(mode) {
   serverSimulation.uiMode = mode === "background" ? "background" : "live";
   serverSimulation.liveViewOpen = serverSimulation.uiMode === "live";
-  if (serverUiModeSelect) serverUiModeSelect.value = serverSimulation.uiMode;
   renderServerObservationMode();
 }
 
@@ -2579,7 +2573,6 @@ function openServerLiveView() {
   serverSimulation.liveViewOpen = true;
   serverSimulation.uiMode = "live";
   if (simNotice) simNotice.hidden = false;
-  if (serverUiModeSelect) serverUiModeSelect.value = "live";
   renderServerObservationMode(serverSimulation.lastSimulation ? serverProgressSummary(serverSimulation.lastSimulation) : null);
   if (serverSimulation.lastSimulation) renderServerSimulation(serverSimulation.lastSimulation);
 }
@@ -2588,7 +2581,6 @@ function closeServerLiveView() {
   if (!SERVER_SIMULATION_MODE || !serverSimulation.id || !serverSimulation.running) return;
   serverSimulation.liveViewOpen = false;
   serverSimulation.uiMode = "background";
-  if (serverUiModeSelect) serverUiModeSelect.value = "background";
   renderServerObservationMode(serverSimulation.lastSimulation ? serverProgressSummary(serverSimulation.lastSimulation) : null);
   updateSimulationControls();
 }
@@ -3280,7 +3272,7 @@ async function deleteServerSimulation(id, row = null) {
       serverSimulation.rawRows = [];
       serverSimulation.lastSimulation = null;
       serverSimulation.finalResultFetched = false;
-      setServerUiMode(serverUiModeSelect?.value || "live");
+      setServerUiMode("live");
       stopServerSimulationPolling();
       stopSimulationElapsedTimer();
       setSimulationSkeletonVisible(false);
@@ -3336,7 +3328,7 @@ async function startServerSimulation() {
     return;
   }
   resetSimulationRows();
-  setServerUiMode(serverUiModeSelect?.value || "live");
+  setServerUiMode("live");
   serverSimulation.running = true;
   serverSimulation.paused = false;
   serverSimulation.startedAtMs = Date.now();
@@ -3566,7 +3558,7 @@ function resetSimulation() {
   resetSimulationRows();
   serverSimulation.rawRows = [];
   serverSimulation.finalResultFetched = false;
-  if (SERVER_SIMULATION_MODE) setServerUiMode(serverUiModeSelect?.value || "live");
+  if (SERVER_SIMULATION_MODE) setServerUiMode("live");
   setSimulationNotice("Симуляция сброшена. Нажми START, чтобы начать заново.");
 }
 
@@ -3626,7 +3618,6 @@ async function renderCompletedServerSimulation(id) {
     serverSimulation.liveViewOpen = true;
     serverSimulation.uiMode = "live";
     if (simNotice) simNotice.hidden = false;
-    if (serverUiModeSelect) serverUiModeSelect.value = "live";
     renderServerSimulation(simulation);
     openSimulationResultTab(simulation);
   } finally {
@@ -3837,12 +3828,6 @@ simulationModeSelect.addEventListener("change", () => {
   resetSimulationRows();
   updateSimulationControls();
 });
-if (serverUiModeSelect) {
-  serverUiModeSelect.addEventListener("change", () => {
-    setServerUiMode(serverUiModeSelect.value);
-    updateSimulationControls();
-  });
-}
 if (openLiveViewButton) openLiveViewButton.addEventListener("click", openServerLiveView);
 if (closeLiveViewButton) closeLiveViewButton.addEventListener("click", closeServerLiveView);
 runSimulation.addEventListener("click", startServerSimulation);

@@ -437,7 +437,7 @@ canvas {
 
 .simControls {
   display: grid;
-  grid-template-columns: 164px 140px 140px 98px 82px minmax(116px, 1fr) minmax(104px, 0.8fr) repeat(3, minmax(66px, 0.75fr));
+  grid-template-columns: 164px 140px 140px 98px 82px minmax(116px, 1fr) repeat(3, minmax(66px, 0.75fr));
   gap: 5px;
   align-items: end;
   overflow-x: auto;
@@ -452,10 +452,6 @@ canvas {
 }
 
 .simControls .rangePercentField {
-  min-width: 0;
-}
-
-.simControls .uiModeField {
   min-width: 0;
 }
 
