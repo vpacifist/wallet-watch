@@ -124,6 +124,14 @@ function testServerObservationModes() {
   assert.match(app, /if \(isServerLiveRenderingActive\(\)\) renderServerResultTable\(simulation\)/);
   assert.match(app, /renderCompletedServerSimulation\(id\)/);
   assert.match(app, /fetchJson\(`\/api\/simulations\/\$\{id\}`\)/);
+  assert.match(app, /function fetchJsonWithProgress\(url, options = \{\}, onProgress = null\)/);
+  assert.match(app, /request\.onprogress = \(event\) =>/);
+  assert.match(app, /function renderSimulationResultLoading\(simulation\)/);
+  assert.match(app, /updateSimulationResultLoading\(id, seed, progress\)/);
+  assert.match(app, /const rowsToRender = tableRows\.length > 1000/);
+  assert.match(app, /rows hidden to improve performance/);
+  assert.match(styles, /\.resultLoadingBar/);
+  assert.match(styles, /\.serverJob\.loading/);
   assert.match(styles, /\.chartOverlay/);
   assert.match(styles, /\.backgroundProgressPanel/);
 }

@@ -265,6 +265,21 @@ def compact_simulation_response(simulation):
     return compact
 
 
+def dedupe_completed_simulation_response(simulation):
+    if not isinstance(simulation, dict):
+        return simulation
+    result = simulation.get("result")
+    progress = simulation.get("progress")
+    if not isinstance(result, dict) or not isinstance(progress, dict):
+        return simulation
+    if not result.get("rawRows") and not result.get("tableRows"):
+        return simulation
+
+    deduped = dict(simulation)
+    deduped["progress"] = compact_simulation_payload(progress)
+    return deduped
+
+
 def simulation_row_to_dict(row, compact=False):
     if not row:
         return None
@@ -1383,11 +1398,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(result).encode("utf-8"))
 
     def send_json(self, status, payload):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        self.wfile.write(body)
 
     def require_admin_token(self):
         if not ADMIN_API_TOKEN:
@@ -1463,6 +1480,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             else:
                 if wants_compact_response(parsed):
                     simulation = compact_simulation_response(simulation)
+                else:
+                    simulation = dedupe_completed_simulation_response(simulation)
                 self.send_json(200, simulation)
             return
         if parsed.path == "/aero-price":

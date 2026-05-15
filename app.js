@@ -2457,6 +2457,64 @@ async function fetchJson(url, options = {}) {
   return payload;
 }
 
+function fetchJsonWithProgress(url, options = {}, onProgress = null) {
+  const adminToken = typeof localStorage !== "undefined" ? localStorage.getItem("walletWatchAdminToken") : "";
+  const adminHeaders = adminToken ? { "X-Admin-API-Token": adminToken } : {};
+  const method = options.method || "GET";
+  onProgress?.({ stage: "Requesting simulation..." });
+
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open(method, url, true);
+    const headers = { "Content-Type": "application/json", ...adminHeaders, ...(options.headers || {}) };
+    Object.entries(headers).forEach(([key, value]) => request.setRequestHeader(key, value));
+    request.onprogress = (event) => {
+      onProgress?.({
+        stage: "Downloading result...",
+        loaded: event.loaded,
+        total: event.lengthComputable ? event.total : 0,
+        percent: event.lengthComputable && event.total > 0 ? Math.round((event.loaded / event.total) * 100) : 0,
+      });
+    };
+    request.onload = async () => {
+      let payload = null;
+      onProgress?.({ stage: "Parsing response...", loaded: request.responseText.length, total: request.responseText.length, percent: 100 });
+      try {
+        payload = request.responseText ? JSON.parse(request.responseText) : null;
+      } catch (_) {
+        payload = null;
+      }
+      if (request.status === 401 && typeof localStorage !== "undefined" && typeof document !== "undefined") {
+        try {
+          const token = await showTokenPrompt();
+          if (token) {
+            localStorage.setItem("walletWatchAdminToken", token);
+            resolve(await fetchJsonWithProgress(url, options, onProgress));
+          } else {
+            reject(new Error("Admin token required. Please enter it in the dialog or set 'walletWatchAdminToken' in localStorage."));
+          }
+        } catch (error) {
+          reject(error);
+        }
+        return;
+      }
+      if (request.status < 200 || request.status >= 300) {
+        const detail = payload?.error || payload?.message || `HTTP ${request.status}`;
+        const error = new Error(detail);
+        error.status = request.status;
+        error.code = payload?.code || "";
+        error.retryAfterSeconds = payload?.retryAfterSeconds || 0;
+        reject(error);
+        return;
+      }
+      resolve(payload);
+    };
+    request.onerror = () => reject(new Error("Network error while loading simulation."));
+    request.ontimeout = () => reject(new Error("Timed out while loading simulation."));
+    request.send(options.body || null);
+  });
+}
+
 function isServerSimulationTerminal(status) {
   return ["completed", "failed", "stopped", "timeout", "error", "cancelled"].includes(status);
 }
@@ -2712,6 +2770,14 @@ function createResultMetric(label, value, title = "") {
   return metric;
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function summarizeFallbackReason(reason) {
   const text = String(reason || "").trim();
   const lower = text.toLowerCase();
@@ -2764,7 +2830,25 @@ function renderResultTableRows(tableRows = []) {
     resultEmpty.textContent = "Detailed rows are not stored for this simulation.";
     return;
   }
-  for (const rowItem of tableRows) {
+  const rowsToRender = tableRows.length > 1000
+    ? [...tableRows.slice(0, 500), null, ...tableRows.slice(-500)]
+    : tableRows;
+  const hiddenRows = Math.max(0, tableRows.length - 1000);
+  const fragment = document.createDocumentFragment();
+  for (const rowItem of rowsToRender) {
+    if (rowItem === null) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 15;
+      td.style.textAlign = "center";
+      td.style.padding = "20px";
+      td.style.color = "#888";
+      td.style.fontStyle = "italic";
+      td.textContent = `... ${hiddenRows} rows hidden to improve performance ...`;
+      tr.append(td);
+      fragment.append(tr);
+      continue;
+    }
     const tr = document.createElement("tr");
     if (typeof rowItem === "object" && rowItem !== null && rowItem.rebalance?.swapIsFallback) {
       tr.title = `swap fallback: ${summarizeFallbackReason(rowItem.rebalance.quoteFailureReason)}`;
@@ -2777,10 +2861,57 @@ function renderResultTableRows(tableRows = []) {
       td.textContent = cellText;
       tr.append(td);
     });
-    resultTableBody.append(tr);
+    fragment.append(tr);
   }
+  resultTableBody.append(fragment);
   resultEmpty.hidden = true;
   resultTableWrap.hidden = false;
+}
+
+function resultLoadingDetails(progress = {}) {
+  const loaded = formatBytes(progress.loaded);
+  const total = formatBytes(progress.total);
+  if (loaded && total) return `${loaded} / ${total}`;
+  if (loaded) return `${loaded} loaded`;
+  return "Waiting for server response";
+}
+
+function renderSimulationResultLoading(simulation) {
+  const progress = simulation?.loadingProgress || {};
+  const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
+  if (resultSummary) {
+    resultSummary.replaceChildren(
+      createResultMetric("Status", "Loading"),
+      createResultMetric("Progress", progress.total ? `${percent}%` : "Working"),
+      createResultMetric("Downloaded", resultLoadingDetails(progress)),
+    );
+  }
+  if (resultLastRow) resultLastRow.textContent = progress.stage || "Loading simulation result...";
+  if (resultTableBody) resultTableBody.replaceChildren();
+  if (resultTableWrap) resultTableWrap.hidden = true;
+  if (!resultEmpty) return;
+  const wrap = document.createElement("div");
+  wrap.className = "resultLoading";
+  const label = document.createElement("div");
+  label.className = "resultLoadingLabel";
+  const stage = document.createElement("strong");
+  stage.textContent = progress.stage || "Loading simulation result...";
+  const detail = document.createElement("span");
+  detail.textContent = resultLoadingDetails(progress);
+  label.append(stage, detail);
+
+  const bar = document.createElement("div");
+  bar.className = progress.total ? "resultLoadingBar" : "resultLoadingBar indeterminate";
+  const fill = document.createElement("div");
+  fill.style.width = progress.total ? `${percent}%` : "35%";
+  bar.append(fill);
+
+  const percentEl = document.createElement("div");
+  percentEl.className = "resultLoadingPercent";
+  percentEl.textContent = progress.total ? `${percent}%` : "Size unknown";
+  wrap.append(label, bar, percentEl);
+  resultEmpty.replaceChildren(wrap);
+  resultEmpty.hidden = false;
 }
 
 function renderSimulationResultView(simulation) {
@@ -2790,6 +2921,15 @@ function renderSimulationResultView(simulation) {
     if (resultSummary) resultSummary.replaceChildren();
     if (resultLastRow) resultLastRow.textContent = "";
     renderResultTableRows([]);
+    return;
+  }
+  if (simulation.loading) {
+    if (resultTitle) resultTitle.textContent = serverJobLabel(simulation) || simulation.id || "Simulation result";
+    if (resultSubtitle) resultSubtitle.textContent = [
+      "loading detailed result",
+      simulation.id ? `id: ${simulation.id}` : "",
+    ].filter(Boolean).join(" В· ");
+    renderSimulationResultLoading(simulation);
     return;
   }
   const info = serverSimulationText(simulation);
@@ -2836,6 +2976,27 @@ function openSimulationResultTab(simulation) {
   setAppTab(resultTabId(simulation.id));
 }
 
+function updateSimulationResultLoading(id, seed = {}, progress = {}) {
+  if (!id) return;
+  const current = appTabs.results.get(id) || {};
+  const loadingSimulation = {
+    ...seed,
+    ...current,
+    id,
+    loading: true,
+    loadingProgress: {
+      ...(current.loadingProgress || {}),
+      ...progress,
+    },
+  };
+  appTabs.results.set(id, loadingSimulation);
+  if (appTabs.active !== resultTabId(id)) setAppTab(resultTabId(id));
+  else {
+    renderProjectTabs();
+    renderSimulationResultView(loadingSimulation);
+  }
+}
+
 function syncOpenedSimulation(simulation) {
   if (!simulation?.id || !appTabs.results.has(simulation.id)) return;
   appTabs.results.set(simulation.id, simulation);
@@ -2872,6 +3033,7 @@ function renderServerJobsList(items = serverSimulation.jobs) {
     row.className = "serverJob";
     row.dataset.id = simulation.id;
     row.title = "Open simulation result";
+    if (appTabs.results.get(simulation.id)?.loading) row.classList.add("loading");
 
     const main = document.createElement("div");
     main.className = "serverJobMain";
@@ -3241,8 +3403,28 @@ async function loadInitialServerSimulations() {
 
 async function openServerSimulation(id) {
   if (!SERVER_SIMULATION_MODE || !id) return;
-  const simulation = await fetchJson(`/api/simulations/${id}`);
-  openSimulationResultTab(simulation);
+  const seed = serverSimulation.jobs.find((simulation) => simulation.id === id) || appTabs.results.get(id) || { id };
+  updateSimulationResultLoading(id, seed, { stage: "Requesting simulation..." });
+  try {
+    const simulation = await fetchJsonWithProgress(`/api/simulations/${id}`, {}, (progress) => {
+      updateSimulationResultLoading(id, seed, progress);
+    });
+    updateSimulationResultLoading(id, seed, { stage: "Rendering result...", percent: 100 });
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    openSimulationResultTab(simulation);
+  } catch (error) {
+    const failed = {
+      ...seed,
+      id,
+      loading: true,
+      loadingProgress: {
+        stage: `Failed to load simulation: ${error.message}`,
+      },
+    };
+    appTabs.results.set(id, failed);
+    renderSimulationResultView(failed);
+    throw error;
+  }
 }
 
 async function cancelServerSimulation(id) {
@@ -3840,7 +4022,7 @@ if (serverJobsList) {
     const id = row?.dataset?.id;
     if (!id) return;
     if (!button) {
-      openServerSimulation(id);
+      openServerSimulation(id).catch((error) => console.error(error));
       return;
     }
     const action = button.dataset.action;
