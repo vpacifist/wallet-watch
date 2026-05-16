@@ -1015,51 +1015,48 @@ canvas {
 }
 
 .simulationResultPanel {
-  flex: 1 1 0;
+  flex: 0 0 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  overflow: hidden;
+  gap: 12px;
+  overflow: visible;
+}
+
+.resultChartPanel,
+.resultDetailsPanel {
+  flex: 0 0 auto;
 }
 
 .resultHeader {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
+  margin-bottom: 12px;
 }
 
 .resultHeader p {
-  margin-top: 6px;
+  margin-top: 5px;
   color: var(--muted);
   font-size: 13px;
 }
 
 .resultSummary {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(130px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(8, minmax(86px, 1fr));
 }
 
 .resultMetric {
+  display: grid;
+  gap: 6px;
   min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: #fbfcfd;
 }
 
 .resultMetric span {
   display: block;
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.2;
+  font-size: 13px;
+  line-height: normal;
 }
 
 .resultMetric strong {
   display: block;
-  margin-top: 5px;
   overflow: hidden;
   color: var(--ink);
   font-size: 15px;
@@ -1068,12 +1065,21 @@ canvas {
   white-space: nowrap;
 }
 
-.resultLastRow,
+.resultLastRow {
+  min-height: 0;
+}
+
 .resultEmpty {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.resultChartWrap {
+  flex: 0 0 auto;
+  height: clamp(300px, 34vh, 380px);
+  min-height: 300px;
 }
 
 .resultLoading {
@@ -1131,8 +1137,8 @@ canvas {
 }
 
 .resultTableWrap {
-  flex: 1 1 0;
-  min-height: 0;
+  flex: 0 0 auto;
+  min-height: 180px;
   overflow: auto;
 }
 

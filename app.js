@@ -83,6 +83,16 @@ const state = {
     initialChartView: null,
     userAdjustedChartView: false,
   },
+  resultChart: {
+    simulationId: "",
+    zoomStart: 0,
+    zoomEnd: 1,
+    hoverIndex: -1,
+    isDragging: false,
+    dragX: 0,
+    dragStart: 0,
+    dragEnd: 1,
+  },
 };
 
 const canvas = document.getElementById("priceChart");
@@ -131,6 +141,9 @@ const simulationResultView = document.getElementById("simulationResultView");
 const resultTitle = document.getElementById("resultTitle");
 const resultSubtitle = document.getElementById("resultSubtitle");
 const resultSummary = document.getElementById("resultSummary");
+const resultChartWrap = document.getElementById("resultChartWrap");
+const resultPriceChart = document.getElementById("resultPriceChart");
+const resultChartCtx = resultPriceChart?.getContext("2d");
 const resultLastRow = document.getElementById("resultLastRow");
 const resultTableWrap = document.getElementById("resultTableWrap");
 const resultTableBody = document.getElementById("resultTableBody");
@@ -2763,10 +2776,13 @@ function createResultMetric(label, value, title = "") {
   metric.className = "resultMetric";
   const labelEl = document.createElement("span");
   labelEl.textContent = label;
+  const valueWrap = document.createElement("div");
+  valueWrap.className = "simTotalValue";
   const valueEl = document.createElement("strong");
   valueEl.textContent = value || "-";
+  valueWrap.append(valueEl);
   if (title || value) metric.title = title || value;
-  metric.append(labelEl, valueEl);
+  metric.append(labelEl, valueWrap);
   return metric;
 }
 
@@ -2876,6 +2892,308 @@ function resultLoadingDetails(progress = {}) {
   return "Waiting for server response";
 }
 
+function clearResultChart() {
+  if (!resultChartWrap || !resultPriceChart || !resultChartCtx) return;
+  resultChartWrap.hidden = true;
+  resultChartCtx.clearRect(0, 0, resultPriceChart.width, resultPriceChart.height);
+}
+
+function resultChartRows(rawRows = []) {
+  return rawRows.map((rawRow) => {
+    const marketRow = state.rows[rawRow?.index] || null;
+    const timestamp = rawRow?.timestamp
+      ? Number(rawRow.timestamp) * 1000
+      : new Date(rawRow?.time || marketRow?.time || "").getTime();
+    const close = Number.isFinite(Number(marketRow?.close)) ? Number(marketRow.close) : Number(rawRow?.price);
+    if (!Number.isFinite(timestamp) || !Number.isFinite(close)) return null;
+    return {
+      ...rawRow,
+      time: marketRow?.time || rawRow?.time || new Date(timestamp).toISOString(),
+      timestamp,
+      close,
+    };
+  }).filter(Boolean);
+}
+
+function resizeResultCanvas() {
+  if (!resultPriceChart || !resultChartCtx) return;
+  const rect = resultPriceChart.getBoundingClientRect();
+  const scale = window.devicePixelRatio || 1;
+  resultPriceChart.width = Math.round(rect.width * scale);
+  resultPriceChart.height = Math.round(rect.height * scale);
+  resultChartCtx.setTransform(scale, 0, 0, scale, 0, 0);
+}
+
+function resetResultChartView(simulationId = "") {
+  state.resultChart.simulationId = simulationId || "";
+  state.resultChart.zoomStart = 0;
+  state.resultChart.zoomEnd = 1;
+  state.resultChart.hoverIndex = -1;
+  state.resultChart.isDragging = false;
+}
+
+function ensureResultChartView(simulationId = "") {
+  if ((simulationId || "") !== state.resultChart.simulationId) resetResultChartView(simulationId);
+}
+
+function resultVisibleRows(chartRows) {
+  if (chartRows.length <= 1) return chartRows;
+  const start = Math.floor(state.resultChart.zoomStart * (chartRows.length - 1));
+  const end = Math.ceil(state.resultChart.zoomEnd * (chartRows.length - 1)) + 1;
+  return chartRows.slice(start, Math.max(start + 2, end));
+}
+
+function resultZoomAt(ratio, direction, rowCount) {
+  if (rowCount <= 2) return;
+  const currentStart = state.resultChart.zoomStart;
+  const currentEnd = state.resultChart.zoomEnd;
+  const currentSize = currentEnd - currentStart;
+  const factor = direction < 0 ? 0.75 : 1.35;
+  const minSize = Math.min(1, 120 / rowCount);
+  const nextSize = Math.min(1, Math.max(minSize, currentSize * factor));
+  const anchor = currentStart + ratio * currentSize;
+  let nextStart = anchor - ratio * nextSize;
+  let nextEnd = nextStart + nextSize;
+  if (nextStart < 0) {
+    nextStart = 0;
+    nextEnd = nextSize;
+  }
+  if (nextEnd > 1) {
+    nextEnd = 1;
+    nextStart = 1 - nextSize;
+  }
+  state.resultChart.zoomStart = nextStart;
+  state.resultChart.zoomEnd = nextEnd;
+}
+
+function resultPanBy(deltaRatio) {
+  const currentSize = state.resultChart.zoomEnd - state.resultChart.zoomStart;
+  if (currentSize >= 1) return;
+  let nextStart = state.resultChart.dragStart + deltaRatio;
+  let nextEnd = state.resultChart.dragEnd + deltaRatio;
+  if (nextStart < 0) {
+    nextStart = 0;
+    nextEnd = currentSize;
+  }
+  if (nextEnd > 1) {
+    nextEnd = 1;
+    nextStart = 1 - currentSize;
+  }
+  state.resultChart.zoomStart = nextStart;
+  state.resultChart.zoomEnd = nextEnd;
+}
+
+function drawResultChart(rawRows = [], simulationId = "") {
+  if (!resultChartWrap || !resultPriceChart || !resultChartCtx) return;
+  ensureResultChartView(simulationId);
+  const chartRows = resultChartRows(rawRows);
+  const visibleRows = resultVisibleRows(chartRows);
+  if (visibleRows.length < 2) {
+    clearResultChart();
+    return;
+  }
+  resultChartWrap.hidden = false;
+  resizeResultCanvas();
+
+  const ctx = resultChartCtx;
+  const width = resultPriceChart.clientWidth;
+  const height = resultPriceChart.clientHeight;
+  const pad = { top: 20, right: 72, bottom: 34, left: 72 };
+  const plotW = Math.max(1, width - pad.left - pad.right);
+  const plotH = Math.max(1, height - pad.top - pad.bottom);
+  ctx.clearRect(0, 0, width, height);
+
+  const renderedRows = downsample(visibleRows, Math.max(2, Math.floor(width * POINTS_PER_PIXEL)));
+  let min = Math.min(...visibleRows.map((row) => row.close));
+  let max = Math.max(...visibleRows.map((row) => row.close));
+  const lastRawRow = rawRows[rawRows.length - 1] || {};
+  [lastRawRow.tickLower, lastRawRow.tickUpper].forEach((tick) => {
+    if (!Number.isFinite(Number(tick))) return;
+    const price = priceForTick(Number(tick));
+    min = Math.min(min, price);
+    max = Math.max(max, price);
+  });
+  if (min === max) {
+    min *= 0.995;
+    max *= 1.005;
+  }
+  const padding = (max - min) * 0.08;
+  min -= padding;
+  max += padding;
+  const span = max - min || 1;
+  const firstTime = visibleRows[0].timestamp;
+  const lastTime = visibleRows[visibleRows.length - 1].timestamp;
+  const visibleDays = (lastTime - firstTime) / (24 * 60 * 60 * 1000);
+  const xForTime = (timestamp) => pad.left + ((timestamp - firstTime) / Math.max(1, lastTime - firstTime)) * plotW;
+  const yFor = (price) => pad.top + (1 - (price - min) / span) * plotH;
+
+  ctx.fillStyle = "rgba(248, 250, 252, 0.74)";
+  ctx.fillRect(pad.left, pad.top, plotW, plotH);
+  ctx.strokeStyle = "rgba(23, 32, 51, 0.1)";
+  ctx.lineWidth = 0.8;
+  for (let i = 1; i <= 5; i += 1) {
+    const y = pad.top + (i / 6) * plotH;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(width - pad.right, y);
+    ctx.stroke();
+  }
+
+  const firstDay = startOfUtcDay(new Date(firstTime));
+  const dayTicks = [];
+  const weekTicks = [];
+  const labeledHourTicks = [];
+  for (let timestamp = firstDay; timestamp <= lastTime; timestamp = addUtcDays(timestamp, 1)) {
+    if (timestamp >= firstTime) {
+      dayTicks.push(timestamp);
+      if (new Date(timestamp).getUTCDay() === 1) weekTicks.push(timestamp);
+      const x = xForTime(timestamp);
+      ctx.strokeStyle = "rgba(23, 32, 51, 0.12)";
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, height - pad.bottom);
+      ctx.stroke();
+    }
+    for (let hour = 6; hour < 24; hour += 6) {
+      const hourTick = addUtcHours(timestamp, hour);
+      if (visibleDays < 3 && hourTick >= firstTime && hourTick <= lastTime) {
+        labeledHourTicks.push(hourTick);
+        const x = xForTime(hourTick);
+        ctx.strokeStyle = "rgba(242, 95, 92, 0.12)";
+        ctx.beginPath();
+        ctx.moveTo(x, pad.top);
+        ctx.lineTo(x, height - pad.bottom);
+        ctx.stroke();
+      }
+    }
+  }
+
+  ctx.fillStyle = "#647087";
+  ctx.font = "12px Inter, system-ui, sans-serif";
+  for (let i = 0; i <= 4; i += 1) {
+    const price = min + (span * i) / 4;
+    const y = yFor(price);
+    ctx.fillText(fmtPrice(price), width - pad.right + 12, y + 4);
+  }
+
+  const drawRangeBound = (tick, label, color) => {
+    if (!Number.isFinite(Number(tick))) return;
+    const price = priceForTick(Number(tick));
+    if (price < min || price > max) return;
+    const y = yFor(price);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(width - pad.right, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const text = `${label} ${fmtPrice(price)}`;
+    const textWidth = ctx.measureText(text).width;
+    ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.fillRect(width - pad.right - textWidth - 12, y - 17, textWidth + 8, 15);
+    ctx.fillStyle = "#f25f5c";
+    ctx.fillText(text, width - pad.right - textWidth - 8, y - 5);
+  };
+  drawRangeBound(lastRawRow.tickLower, "lower", "rgba(242, 95, 92, 0.9)");
+  drawRangeBound(lastRawRow.tickUpper, "upper", "rgba(242, 95, 92, 0.9)");
+
+  const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
+  gradient.addColorStop(0, "rgba(15, 139, 141, 0.18)");
+  gradient.addColorStop(1, "rgba(15, 139, 141, 0)");
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.left, pad.top, plotW, plotH);
+  ctx.clip();
+  ctx.beginPath();
+  renderedRows.forEach((row, index) => {
+    const x = xForTime(row.timestamp);
+    const y = yFor(row.close);
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.lineTo(xForTime(renderedRows[renderedRows.length - 1].timestamp), height - pad.bottom);
+  ctx.lineTo(xForTime(renderedRows[0].timestamp), height - pad.bottom);
+  ctx.closePath();
+  ctx.fillStyle = gradient;
+  ctx.fill();
+  ctx.beginPath();
+  renderedRows.forEach((row, index) => {
+    const x = xForTime(row.timestamp);
+    const y = yFor(row.close);
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = "#0f8b8d";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  rawRows.filter((row) => row?.rebalance).forEach((row) => {
+    const timestamp = row.timestamp ? Number(row.timestamp) * 1000 : new Date(row.time || "").getTime();
+    if (!Number.isFinite(timestamp) || timestamp < firstTime || timestamp > lastTime) return;
+    const marketRow = state.rows[row.index] || null;
+    const price = Number.isFinite(Number(marketRow?.close)) ? Number(marketRow.close) : Number(row.price);
+    if (!Number.isFinite(price)) return;
+    const x = xForTime(timestamp);
+    const y = yFor(price);
+    ctx.strokeStyle = "rgba(245, 158, 11, 0.72)";
+    ctx.lineWidth = 1.6;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x, pad.top);
+    ctx.lineTo(x, height - pad.bottom);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = row.rebalance?.swapIsFallback ? "#f59e0b" : "#16a34a";
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  });
+  ctx.restore();
+
+  if (state.resultChart.hoverIndex >= 0 && visibleRows[state.resultChart.hoverIndex]) {
+    const row = visibleRows[state.resultChart.hoverIndex];
+    const x = xForTime(row.timestamp);
+    const y = yFor(row.close);
+    ctx.strokeStyle = "#f25f5c";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, pad.top);
+    ctx.lineTo(x, height - pad.bottom);
+    ctx.stroke();
+    ctx.fillStyle = "#f25f5c";
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const xLabelTicks = visibleDays <= 14 ? dayTicks : weekTicks;
+  ctx.fillStyle = "#647087";
+  ctx.font = visibleDays < 7 ? "600 12px Inter, system-ui, sans-serif" : "12px Inter, system-ui, sans-serif";
+  xLabelTicks.forEach((timestamp) => {
+    ctx.fillText(fmtAxisTime(timestamp), xForTime(timestamp), height - 12);
+  });
+  if (visibleDays < 3) {
+    ctx.font = "12px Inter, system-ui, sans-serif";
+    labeledHourTicks.forEach((timestamp) => {
+      ctx.fillText(fmtAxisHour(timestamp), xForTime(timestamp), height - 12);
+    });
+  }
+}
+
+function drawActiveResultChart() {
+  const resultId = appTabs.active?.startsWith("result:") ? appTabs.active.slice("result:".length) : "";
+  if (!resultId) return;
+  const simulation = appTabs.results.get(resultId);
+  if (!simulation || simulation.loading) return;
+  const liveRows = simulation?.id === serverSimulation.id ? serverSimulation.rawRows : [];
+  drawResultChart(simulation?.result?.rawRows || simulation?.progress?.rawRows || liveRows || [], simulation.id || resultId);
+}
+
 function renderSimulationResultLoading(simulation) {
   const progress = simulation?.loadingProgress || {};
   const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
@@ -2889,6 +3207,7 @@ function renderSimulationResultLoading(simulation) {
   if (resultLastRow) resultLastRow.textContent = progress.stage || "Loading simulation result...";
   if (resultTableBody) resultTableBody.replaceChildren();
   if (resultTableWrap) resultTableWrap.hidden = true;
+  clearResultChart();
   if (!resultEmpty) return;
   const wrap = document.createElement("div");
   wrap.className = "resultLoading";
@@ -2920,6 +3239,8 @@ function renderSimulationResultView(simulation) {
     if (resultSubtitle) resultSubtitle.textContent = "Simulation is no longer available.";
     if (resultSummary) resultSummary.replaceChildren();
     if (resultLastRow) resultLastRow.textContent = "";
+    resetResultChartView();
+    clearResultChart();
     renderResultTableRows([]);
     return;
   }
@@ -2967,6 +3288,7 @@ function renderSimulationResultView(simulation) {
     resultLastRow.textContent = info.notice;
   }
   const liveRows = simulation?.id === serverSimulation.id ? serverSimulation.rawRows : [];
+  drawResultChart(simulation?.result?.rawRows || simulation?.progress?.rawRows || liveRows || [], simulation.id || "");
   renderResultTableRows(simulation?.result?.rawRows || simulation?.result?.tableRows || liveRows || []);
 }
 
@@ -3894,6 +4216,86 @@ function finishDrag() {
 window.addEventListener("mouseup", finishDrag);
 window.addEventListener("blur", finishDrag);
 
+if (resultPriceChart) {
+  resultPriceChart.addEventListener("wheel", (event) => {
+    const resultId = appTabs.active?.startsWith("result:") ? appTabs.active.slice("result:".length) : "";
+    const simulation = resultId ? appTabs.results.get(resultId) : null;
+    if (!simulation || simulation.loading) return;
+    const liveRows = simulation?.id === serverSimulation.id ? serverSimulation.rawRows : [];
+    const rawRows = simulation?.result?.rawRows || simulation?.progress?.rawRows || liveRows || [];
+    const chartRows = resultChartRows(rawRows);
+    if (chartRows.length <= 2) return;
+    const rect = resultPriceChart.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const padLeft = 72;
+    const padRight = 72;
+    const plotW = Math.max(1, resultPriceChart.clientWidth - padLeft - padRight);
+    const ratio = Math.min(1, Math.max(0, (x - padLeft) / plotW));
+    event.preventDefault();
+    state.resultChart.hoverIndex = -1;
+    resultZoomAt(ratio, event.deltaY, chartRows.length);
+    drawResultChart(rawRows, simulation.id || resultId);
+  }, { passive: false });
+
+  resultPriceChart.addEventListener("mousemove", (event) => {
+    const resultId = appTabs.active?.startsWith("result:") ? appTabs.active.slice("result:".length) : "";
+    const simulation = resultId ? appTabs.results.get(resultId) : null;
+    if (!simulation || simulation.loading || state.resultChart.isDragging) return;
+    const liveRows = simulation?.id === serverSimulation.id ? serverSimulation.rawRows : [];
+    const rawRows = simulation?.result?.rawRows || simulation?.progress?.rawRows || liveRows || [];
+    const visibleRows = resultVisibleRows(resultChartRows(rawRows));
+    if (!visibleRows.length) return;
+    const rect = resultPriceChart.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const padLeft = 72;
+    const padRight = 72;
+    const plotW = Math.max(1, resultPriceChart.clientWidth - padLeft - padRight);
+    const ratio = Math.min(1, Math.max(0, (x - padLeft) / plotW));
+    state.resultChart.hoverIndex = Math.round(ratio * (visibleRows.length - 1));
+    drawResultChart(rawRows, simulation.id || resultId);
+  });
+
+  resultPriceChart.addEventListener("mouseleave", () => {
+    if (state.resultChart.hoverIndex < 0 || state.resultChart.isDragging) return;
+    state.resultChart.hoverIndex = -1;
+    drawActiveResultChart();
+  });
+
+  resultPriceChart.addEventListener("mousedown", (event) => {
+    if (event.button !== 0 || state.resultChart.zoomEnd - state.resultChart.zoomStart >= 1) return;
+    event.preventDefault();
+    state.resultChart.isDragging = true;
+    state.resultChart.hoverIndex = -1;
+    state.resultChart.dragX = event.clientX;
+    state.resultChart.dragStart = state.resultChart.zoomStart;
+    state.resultChart.dragEnd = state.resultChart.zoomEnd;
+    resultPriceChart.style.cursor = "grabbing";
+    document.body.style.cursor = "grabbing";
+  });
+}
+
+window.addEventListener("mousemove", (event) => {
+  if (!state.resultChart.isDragging || !resultPriceChart) return;
+  event.preventDefault();
+  const padLeft = 72;
+  const padRight = 72;
+  const plotW = Math.max(1, resultPriceChart.clientWidth - padLeft - padRight);
+  const deltaRatio = -(event.clientX - state.resultChart.dragX) / plotW * (state.resultChart.dragEnd - state.resultChart.dragStart);
+  resultPanBy(deltaRatio);
+  drawActiveResultChart();
+});
+
+function finishResultChartDrag() {
+  if (!state.resultChart.isDragging) return;
+  state.resultChart.isDragging = false;
+  if (resultPriceChart) resultPriceChart.style.cursor = "";
+  document.body.style.cursor = "";
+  drawActiveResultChart();
+}
+
+window.addEventListener("mouseup", finishResultChartDrag);
+window.addEventListener("blur", finishResultChartDrag);
+
 function ratioOnNavigator(event) {
   const rect = rangeTrack.getBoundingClientRect();
   return Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
@@ -4052,7 +4454,10 @@ simTableBody.addEventListener("mouseleave", () => {
   draw();
 });
 
-window.addEventListener("resize", draw);
+window.addEventListener("resize", () => {
+  draw();
+  drawActiveResultChart();
+});
 
 function formatCsvBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";

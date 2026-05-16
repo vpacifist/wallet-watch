@@ -155,45 +155,53 @@
         </div>
       </section>
 
-      <section class="panel simulationResultPanel appView" id="simulationResultView" hidden>
-        <div class="resultHeader">
-          <div>
-            <h2 id="resultTitle">Simulation result</h2>
-            <p id="resultSubtitle"></p>
+      <section class="simulationResultPanel appView" id="simulationResultView" hidden>
+        <section class="panel chartPanel resultChartPanel">
+          <div class="panelHead resultHeader">
+            <div>
+              <h2 id="resultTitle">Simulation result</h2>
+              <p id="resultSubtitle"></p>
+            </div>
           </div>
-        </div>
-        <div class="resultSummary" id="resultSummary"></div>
-        <div class="resultLastRow" id="resultLastRow"></div>
-        <div class="resultTableWrap" id="resultTableWrap" hidden>
-          <table class="simTable">
-            <colgroup>
-              <col class="timeCol" />
-              <col class="eventCol" />
-              <col class="valueCol" />
-              <col class="priceCol" />
-              <col class="tokenCol" />
-              <col class="tokenCol" />
-              <col class="aeroCol" />
-              <col class="haircutCol" />
-              <col class="reliabilityCol" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>Дата, время</th>
-                <th>Событие</th>
-                <th>Стоимость, $</th>
-                <th>Цена WETH</th>
-                <th>WETH</th>
-                <th>USDC</th>
-                <th>AERO, $</th>
-                <th>LP fees, $</th>
-                <th>Достоверность</th>
-              </tr>
-            </thead>
-            <tbody id="resultTableBody"></tbody>
-          </table>
-        </div>
-        <div class="resultEmpty" id="resultEmpty" hidden></div>
+          <div class="chartWrap resultChartWrap" id="resultChartWrap" hidden>
+            <canvas id="resultPriceChart" width="1400" height="560"></canvas>
+          </div>
+        </section>
+
+        <section class="panel simulatorPanel resultDetailsPanel">
+          <div class="simControls resultSummary" id="resultSummary"></div>
+          <div class="simNotice resultLastRow" id="resultLastRow"></div>
+          <div class="simTableWrap resultTableWrap" id="resultTableWrap" hidden>
+            <table class="simTable">
+              <colgroup>
+                <col class="timeCol" />
+                <col class="eventCol" />
+                <col class="valueCol" />
+                <col class="priceCol" />
+                <col class="tokenCol" />
+                <col class="tokenCol" />
+                <col class="aeroCol" />
+                <col class="haircutCol" />
+                <col class="reliabilityCol" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Дата, время</th>
+                  <th>Событие</th>
+                  <th>Стоимость, $</th>
+                  <th>Цена WETH</th>
+                  <th>WETH</th>
+                  <th>USDC</th>
+                  <th>AERO, $</th>
+                  <th>LP fees, $</th>
+                  <th>Достоверность</th>
+                </tr>
+              </thead>
+              <tbody id="resultTableBody"></tbody>
+            </table>
+          </div>
+          <div class="resultEmpty" id="resultEmpty" hidden></div>
+        </section>
       </section>
     </main>
 
