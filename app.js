@@ -214,6 +214,7 @@ const serverSimulation = {
   uiMode: "live",
   liveViewOpen: true,
   finalResultFetched: false,
+  jobsLoadRequestId: 0,
 };
 const appTabs = {
   active: "new",
@@ -2474,7 +2475,10 @@ function fetchJsonWithProgress(url, options = {}, onProgress = null) {
   const adminToken = typeof localStorage !== "undefined" ? localStorage.getItem("walletWatchAdminToken") : "";
   const adminHeaders = adminToken ? { "X-Admin-API-Token": adminToken } : {};
   const method = options.method || "GET";
-  onProgress?.({ stage: "Requesting simulation..." });
+  const requestStage = options.progressStage || "Requesting simulation...";
+  const downloadStage = options.downloadStage || "Downloading result...";
+  const parseStage = options.parseStage || "Parsing response...";
+  onProgress?.({ stage: requestStage, percent: 5 });
 
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
@@ -2483,7 +2487,7 @@ function fetchJsonWithProgress(url, options = {}, onProgress = null) {
     Object.entries(headers).forEach(([key, value]) => request.setRequestHeader(key, value));
     request.onprogress = (event) => {
       onProgress?.({
-        stage: "Downloading result...",
+        stage: downloadStage,
         loaded: event.loaded,
         total: event.lengthComputable ? event.total : 0,
         percent: event.lengthComputable && event.total > 0 ? Math.round((event.loaded / event.total) * 100) : 0,
@@ -2491,7 +2495,7 @@ function fetchJsonWithProgress(url, options = {}, onProgress = null) {
     };
     request.onload = async () => {
       let payload = null;
-      onProgress?.({ stage: "Parsing response...", loaded: request.responseText.length, total: request.responseText.length, percent: 100 });
+      onProgress?.({ stage: parseStage, loaded: request.responseText.length, total: request.responseText.length, percent: 100 });
       try {
         payload = request.responseText ? JSON.parse(request.responseText) : null;
       } catch (_) {
@@ -3389,6 +3393,75 @@ function renderServerJobsList(items = serverSimulation.jobs) {
   }
 }
 
+function serverJobsLoadingPercent(progress = {}) {
+  const percent = Number(progress.percent || 0);
+  if (Number.isFinite(percent) && percent > 0) return Math.max(0, Math.min(100, Math.round(percent)));
+  const stage = String(progress.stage || "").toLowerCase();
+  if (stage.includes("parsing")) return 90;
+  if (stage.includes("rendering")) return 96;
+  if (stage.includes("downloading")) return progress.loaded ? 45 : 25;
+  return 10;
+}
+
+function serverJobsSyntheticProgress(startedAtMs) {
+  const elapsed = Math.max(0, performance.now() - startedAtMs);
+  if (elapsed < 350) {
+    return {
+      stage: "Requesting past simulations...",
+      percent: 8 + (elapsed / 350) * 10,
+      synthetic: true,
+    };
+  }
+  if (elapsed < 1800) {
+    return {
+      stage: "Querying stored simulations...",
+      percent: 18 + ((elapsed - 350) / 1450) * 54,
+      synthetic: true,
+    };
+  }
+  return {
+    stage: "Preparing job list...",
+    percent: Math.min(88, 72 + ((elapsed - 1800) / 2200) * 16),
+    synthetic: true,
+  };
+}
+
+function renderServerJobsLoading(progress = {}) {
+  if (!SERVER_SIMULATION_MODE || !serverJobs || !serverJobsList) return;
+  serverJobs.hidden = false;
+  serverJobsList.replaceChildren();
+
+  const percent = serverJobsLoadingPercent(progress);
+  const placeholder = document.createElement("div");
+  placeholder.className = "serverJobsLoading";
+  placeholder.setAttribute("role", "status");
+  placeholder.setAttribute("aria-live", "polite");
+
+  const header = document.createElement("div");
+  header.className = "serverJobsLoadingHeader";
+  const title = document.createElement("strong");
+  title.textContent = progress.stage || "Loading past simulations...";
+  const percentEl = document.createElement("span");
+  percentEl.textContent = `${percent}%`;
+  header.append(title, percentEl);
+
+  const bar = document.createElement("div");
+  bar.className = progress.synthetic || progress.percent ? "serverJobsLoadingBar" : "serverJobsLoadingBar indeterminate";
+  const fill = document.createElement("div");
+  fill.style.width = `${percent}%`;
+  bar.append(fill);
+
+  const details = document.createElement("div");
+  details.className = "serverJobsLoadingDetails";
+  const detail = progress.synthetic
+    ? "Server is reading saved simulations and compacting metadata"
+    : resultLoadingDetails(progress);
+  details.textContent = `${detail}. The list includes compact metadata for up to 1000 server jobs.`;
+
+  placeholder.append(header, bar, details);
+  serverJobsList.append(placeholder);
+}
+
 function setServerJobsRefreshLoading(isLoading) {
   if (!refreshServerJobs) return;
   refreshServerJobs.disabled = isLoading;
@@ -3468,18 +3541,50 @@ function renderServerResultTable(simulation) {
 async function loadServerJobs(options = {}) {
   if (!SERVER_SIMULATION_MODE || !serverJobsList) return;
   const showFeedback = Boolean(options.feedback);
+  const showPlaceholder = appTabs.active === "history" || showFeedback;
+  const requestId = ++serverSimulation.jobsLoadRequestId;
   const feedbackStartedAt = showFeedback ? performance.now() : 0;
+  const loadingStartedAt = performance.now();
+  let progressTimer = null;
   let loaded = false;
   if (showFeedback) setServerJobsRefreshLoading(true);
+  if (showPlaceholder) {
+    renderServerJobsLoading(serverJobsSyntheticProgress(loadingStartedAt));
+    progressTimer = setInterval(() => {
+      if (requestId === serverSimulation.jobsLoadRequestId) renderServerJobsLoading(serverJobsSyntheticProgress(loadingStartedAt));
+    }, 120);
+  }
   try {
-    const payload = await fetchJson("/api/simulations?limit=1000");
+    const payload = await fetchJsonWithProgress(
+      "/api/simulations?limit=1000",
+      {
+        progressStage: "Requesting past simulations...",
+        downloadStage: "Downloading past simulations...",
+        parseStage: "Parsing past simulations...",
+      },
+      (progress) => {
+        if (requestId !== serverSimulation.jobsLoadRequestId || !showPlaceholder) return;
+        if (progress.loaded || progress.total || String(progress.stage || "").toLowerCase().includes("parsing")) {
+          renderServerJobsLoading(progress);
+        }
+      },
+    );
+    if (requestId !== serverSimulation.jobsLoadRequestId) return;
+    if (progressTimer) {
+      clearInterval(progressTimer);
+      progressTimer = null;
+    }
+    if (showPlaceholder) renderServerJobsLoading({ stage: "Rendering job list...", percent: 96 });
     serverSimulation.jobs = payload.items || [];
     renderServerJobsList(serverSimulation.jobs);
     loaded = true;
   } catch (_) {
+    if (requestId !== serverSimulation.jobsLoadRequestId) return;
     serverSimulation.available = false;
     renderServerJobsList([]);
   } finally {
+    if (progressTimer) clearInterval(progressTimer);
+    if (requestId !== serverSimulation.jobsLoadRequestId) return;
     if (showFeedback) {
       const remainingMs = Math.max(0, 500 - (performance.now() - feedbackStartedAt));
       if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));

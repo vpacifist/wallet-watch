@@ -128,9 +128,17 @@ function testServerObservationModes() {
   assert.match(app, /request\.onprogress = \(event\) =>/);
   assert.match(app, /function renderSimulationResultLoading\(simulation\)/);
   assert.match(app, /updateSimulationResultLoading\(id, seed, progress\)/);
+  assert.match(app, /function renderServerJobsLoading\(progress = \{\}\)/);
+  assert.match(app, /function serverJobsSyntheticProgress\(startedAtMs\)/);
+  assert.match(app, /Requesting past simulations/);
+  assert.match(app, /Querying stored simulations/);
+  assert.match(app, /Preparing job list/);
+  assert.match(app, /Downloading past simulations/);
+  assert.match(app, /Parsing past simulations/);
   assert.match(app, /const rowsToRender = tableRows\.length > 1000/);
   assert.match(app, /rows hidden to improve performance/);
   assert.match(styles, /\.resultLoadingBar/);
+  assert.match(styles, /\.serverJobsLoadingBar/);
   assert.match(styles, /\.serverJob\.loading/);
   assert.match(styles, /\.chartOverlay/);
   assert.match(styles, /\.backgroundProgressPanel/);
