@@ -411,9 +411,10 @@
       return "";
     }
 
-    function isExitConfirmedByClose(closePrice, lowerPrice, upperPrice, previousClosePrice = null) {
+    function isExitConfirmedByClose(closePrice, lowerPrice, upperPrice, previousClosePrice = null, expectedSide = "") {
       const side = closeExitSide(closePrice, lowerPrice, upperPrice);
       if (!side) return false;
+      if (expectedSide && side !== expectedSide) return false;
       if (Math.max(1, Number(REBALANCE_CONFIRMATION_MINUTES) || 1) <= 1) return true;
       return closeExitSide(previousClosePrice, lowerPrice, upperPrice) === side;
     }
@@ -729,7 +730,8 @@
           ? { blockNumber: state.sim.lastExitBlockNumber, logIndex: state.sim.lastExitLogIndex }
           : null;
         phaseStartedAt = performance.now();
-        const exit = await findSwapExit(previous.blockNumber, nextBlock.number, state.sim.tickLower, state.sim.tickUpper, lastExit);
+        const exitSearchFromBlock = previous.blockNumber;
+        let exit = await findSwapExit(exitSearchFromBlock, nextBlock.number, state.sim.tickLower, state.sim.tickUpper, lastExit);
         recordSimulationTiming("stepForward.findSwapExit", phaseStartedAt);
         if (runToken !== state.sim.runToken || !state.sim.started) return false;
         state.sim.currentIndex = nextIndex;
@@ -738,7 +740,19 @@
         const previousClosePrice = state.rows[nextIndex - 1]?.close;
         const lowerPrice = priceForTick(state.sim.tickLower);
         const upperPrice = priceForTick(state.sim.tickUpper);
-        const exitConfirmed = exit && isExitConfirmedByClose(closePrice, lowerPrice, upperPrice, previousClosePrice);
+        const confirmedCloseSide = closeExitSide(closePrice, lowerPrice, upperPrice);
+        while (exit && confirmedCloseSide) {
+          const exitSide = exit.tick < state.sim.tickLower ? "lower" : "upper";
+          if (exitSide === confirmedCloseSide) break;
+          const skippedExit = { blockNumber: exit.blockNumber, logIndex: exit.logIndex };
+          phaseStartedAt = performance.now();
+          exit = await findSwapExit(exitSearchFromBlock, nextBlock.number, state.sim.tickLower, state.sim.tickUpper, skippedExit);
+          recordSimulationTiming("stepForward.findSwapExit.sameSideRetry", phaseStartedAt);
+          state.sim.lastExitBlockNumber = skippedExit.blockNumber;
+          state.sim.lastExitLogIndex = skippedExit.logIndex;
+        }
+        const expectedExitSide = exit ? (exit.tick < state.sim.tickLower ? "lower" : "upper") : "";
+        const exitConfirmed = exit && isExitConfirmedByClose(closePrice, lowerPrice, upperPrice, previousClosePrice, expectedExitSide);
         if (exit && !exitConfirmed) {
           state.sim.lastExitBlockNumber = exit.blockNumber;
           state.sim.lastExitLogIndex = exit.logIndex;
