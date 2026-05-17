@@ -67,7 +67,14 @@ const state = {
     rows: [],
     blockCache: new Map(),
     blockByNumberCache: new Map(),
+    swapLogRanges: [],
     aeroPriceCache: new Map(),
+    prefetch: {
+      inFlight: 0,
+      nextIndex: 0,
+      exactKeys: new Set(),
+      logKeys: new Set(),
+    },
     timing: { startedAtMs: 0, items: {} },
     aeroPriceReliability: 100,
     aeroPriceAgeSeconds: 0,
@@ -171,6 +178,9 @@ const SERVER_SIMULATION_POLL_MS = Number(RUNTIME_CONFIG.serverSimulationPollMs ?
 const BASE_RPC_URLS = ["/rpc"];
 const IS_SERVER_WORKER = Boolean(globalThis.SERVER_SIM_CONFIG_CLIENT && globalThis.SERVER_SIM_CONFIG_CLIENT.id);
 const SERVER_SIMULATION_MODE = !IS_SERVER_WORKER;
+const SIM_PREFETCH_ROWS = Math.max(0, Number(RUNTIME_CONFIG.simPrefetchRows ?? (IS_SERVER_WORKER ? 45 : 0)));
+const SIM_PREFETCH_CONCURRENCY = Math.max(1, Number(RUNTIME_CONFIG.simPrefetchConcurrency ?? 1));
+const SIM_PREFETCH_EXACT_CALLS = Boolean(RUNTIME_CONFIG.simPrefetchExactCalls);
 let baseRpcIndex = 0;
 const POOL_ADDRESS = "0xb2cc224c1c9fee385f8ad6a55b4d94e92359dc59";
 const AERO_USDC_POOL_ADDRESS = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1";
@@ -569,11 +579,7 @@ async function getBlock(blockNumber) {
   }
   const startedAt = performance.now();
   const block = await rpcCall("eth_getBlockByNumber", [blockTag(blockNumber), false]);
-  const normalized = {
-    number: Number(BigInt(block.number)),
-    timestamp: Number(BigInt(block.timestamp)),
-    baseFeePerGas: block.baseFeePerGas ? BigInt(block.baseFeePerGas) : 0n,
-  };
+  const normalized = rememberBlock(block);
   state.sim.blockByNumberCache.set(blockNumber, normalized);
   recordSimulationTiming("getBlock.rpc", startedAt);
   return normalized;
@@ -787,12 +793,46 @@ async function getSwapLogs(fromBlock, toBlock) {
   const startedAt = performance.now();
   try {
   if (toBlock < fromBlock) return [];
+  const cached = cachedSwapLogs(fromBlock, toBlock);
+  if (cached) {
+    recordSimulationTiming("getSwapLogs.cacheHit", startedAt);
+    return cached;
+  }
   const logs = await rpcCall("eth_getLogs", [{
     address: POOL_ADDRESS,
     fromBlock: blockTag(fromBlock),
     toBlock: blockTag(toBlock),
     topics: [SWAP_TOPIC],
   }]);
+  rememberSwapLogs(fromBlock, toBlock, logs);
+  return sortSwapLogs(logs);
+  } finally {
+    recordSimulationTiming("getSwapLogs", startedAt);
+  }
+}
+
+function estimatedBlockAtOrAfterTimestamp(timestampSeconds) {
+  const offset = Math.max(0, Math.ceil((timestampSeconds - BASE_BLOCK_ANCHOR.timestamp) / BASE_SECONDS_PER_BLOCK));
+  return BASE_BLOCK_ANCHOR.number + offset;
+}
+
+function normalizeBlock(rawBlock) {
+  if (!rawBlock) return null;
+  return {
+    number: Number(BigInt(rawBlock.number)),
+    timestamp: Number(BigInt(rawBlock.timestamp)),
+    baseFeePerGas: rawBlock.baseFeePerGas ? BigInt(rawBlock.baseFeePerGas) : 0n,
+  };
+}
+
+function rememberBlock(rawBlock) {
+  const normalized = normalizeBlock(rawBlock);
+  if (!normalized) return null;
+  state.sim.blockByNumberCache.set(normalized.number, normalized);
+  return normalized;
+}
+
+function sortSwapLogs(logs) {
   return [...(logs || [])].sort((left, right) => {
     const leftBlock = Number(BigInt(left.blockNumber));
     const rightBlock = Number(BigInt(right.blockNumber));
@@ -802,8 +842,158 @@ async function getSwapLogs(fromBlock, toBlock) {
     if (leftTx !== rightTx) return leftTx - rightTx;
     return Number(BigInt(left.logIndex || "0x0")) - Number(BigInt(right.logIndex || "0x0"));
   });
+}
+
+function rememberSwapLogs(fromBlock, toBlock, logs) {
+  if (toBlock < fromBlock) return;
+  const ranges = state.sim.swapLogRanges || (state.sim.swapLogRanges = []);
+  ranges.push({ fromBlock, toBlock, logs: sortSwapLogs(logs) });
+  ranges.sort((left, right) => left.fromBlock - right.fromBlock || left.toBlock - right.toBlock);
+}
+
+function cachedSwapLogs(fromBlock, toBlock) {
+  const ranges = state.sim.swapLogRanges || [];
+  const coveredLogs = [];
+  let cursor = fromBlock;
+  for (const range of ranges) {
+    if (range.toBlock < cursor) continue;
+    if (range.fromBlock > cursor) return null;
+    coveredLogs.push(...filterLogsForBlockRange(range.logs, cursor, Math.min(range.toBlock, toBlock)));
+    cursor = range.toBlock + 1;
+    if (cursor > toBlock) return sortSwapLogs(coveredLogs);
+  }
+  return null;
+}
+
+function filterLogsForBlockRange(logs, fromBlock, toBlock) {
+  return (logs || []).filter((log) => {
+    const blockNumber = Number(BigInt(log.blockNumber || "0x0"));
+    return blockNumber >= fromBlock && blockNumber <= toBlock;
+  });
+}
+
+function poolStateMulticallData(tickLower, tickUpper) {
+  const tickLowerData = `${SELECTORS.ticks}${encodeInt24(tickLower)}`;
+  const tickUpperData = `${SELECTORS.ticks}${encodeInt24(tickUpper)}`;
+  return encodeAggregate3Call([
+    SELECTORS.slot0,
+    SELECTORS.rewardGrowthGlobal,
+    SELECTORS.rewardRate,
+    SELECTORS.rewardReserve,
+    SELECTORS.lastUpdated,
+    SELECTORS.stakedLiquidity,
+    SELECTORS.liquidity,
+    SELECTORS.feeGrowthGlobal0X128,
+    SELECTORS.feeGrowthGlobal1X128,
+    tickLowerData,
+    tickUpperData,
+  ].map((data) => ({
+    target: POOL_ADDRESS,
+    allowFailure: false,
+    callData: data,
+  })));
+}
+
+function simulationPrefetchState() {
+  return state.sim.prefetch || (state.sim.prefetch = {
+    inFlight: 0,
+    nextIndex: 0,
+    exactKeys: new Set(),
+    logKeys: new Set(),
+  });
+}
+
+function resetSimulationPrefetch(startIndex = 0) {
+  state.sim.prefetch = {
+    inFlight: 0,
+    nextIndex: startIndex,
+    exactKeys: new Set(),
+    logKeys: new Set(),
+  };
+}
+
+function scheduleSimulationPrefetch(currentIndex, runToken) {
+  if (!SIM_PREFETCH_ROWS || !state.sim.started || state.sim.stopped || runToken !== state.sim.runToken) return;
+  const prefetch = simulationPrefetchState();
+  while (prefetch.inFlight < SIM_PREFETCH_CONCURRENCY) {
+    const startIndex = Math.max(currentIndex + 1, prefetch.nextIndex || currentIndex + 1);
+    if (startIndex > state.sim.endIndex || startIndex >= state.rows.length) return;
+    const endIndex = Math.min(state.sim.endIndex, state.rows.length - 1, startIndex + SIM_PREFETCH_ROWS - 1);
+    prefetch.nextIndex = endIndex + 1;
+    prefetch.inFlight += 1;
+    runSimulationPrefetchBatch(startIndex, endIndex, runToken)
+      .catch(() => { })
+      .finally(() => {
+        prefetch.inFlight = Math.max(0, prefetch.inFlight - 1);
+        if (runToken === state.sim.runToken && state.sim.autoRunning) {
+          scheduleSimulationPrefetch(state.sim.currentIndex, runToken);
+        }
+      });
+  }
+}
+
+async function runSimulationPrefetchBatch(startIndex, endIndex, runToken) {
+  const startedAt = performance.now();
+  try {
+    const prefetch = simulationPrefetchState();
+    const tickLower = state.sim.tickLower;
+    const tickUpper = state.sim.tickUpper;
+    const poolStateData = poolStateMulticallData(tickLower, tickUpper);
+    const calls = [];
+    const callMetadata = [];
+    const blockNumbers = [];
+    for (let index = startIndex; index <= endIndex; index += 1) {
+      const row = state.rows[index];
+      if (!row) continue;
+      const timestamp = Math.floor(new Date(row.time).getTime() / 1000);
+      const blockNumber = estimatedBlockAtOrAfterTimestamp(timestamp);
+      const tag = blockTag(blockNumber);
+      blockNumbers.push(blockNumber);
+      const exactKey = `${blockNumber}:${tickLower}:${tickUpper}`;
+      if (!prefetch.exactKeys.has(exactKey)) {
+        prefetch.exactKeys.add(exactKey);
+        calls.push({ method: "eth_getBlockByNumber", params: [tag, false] });
+        callMetadata.push({ type: "block" });
+        if (SIM_PREFETCH_EXACT_CALLS) {
+          calls.push({ method: "eth_call", params: [{ to: MULTICALL3_ADDRESS, data: poolStateData }, tag] });
+          callMetadata.push({ type: "exact" });
+          calls.push({ method: "eth_call", params: [{ to: AERO_USDC_POOL_ADDRESS, data: SELECTORS.slot0 }, tag] });
+          callMetadata.push({ type: "exact" });
+        }
+      }
+    }
+    if (blockNumbers.length) {
+      const fromBlock = Math.min(...blockNumbers);
+      const toBlock = Math.max(...blockNumbers);
+      const logKey = `${Math.floor(fromBlock / 6000)}:${Math.floor(toBlock / 6000)}`;
+      if (!prefetch.logKeys.has(logKey)) {
+        prefetch.logKeys.add(logKey);
+        calls.push({
+          method: "eth_getLogs",
+          params: [{
+            address: POOL_ADDRESS,
+            fromBlock: blockTag(fromBlock),
+            toBlock: blockTag(toBlock),
+            topics: [SWAP_TOPIC],
+          }],
+        });
+        callMetadata.push({ type: "logs", fromBlock, toBlock });
+      }
+    }
+    if (runToken !== state.sim.runToken || !calls.length) return;
+    const results = await rpcBatch(calls);
+    if (runToken !== state.sim.runToken) return;
+    for (let index = 0; index < results.length; index += 1) {
+      const metadata = callMetadata[index];
+      if (!metadata) continue;
+      if (metadata.type === "block") {
+        rememberBlock(results[index]);
+      } else if (metadata.type === "logs") {
+        rememberSwapLogs(metadata.fromBlock, metadata.toBlock, results[index]);
+      }
+    }
   } finally {
-    recordSimulationTiming("getSwapLogs", startedAt);
+    recordSimulationTiming("simulationPrefetch", startedAt);
   }
 }
 
@@ -2187,9 +2377,11 @@ function resetSimulationRows() {
   state.sim.etaMs = 0;
   state.sim.rows = [];
   resetSimulationTiming();
+  resetSimulationPrefetch();
   simulationEngine.resetSequentialBlockCursor();
   state.sim.blockCache = new Map();
   state.sim.blockByNumberCache = new Map();
+  state.sim.swapLogRanges = [];
   state.sim.started = false;
   state.sim.stopped = false;
   state.sim.rewardStart = 0n;
@@ -2612,6 +2804,7 @@ const simulationEngine = WalletWatchSimulationEngine.create({
   setSimulationNotice,
   renderSimulationTable,
   updateSimulationControls,
+  scheduleSimulationPrefetch,
   isServerWorker: IS_SERVER_WORKER,
   secondsPerBlock: BASE_SECONDS_PER_BLOCK,
 });

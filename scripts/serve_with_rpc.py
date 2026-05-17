@@ -54,9 +54,9 @@ SIM_WORKER_PATH = Path(os.environ.get("SIM_WORKER_PATH", ROOT / "scripts" / "nod
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8003"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", f"http://127.0.0.1:{PORT}")
-MAX_UPSTREAM_BATCH_SIZE = int(os.environ.get("MAX_UPSTREAM_BATCH_SIZE", "3"))
+MAX_UPSTREAM_BATCH_SIZE = int(os.environ.get("MAX_UPSTREAM_BATCH_SIZE", "20"))
 MAX_LOG_BLOCK_SPAN = int(os.environ.get("MAX_LOG_BLOCK_SPAN", "2000"))
-LOG_PREFETCH_BLOCK_SPAN = int(os.environ.get("LOG_PREFETCH_BLOCK_SPAN", "600"))
+LOG_PREFETCH_BLOCK_SPAN = int(os.environ.get("LOG_PREFETCH_BLOCK_SPAN", "6000"))
 MAX_EXACT_RESULT_BYTES = int(os.environ.get("MAX_EXACT_RESULT_BYTES", str(512 * 1024)))
 DEBUG_RPC_ERRORS = os.environ.get("DEBUG_RPC_ERRORS", "").lower() in {"1", "true", "yes", "on"}
 ADMIN_API_TOKEN = os.environ.get("ADMIN_API_TOKEN", "").strip()
@@ -461,6 +461,9 @@ def normalize_simulation_params(payload):
         "aeroImpactHaircutMax": float(payload.get("aeroImpactHaircutMax", os.environ.get("AERO_IMPACT_HAIRCUT_MAX", "0.5"))),
         "serverSimulationPollMs": int(payload.get("serverSimulationPollMs", os.environ.get("SERVER_SIMULATION_POLL_MS", "2500"))),
         "lpFeeRate": float(payload.get("lpFeeRate", os.environ.get("LP_FEE_RATE", "0.0005"))),
+        "simPrefetchRows": int(payload.get("simPrefetchRows", os.environ.get("SIM_PREFETCH_ROWS", "45"))),
+        "simPrefetchConcurrency": int(payload.get("simPrefetchConcurrency", os.environ.get("SIM_PREFETCH_CONCURRENCY", "1"))),
+        "simPrefetchExactCalls": str(payload.get("simPrefetchExactCalls", os.environ.get("SIM_PREFETCH_EXACT_CALLS", ""))).lower() in {"1", "true", "yes", "on"},
     }
 
 

@@ -39,6 +39,7 @@
       setSimulationNotice,
       renderSimulationTable,
       updateSimulationControls,
+      scheduleSimulationPrefetch = () => {},
       isServerWorker = false,
       secondsPerBlock = 2,
     } = deps;
@@ -429,12 +430,13 @@
       const block = blockOverride || await findBlockAtOrAfter(timestamp, afterBlock);
       rememberSequentialBlockCursor(block);
       recordSimulationTiming("buildSimulationRow.findBlock", phaseStartedAt);
-      phaseStartedAt = performance.now();
-      const rewardState = await readRewardInside(block.number, state.sim.tickLower, state.sim.tickUpper);
-      recordSimulationTiming("buildSimulationRow.readRewardInside", phaseStartedAt);
-      phaseStartedAt = performance.now();
-      const aeroPrice = await getAeroPrice(block.number);
-      recordSimulationTiming("buildSimulationRow.getAeroPrice", phaseStartedAt);
+      const rewardStartedAt = performance.now();
+      const rewardPromise = readRewardInside(block.number, state.sim.tickLower, state.sim.tickUpper)
+        .finally(() => recordSimulationTiming("buildSimulationRow.readRewardInside", rewardStartedAt));
+      const aeroStartedAt = performance.now();
+      const aeroPricePromise = getAeroPrice(block.number)
+        .finally(() => recordSimulationTiming("buildSimulationRow.getAeroPrice", aeroStartedAt));
+      const [rewardState, aeroPrice] = await Promise.all([rewardPromise, aeroPricePromise]);
       ensureActiveSimulation(runToken);
       const previousAeroAmounts = {
         conservative: state.sim.aeroUnharvested,
@@ -533,12 +535,13 @@
       const oldSpanTicks = Math.max(AERODROME_TICK_SPACING, oldTickUpper - oldTickLower);
       const exitPrice = priceFromSqrtX96(exit.sqrtPriceX96);
       let phaseStartedAt = performance.now();
-      const rewardState = await readRewardInside(block.number, oldTickLower, oldTickUpper);
-      recordSimulationTiming("buildRebalanceRow.readOldRewardInside", phaseStartedAt);
+      const oldRewardPromise = readRewardInside(block.number, oldTickLower, oldTickUpper)
+        .finally(() => recordSimulationTiming("buildRebalanceRow.readOldRewardInside", phaseStartedAt));
+      const oldAeroStartedAt = performance.now();
+      const oldAeroPricePromise = getAeroPrice(block.number)
+        .finally(() => recordSimulationTiming("buildRebalanceRow.getAeroPrice", oldAeroStartedAt));
+      const [rewardState, aeroPrice] = await Promise.all([oldRewardPromise, oldAeroPricePromise]);
       rewardState.rangeCrossed = true;
-      phaseStartedAt = performance.now();
-      const aeroPrice = await getAeroPrice(block.number);
-      recordSimulationTiming("buildRebalanceRow.getAeroPrice", phaseStartedAt);
       ensureActiveSimulation(runToken);
       const previousAeroAmounts = {
         conservative: state.sim.aeroUnharvested,
@@ -583,20 +586,20 @@
       let swap = { direction: "NONE", amount: 0 };
       if (excessWeth > 0) swap = { direction: "WETH_TO_USDC", amount: excessWeth };
       if (excessUsdc > 0) swap = { direction: "USDC_TO_WETH", amount: excessUsdc };
-      phaseStartedAt = performance.now();
-      const swapQuote = await estimateHistoricalSwap(swap, exitPrice, block.number);
-      recordSimulationTiming("buildRebalanceRow.estimateHistoricalSwap", phaseStartedAt);
-      ensureActiveSimulation(runToken);
       const gasDetails = estimateRebalanceGasDetails(block, exitPrice);
       const gasUsdc = gasDetails.gasUsdc;
       const automationFeeUsdc = grossCapital * REBALANCE_MANUAL_FEE_BPS / 10000;
+      const swapStartedAt = performance.now();
+      const swapQuotePromise = estimateHistoricalSwap(swap, exitPrice, block.number)
+        .finally(() => recordSimulationTiming("buildRebalanceRow.estimateHistoricalSwap", swapStartedAt));
+      const nextRewardStartedAt = performance.now();
+      const nextRewardPromise = readRewardInside(block.number, newTickLower, newTickUpper)
+        .finally(() => recordSimulationTiming("buildRebalanceRow.readNewRewardInside", nextRewardStartedAt));
+      const [swapQuote, nextRewardState] = await Promise.all([swapQuotePromise, nextRewardPromise]);
+      ensureActiveSimulation(runToken);
       const totalCostUsdc = swapQuote.lossUsdc + gasUsdc + automationFeeUsdc;
       const netCapital = Math.max(0, grossCapital - totalCostUsdc);
       const newPlan = computePositionPlanForRange(netCapital, exitPrice, newTickLower, newTickUpper, newAnchorTick);
-      phaseStartedAt = performance.now();
-      const nextRewardState = await readRewardInside(block.number, newTickLower, newTickUpper);
-      recordSimulationTiming("buildRebalanceRow.readNewRewardInside", phaseStartedAt);
-      ensureActiveSimulation(runToken);
       const reliability = rebalanceReliability(rewardState, swapQuote.reliability, swap.amount > 0, block);
       const impactDetails = impactRiskDetails(rewardState, aeroPrice, aeroEvent);
       state.sim.tickLower = newTickLower;
@@ -809,6 +812,7 @@
 
     async function runAutoLoop(runToken, loopId) {
       state.sim.lastFastRenderAt = performance.now();
+      scheduleSimulationPrefetch(state.sim.currentIndex, runToken);
       while (
         state.sim.autoRunning &&
         state.sim.started &&
@@ -818,6 +822,7 @@
       ) {
         const advanced = await stepForward({ render: false });
         if (!advanced) break;
+        scheduleSimulationPrefetch(state.sim.currentIndex, runToken);
         const now = performance.now();
         if (now - state.sim.lastFastRenderAt >= state.sim.fastRenderEveryMs) {
           state.sim.lastFastRenderAt = now;
