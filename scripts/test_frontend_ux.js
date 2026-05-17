@@ -158,6 +158,15 @@ function testServerObservationModes() {
 }
 
 
+function testResultChartHoverTooltip() {
+  assert.match(html, /id="resultTooltip"/);
+  assert.match(app, /const resultTooltip = document\.getElementById\("resultTooltip"\)/);
+  assert.match(app, /function resultChartTooltip\(row\)/);
+  assert.match(app, /WETH <strong>\$\{fmtPrice\(displayPrice\)\}<\/strong>/);
+  assert.match(app, /if \(row\?\.rebalance\) \{/);
+  assert.match(app, /placeChartTooltip\(resultTooltip, x, y, width, height\)/);
+  assert.match(styles, /\.resultTooltip/);
+}
 testLocalElapsedTimer();
 testInitializationStages();
 testSkeletonLifecycle();
@@ -168,3 +177,4 @@ testSimulationTimingInstrumentation();
 testSubhourTimeAxisLabels();
 testSimulationModes();
 testServerObservationModes();
+testResultChartHoverTooltip();

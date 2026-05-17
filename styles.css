@@ -435,6 +435,11 @@ canvas {
   background: rgba(15, 139, 141, 0.94);
 }
 
+.resultTooltip {
+  max-width: 360px;
+  white-space: normal;
+}
+
 .simControls {
   display: grid;
   grid-template-columns: 164px 140px 140px 98px 82px minmax(116px, 1fr) repeat(3, minmax(66px, 0.75fr));

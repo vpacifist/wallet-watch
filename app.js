@@ -144,6 +144,7 @@ const resultSummary = document.getElementById("resultSummary");
 const resultChartWrap = document.getElementById("resultChartWrap");
 const resultPriceChart = document.getElementById("resultPriceChart");
 const resultChartCtx = resultPriceChart?.getContext("2d");
+const resultTooltip = document.getElementById("resultTooltip");
 const resultLastRow = document.getElementById("resultLastRow");
 const resultTableWrap = document.getElementById("resultTableWrap");
 const resultTableBody = document.getElementById("resultTableBody");
@@ -1046,6 +1047,55 @@ function simulationChartTooltip(row, marketRow) {
   return lines.join("<br>");
 }
 
+function placeChartTooltip(element, x, y, width, height) {
+  const tooltipGap = 14;
+  const tooltipMargin = 8;
+  const tooltipWidth = element.offsetWidth;
+  const tooltipHeight = element.offsetHeight;
+  const tooltipLeft = Math.min(Math.max(x - tooltipWidth / 2, tooltipMargin), width - tooltipWidth - tooltipMargin);
+  const hasRoomAbove = y - tooltipHeight - tooltipGap >= tooltipMargin;
+  const tooltipTop = hasRoomAbove ? y - tooltipHeight - tooltipGap : y + tooltipGap;
+  element.style.left = `${tooltipLeft}px`;
+  element.style.top = `${Math.min(tooltipTop, height - tooltipHeight - tooltipMargin)}px`;
+  element.style.transform = "none";
+}
+
+function resultChartTooltip(row) {
+  const marketClose = Number(row?.close);
+  const executionPrice = Number(row?.price);
+  const displayPrice = Number.isFinite(marketClose)
+    ? marketClose
+    : (Number.isFinite(executionPrice) ? executionPrice : 0);
+  const lines = [
+    `${fmtTime(row?.time || "")}`,
+    `WETH <strong>${fmtPrice(displayPrice)}</strong>`,
+  ];
+  if (row?.event) lines.push(row.event);
+  if (row?.rebalance) {
+    const rb = row.rebalance;
+    const confirmationBufferBps = Number(rb.confirmationBufferBps);
+    if (
+      Number.isFinite(marketClose)
+      && Number.isFinite(executionPrice)
+      && Math.abs(executionPrice - marketClose) / Math.max(1, marketClose) > 0.001
+    ) {
+      lines.push(`execution ${fmtPrice(executionPrice)}`);
+    }
+    lines.push(`range ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}`);
+    lines.push(`trigger ${fmtPrice(priceForTick(rb.oldTickLower))}..${fmtPrice(priceForTick(rb.oldTickUpper))}`);
+    if (rb.swapDirection) lines.push(`swap ${rb.swapDirection}`);
+    if (rb.swapSourceLabel || rb.swapSource) lines.push(`quote ${rb.swapSourceLabel || rb.swapSource}`);
+    if (Number.isFinite(Number(rb.swapLossUsdc))) lines.push(`swap loss ${fmtUsdc(rb.swapLossUsdc)}`);
+    if (Number.isFinite(Number(rb.gasUsdc))) lines.push(`gas ${fmtUsdc(rb.gasUsdc)}`);
+    if (Number.isFinite(Number(rb.automationFeeUsdc))) lines.push(`fee ${fmtUsdc(rb.automationFeeUsdc)}`);
+    if (Number.isFinite(Number(rb.totalCostUsdc))) lines.push(`total cost ${fmtUsdc(rb.totalCostUsdc)}`);
+    if (Number.isFinite(confirmationBufferBps)) lines.push(`buffer ${fmtNumber(confirmationBufferBps, 2)} bps`);
+    if (Number.isFinite(Number(rb.confirmationMinutes))) lines.push(`confirm ${Number(rb.confirmationMinutes)} min`);
+    if (rb.swapIsFallback) lines.push(`swap fallback: ${summarizeFallbackReason(rb.quoteFailureReason)}`);
+  }
+  return lines.join("<br>");
+}
+
 function simulationRangeGridPrices(min, max) {
   if ((!state.sim.started && !state.sim.initialRangeReady) || !state.sim.rangeStepTicks) return [];
   const start = state.sim.startGridTick || state.sim.tickLower;
@@ -1624,19 +1674,6 @@ function draw() {
 
   drawChartTimeAxisLabels(ctx, { ticks: timeTicks, visibleDays, xForTime, height });
 
-  const placeTooltip = (element, x, y) => {
-    const tooltipGap = 14;
-    const tooltipMargin = 8;
-    const tooltipWidth = element.offsetWidth;
-    const tooltipHeight = element.offsetHeight;
-    const tooltipLeft = Math.min(Math.max(x - tooltipWidth / 2, tooltipMargin), width - tooltipWidth - tooltipMargin);
-    const hasRoomAbove = y - tooltipHeight - tooltipGap >= tooltipMargin;
-    const tooltipTop = hasRoomAbove ? y - tooltipHeight - tooltipGap : y + tooltipGap;
-    element.style.left = `${tooltipLeft}px`;
-    element.style.top = `${Math.min(tooltipTop, height - tooltipHeight - tooltipMargin)}px`;
-    element.style.transform = "none";
-  };
-
   const drawRebalanceMarkers = () => {
     const rebalanceRows = chartSimulationRows().filter((row) => row?.rebalance);
     if (!rebalanceRows.length) return;
@@ -1693,7 +1730,7 @@ function draw() {
       const simRow = simulationRowForIndex(rowIndex);
       element.hidden = false;
       element.innerHTML = simRow ? simulationChartTooltip(simRow, row) : `${fmtTime(row.time)}<br><strong>${fmtPrice(row.close)}</strong>`;
-      placeTooltip(element, x, y);
+      placeChartTooltip(element, x, y, width, height);
     }
     return true;
   };
@@ -1726,7 +1763,7 @@ function draw() {
     ctx.fill();
     tooltip.hidden = false;
     tooltip.innerHTML = `${fmtTime(row.time)}<br><strong>${fmtPrice(row.close)}</strong>`;
-    placeTooltip(tooltip, x, y);
+    placeChartTooltip(tooltip, x, y, width, height);
   } else {
     tooltip.hidden = true;
   }
@@ -3070,6 +3107,7 @@ function resultLoadingDetails(progress = {}) {
 function clearResultChart() {
   if (!resultChartWrap || !resultPriceChart || !resultChartCtx) return;
   resultChartWrap.hidden = true;
+  if (resultTooltip) resultTooltip.hidden = true;
   resultChartCtx.clearRect(0, 0, resultPriceChart.width, resultPriceChart.height);
 }
 
@@ -3308,6 +3346,13 @@ function drawResultChart(rawRows = [], simulationId = "") {
     ctx.beginPath();
     ctx.arc(x, y, 4, 0, Math.PI * 2);
     ctx.fill();
+    if (resultTooltip) {
+      resultTooltip.hidden = false;
+      resultTooltip.innerHTML = resultChartTooltip(row);
+      placeChartTooltip(resultTooltip, x, y, width, height);
+    }
+  } else if (resultTooltip) {
+    resultTooltip.hidden = true;
   }
 
   drawChartTimeAxisLabels(ctx, { ticks: timeTicks, visibleDays, xForTime, height });
