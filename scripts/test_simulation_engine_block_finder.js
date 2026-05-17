@@ -183,6 +183,7 @@ function makeStepEngine(state, findSwapExitCalls, options = {}) {
     },
     findSwapExit: async (fromBlock, toBlock, tickLower, tickUpper, after) => {
       findSwapExitCalls.push({ fromBlock, toBlock, tickLower, tickUpper, after });
+      if (options.findSwapExit) return options.findSwapExit({ fromBlock, toBlock, tickLower, tickUpper, after, call: findSwapExitCalls.length });
       if (options.exits) return options.exits[findSwapExitCalls.length - 1] || null;
       if (findSwapExitCalls.length === 1) {
         return { blockNumber: 11, logIndex: 5, tick: 120, sqrtPriceX96: 120n };
@@ -295,6 +296,27 @@ async function testTwoMinuteConfirmationRequiresPreviousCloseOutsideBuffer() {
   assert.match(state.sim.rows.at(-1).event, /^rebalance /);
 }
 
+async function testConfirmationUsesExitSideNotJustAnyOutsideClose() {
+  const state = makeStepState({ closes: [100, 200, 200] });
+  const findSwapExitCalls = [];
+  const exits = [
+    { blockNumber: 11, logIndex: 5, tick: -20, sqrtPriceX96: 80n },
+    { blockNumber: 11, logIndex: 6, tick: 120, sqrtPriceX96: 120n },
+  ];
+  const engine = makeStepEngine(state, findSwapExitCalls, {
+    confirmationMinutes: 1,
+    findSwapExit: ({ after }) => {
+      if (!after) return exits[0];
+      return exits.find((exit) => exit.blockNumber > after.blockNumber || (exit.blockNumber === after.blockNumber && exit.logIndex > after.logIndex)) || null;
+    },
+  });
+
+  assert.equal(await engine.stepForward({ render: false }), true, "step should use the same-side exit");
+  assert.match(state.sim.rows.at(-1).event, /^rebalance /);
+  assert.equal(state.sim.rows.at(-1).tick, 120);
+  assert.equal(findSwapExitCalls.length, 2);
+}
+
 async function main() {
   await testMonotonicMinuteTimestampsUseCursorEstimate();
   await testDuplicateTimestampsReturnFirstAllowedDuplicate();
@@ -303,6 +325,7 @@ async function main() {
   await testConfirmedRebalanceSkipsRemainingLogsInSameBlock();
   await testConfirmationBufferSuppressesBoundaryChurn();
   await testTwoMinuteConfirmationRequiresPreviousCloseOutsideBuffer();
+  await testConfirmationUsesExitSideNotJustAnyOutsideClose();
 }
 
 main().catch((error) => {

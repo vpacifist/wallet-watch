@@ -393,10 +393,19 @@ async function runSimulation(config, emit = () => { }) {
   vm.runInContext(appSource, sandbox, { filename: "app.js" });
 
   const deadline = Date.now() + 60000;
-  while (Date.now() < deadline && !document.getElementById("status").textContent.startsWith("CSV загружен")) {
+  while (
+    Date.now() < deadline
+    && !(
+      document.getElementById("status").textContent.startsWith("CSV loaded")
+      && sandbox.walletWatchCsvReady === true
+    )
+  ) {
     await sleep(50);
   }
-  if (!document.getElementById("status").textContent.startsWith("CSV загружен")) {
+  if (
+    !document.getElementById("status").textContent.startsWith("CSV loaded")
+    || sandbox.walletWatchCsvReady !== true
+  ) {
     throw new Error("CSV did not load before timeout");
   }
 
@@ -474,7 +483,7 @@ async function runSimulation(config, emit = () => { }) {
       const latestRows = readRawRowsFrom(sandbox, Math.max(0, rawRowCount - 1));
       emit(progressEvent(config, startedAt, state, latestRows, [], "heartbeat", sandbox));
     }
-    if (state.notice.includes("Симуляция дошла до конца") || state.notice.includes("Симуляция дошла до даты конца")) {
+    if (state.notice.includes("Simulation reached the end") || state.notice.includes("Simulation reached the end date")) {
       emit({
         type: "result",
         id: config.id,
@@ -492,7 +501,7 @@ async function runSimulation(config, emit = () => { }) {
       });
       return { exitCode: 0 };
     }
-    if (state.notice.includes("Симуляция остановлена")) {
+    if (state.notice.includes("Simulation stopped")) {
       emit({
         type: "result",
         id: config.id,

@@ -5,6 +5,7 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 const app = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
 const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
+const core = fs.readFileSync(path.join(ROOT, "simulation_core.js"), "utf8");
 const engine = fs.readFileSync(path.join(ROOT, "simulation_engine.js"), "utf8");
 const runtime = fs.readFileSync(path.join(ROOT, "scripts", "simulation_runtime.js"), "utf8");
 const styles = fs.readFileSync(path.join(ROOT, "styles.css"), "utf8");
@@ -62,6 +63,15 @@ function testSseDelayedStartHandling() {
   assert.match(app, /Range: calculating\.\.\./);
 }
 
+function testSseErrorRecoveryNotice() {
+  assert.match(app, /sseErrorActive: false/);
+  assert.match(app, /if \(serverSimulation\.sseErrorActive && simNotice\.classList\.contains\("simNoticeError"\) && simNotice\.textContent\.includes\("SSE"\)\) \{/);
+  assert.match(app, /estimateEl\.replaceChildren\(\)/);
+  assert.match(app, /serverSimulation\.sseRetryCount = 0;\s+stopServerSimulationEvents\(\);\s+watchServerSimulation\(serverSimulation\.id\);/);
+  assert.match(app, /serverSimulation\.sseErrorActive = false;\s+renderServerSimulation\(simulation\);/);
+  assert.match(app, /serverSimulation\.sseErrorActive = true;\s+const delayMs = Math\.max/);
+}
+
 function testBlockByNumberCacheLifecycle() {
   assert.match(app, /blockByNumberCache: new Map\(\)/);
   assert.match(app, /state\.sim\.blockByNumberCache\.get\(blockNumber\)/);
@@ -83,6 +93,18 @@ function testSimulationTimingInstrumentation() {
   assert.match(app, /\/api\/simulations\/\$\{id\}\?compact=1/);
   assert.match(runtime, /getSimulationRawRowsFrom/);
   assert.match(runtime, /getSimulationDisplayState/);
+}
+
+function testSubhourTimeAxisLabels() {
+  assert.match(app, /fmtAxisMinute/);
+  assert.match(app, /const MIN_CHART_ZOOM_ROWS = 30/);
+  assert.match(app, /const MINUTE_AXIS_MAX_MINUTES = 180/);
+  assert.match(app, /function minuteTickStep\(visibleMinutes, plotWidth\)/);
+  assert.match(app, /const showMinuteScale = visibleMinutes > 0 && visibleMinutes <= MINUTE_AXIS_MAX_MINUTES/);
+  assert.match(app, /ticks\.minuteTicks\.forEach/);
+  assert.match(app, /MIN_CHART_ZOOM_ROWS \/ rows\.length/);
+  assert.match(app, /MIN_CHART_ZOOM_ROWS \/ rowCount/);
+  assert.match(core, /function fmtAxisMinute\(value\)/);
 }
 
 
@@ -124,8 +146,34 @@ function testServerObservationModes() {
   assert.match(app, /if \(isServerLiveRenderingActive\(\)\) renderServerResultTable\(simulation\)/);
   assert.match(app, /renderCompletedServerSimulation\(id\)/);
   assert.match(app, /fetchJson\(`\/api\/simulations\/\$\{id\}`\)/);
+  assert.match(app, /function fetchJsonWithProgress\(url, options = \{\}, onProgress = null\)/);
+  assert.match(app, /request\.onprogress = \(event\) =>/);
+  assert.match(app, /function renderSimulationResultLoading\(simulation\)/);
+  assert.match(app, /updateSimulationResultLoading\(id, seed, progress\)/);
+  assert.match(app, /function renderServerJobsLoading\(progress = \{\}\)/);
+  assert.match(app, /function serverJobsSyntheticProgress\(startedAtMs\)/);
+  assert.match(app, /Requesting past simulations/);
+  assert.match(app, /Querying stored simulations/);
+  assert.match(app, /Preparing job list/);
+  assert.match(app, /Downloading past simulations/);
+  assert.match(app, /Parsing past simulations/);
+  assert.match(app, /const rowsToRender = tableRows\.length > 1000/);
+  assert.match(app, /rows hidden to improve performance/);
+  assert.match(styles, /\.resultLoadingBar/);
+  assert.match(styles, /\.serverJobsLoadingBar/);
+  assert.match(styles, /\.serverJob\.loading/);
   assert.match(styles, /\.chartOverlay/);
   assert.match(styles, /\.backgroundProgressPanel/);
+}
+
+function testResultChartHoverTooltip() {
+  assert.match(html, /id="resultTooltip"/);
+  assert.match(app, /const resultTooltip = document\.getElementById\("resultTooltip"\)/);
+  assert.match(app, /function resultChartTooltip\(row\)/);
+  assert.match(app, /WETH <strong>\$\{fmtPrice\(displayPrice\)\}<\/strong>/);
+  assert.match(app, /if \(row\?\.rebalance\) \{/);
+  assert.match(app, /placeChartTooltip\(resultTooltip, x, y, width, height\)/);
+  assert.match(styles, /\.resultTooltip/);
 }
 
 
@@ -134,7 +182,10 @@ testInitializationStages();
 testSkeletonLifecycle();
 testEarlyRangeRendering();
 testSseDelayedStartHandling();
+testSseErrorRecoveryNotice();
 testBlockByNumberCacheLifecycle();
 testSimulationTimingInstrumentation();
+testSubhourTimeAxisLabels();
 testSimulationModes();
 testServerObservationModes();
+testResultChartHoverTooltip();

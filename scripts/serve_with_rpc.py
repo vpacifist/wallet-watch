@@ -54,9 +54,9 @@ SIM_WORKER_PATH = Path(os.environ.get("SIM_WORKER_PATH", ROOT / "scripts" / "nod
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8003"))
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", f"http://127.0.0.1:{PORT}")
-MAX_UPSTREAM_BATCH_SIZE = int(os.environ.get("MAX_UPSTREAM_BATCH_SIZE", "3"))
+MAX_UPSTREAM_BATCH_SIZE = int(os.environ.get("MAX_UPSTREAM_BATCH_SIZE", "20"))
 MAX_LOG_BLOCK_SPAN = int(os.environ.get("MAX_LOG_BLOCK_SPAN", "2000"))
-LOG_PREFETCH_BLOCK_SPAN = int(os.environ.get("LOG_PREFETCH_BLOCK_SPAN", "600"))
+LOG_PREFETCH_BLOCK_SPAN = int(os.environ.get("LOG_PREFETCH_BLOCK_SPAN", "6000"))
 MAX_EXACT_RESULT_BYTES = int(os.environ.get("MAX_EXACT_RESULT_BYTES", str(512 * 1024)))
 DEBUG_RPC_ERRORS = os.environ.get("DEBUG_RPC_ERRORS", "").lower() in {"1", "true", "yes", "on"}
 ADMIN_API_TOKEN = os.environ.get("ADMIN_API_TOKEN", "").strip()
@@ -70,6 +70,7 @@ SSE_MAX_CONNECTIONS_PER_IP = int(os.environ.get("SSE_MAX_CONNECTIONS_PER_IP", "6
 UPSTREAM_RETRY_ATTEMPTS = int(os.environ.get("UPSTREAM_RETRY_ATTEMPTS", "8"))
 UPSTREAM_RETRY_BASE_SECONDS = float(os.environ.get("UPSTREAM_RETRY_BASE_SECONDS", "2"))
 UPSTREAM_RETRY_MAX_SECONDS = float(os.environ.get("UPSTREAM_RETRY_MAX_SECONDS", "20"))
+SIM_PROGRESS_MAX_RAW_ROWS = int(os.environ.get("SIM_PROGRESS_MAX_RAW_ROWS", "500"))
 
 AERO_USDC_POOL = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1"
 AERO_PRICE_CACHE = {}
@@ -265,7 +266,43 @@ def compact_simulation_response(simulation):
     return compact
 
 
-def simulation_row_to_dict(row, compact=False):
+def dedupe_completed_simulation_response(simulation):
+    if not isinstance(simulation, dict):
+        return simulation
+    result = simulation.get("result")
+    progress = simulation.get("progress")
+    if not isinstance(result, dict) or not isinstance(progress, dict):
+        return simulation
+    if not result.get("rawRows") and not result.get("tableRows"):
+        return simulation
+
+    deduped = dict(simulation)
+    deduped["progress"] = compact_simulation_payload(progress)
+    return deduped
+
+
+def parse_compact_simulation_json_prefix(text):
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    bulky_keys = ('"latestRawRow"', '"newRawRows"', '"rawRows"', '"tableRows"', '"dataQuality"', '"timing"')
+    positions = [pos for key in bulky_keys if (pos := text.find(key)) >= 0]
+    if not positions:
+        return None
+    prefix = text[:min(positions)].rstrip()
+    if prefix.endswith(","):
+        prefix = prefix[:-1].rstrip()
+    try:
+        return json.loads(f"{prefix}}}")
+    except json.JSONDecodeError:
+        return None
+
+
+def simulation_row_to_dict(row, compact=False, compact_prefix=False):
     if not row:
         return None
     columns = [
@@ -282,7 +319,10 @@ def simulation_row_to_dict(row, compact=False):
     ]
     item = dict(zip(columns, row))
     for key in ("params_json", "progress_json", "result_json"):
-        payload = json.loads(item[key]) if item.get(key) else None
+        if compact_prefix and key in {"progress_json", "result_json"}:
+            payload = parse_compact_simulation_json_prefix(item.get(key))
+        else:
+            payload = json.loads(item[key]) if item.get(key) else None
         if compact and key in {"progress_json", "result_json"}:
             payload = compact_simulation_payload(payload)
         item[key.replace("_json", "")] = payload
@@ -328,7 +368,10 @@ def list_simulations(limit=20):
     with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         rows = db.execute(
             """
-            SELECT id, status, params_json, progress_json, result_json, error, pid,
+            SELECT id, status, params_json,
+                   substr(progress_json, 1, 2048) AS progress_json,
+                   substr(result_json, 1, 2048) AS result_json,
+                   error, pid,
                    created_at, updated_at, finished_at
             FROM simulations
             ORDER BY created_at DESC
@@ -336,7 +379,7 @@ def list_simulations(limit=20):
             """,
             (limit,),
         ).fetchall()
-    return [simulation_row_to_dict(row, compact=True) for row in rows]
+    return [simulation_row_to_dict(row, compact=True, compact_prefix=True) for row in rows]
 
 
 def update_simulation(simulation_id, **fields):
@@ -409,7 +452,8 @@ def normalize_simulation_params(payload):
         "rangePct": range_pct,
         "lpMode": lp_mode,
         "timeoutSeconds": timeout_seconds,
-        "progressEverySeconds": int(payload.get("progressEverySeconds", 2)),
+        "progressEverySeconds": int(payload.get("progressEverySeconds", os.environ.get("SIM_PROGRESS_EVERY_SECONDS", "10"))),
+        "progressRowBatchSize": int(payload.get("progressRowBatchSize", os.environ.get("SIM_PROGRESS_ROW_BATCH_SIZE", "250"))),
         "rebalanceManualFeeBps": float(payload.get("rebalanceManualFeeBps", os.environ.get("REBALANCE_MANUAL_FEE_BPS", "1"))),
         "rebalanceGasUnits": int(payload.get("rebalanceGasUnits", os.environ.get("REBALANCE_GAS_UNITS", "1450000"))),
         "rebalanceL1DataFeeEth": float(payload.get("rebalanceL1DataFeeEth", os.environ.get("REBALANCE_L1_DATA_FEE_ETH", "0.000012"))),
@@ -419,6 +463,10 @@ def normalize_simulation_params(payload):
         "aeroImpactHaircutMax": float(payload.get("aeroImpactHaircutMax", os.environ.get("AERO_IMPACT_HAIRCUT_MAX", "0.5"))),
         "serverSimulationPollMs": int(payload.get("serverSimulationPollMs", os.environ.get("SERVER_SIMULATION_POLL_MS", "2500"))),
         "lpFeeRate": float(payload.get("lpFeeRate", os.environ.get("LP_FEE_RATE", "0.0005"))),
+        "unstakedLpFeeShare": float(payload.get("unstakedLpFeeShare", os.environ.get("UNSTAKED_LP_FEE_SHARE", "0.9"))),
+        "simPrefetchRows": int(payload.get("simPrefetchRows", os.environ.get("SIM_PREFETCH_ROWS", "45"))),
+        "simPrefetchConcurrency": int(payload.get("simPrefetchConcurrency", os.environ.get("SIM_PREFETCH_CONCURRENCY", "1"))),
+        "simPrefetchExactCalls": str(payload.get("simPrefetchExactCalls", os.environ.get("SIM_PREFETCH_EXACT_CALLS", ""))).lower() in {"1", "true", "yes", "on"},
     }
 
 
@@ -428,11 +476,12 @@ def progress_row_key(row):
     return ":".join(str(row.get(key, "")) for key in ("index", "blockNumber", "event"))
 
 
-def merge_simulation_progress(simulation_id, event):
+def merge_simulation_progress(simulation_id, event, persist_all_rows=False):
     current = get_simulation(simulation_id) or {}
     previous = current.get("progress") if isinstance(current.get("progress"), dict) else {}
     merged = dict(event)
     existing_rows = previous.get("rawRows") if isinstance(previous, dict) else []
+    previous_count = int(previous.get("rawRowCount") or previous.get("rows") or 0) if isinstance(previous, dict) else 0
     rows_by_key = {}
     if isinstance(existing_rows, list):
         for row in existing_rows:
@@ -447,10 +496,18 @@ def merge_simulation_progress(simulation_id, event):
         key=lambda row: row.get("index", 0) if isinstance(row, dict) else 0,
     )
     if raw_rows:
-        merged["rawRows"] = raw_rows
-        merged["rawRowCount"] = len(raw_rows)
+        if persist_all_rows:
+            persisted_rows = raw_rows
+        else:
+            max_rows = max(0, SIM_PROGRESS_MAX_RAW_ROWS)
+            persisted_rows = raw_rows[-max_rows:] if max_rows else []
+        if persisted_rows:
+            merged["rawRows"] = persisted_rows
+        else:
+            merged.pop("rawRows", None)
+        merged["rawRowCount"] = len(persisted_rows)
         merged["latestRawRow"] = event.get("latestRawRow") or raw_rows[-1]
-        merged["rows"] = max(int(event.get("rows") or 0), len(raw_rows))
+        merged["rows"] = max(int(event.get("rows") or 0), previous_count, len(raw_rows))
         if not merged.get("currentTotalReturn"):
             total_return = merged["latestRawRow"].get("totalReturnUsdc") if isinstance(merged["latestRawRow"], dict) else None
             if isinstance(total_return, (int, float)):
@@ -461,7 +518,7 @@ def merge_simulation_progress(simulation_id, event):
 def finalize_simulation_result(simulation_id, event):
     current = get_simulation(simulation_id) or {}
     previous = current.get("progress") if isinstance(current.get("progress"), dict) else {}
-    result = merge_simulation_progress(simulation_id, event)
+    result = merge_simulation_progress(simulation_id, event, persist_all_rows=True)
     if not result.get("currentTotalReturn") and isinstance(previous, dict):
         result["currentTotalReturn"] = previous.get("currentTotalReturn") or ""
     return result
@@ -1000,6 +1057,7 @@ def upstream_post(payload, urls=None, label="RPC"):
         summary += f", ... +{len(payloads) - 8}"
     
     attempted_errors = []
+    plan_limited_urls = set()
     # Try providers one by one first to save limits
     for url in provider_urls:
         success, result = try_one_provider(url, body, summary)
@@ -1008,13 +1066,16 @@ def upstream_post(payload, urls=None, label="RPC"):
             return result
         last_error = result
         attempted_errors.append((url, last_error))
+        if is_plan_limit_error(last_error):
+            plan_limited_urls.add(url)
 
     # If all failed once, use parallelism for retries to find a working one fast.
     # TLS alerts and connection resets from RPC providers are common transient
     # failures during long simulations, so do not let one short outage kill the job.
-    with ThreadPoolExecutor(max_workers=min(len(provider_urls), 8)) as executor:
+    retry_urls = [url for url in provider_urls if url not in plan_limited_urls] or provider_urls
+    with ThreadPoolExecutor(max_workers=min(len(retry_urls), 8)) as executor:
         for attempt in range(max(0, UPSTREAM_RETRY_ATTEMPTS)):
-            futures = {executor.submit(try_one_provider, url, body, summary): url for url in provider_urls}
+            futures = {executor.submit(try_one_provider, url, body, summary): url for url in retry_urls}
             for future in as_completed(futures):
                 url = futures[future]
                 try:
@@ -1029,6 +1090,7 @@ def upstream_post(payload, urls=None, label="RPC"):
                     # Detailed logging for specific error types
                     err_msg = upstream_error_message(last_error)
                     if is_plan_limit_error(last_error):
+                        plan_limited_urls.add(url)
                         print(f"\n!!! PLAN LIMIT DETECTED !!!", file=sys.stderr, flush=True)
                         print(f"Provider: {redact_url(url)}", file=sys.stderr, flush=True)
                         print(f"Methods: [{summary}]", file=sys.stderr, flush=True)
@@ -1042,7 +1104,8 @@ def upstream_post(payload, urls=None, label="RPC"):
                     print(f"[{time.strftime('%H:%M:%S')}] RPC Exception from {redact_url(url)}: {exc}", file=sys.stderr, flush=True)
             
             if attempt < UPSTREAM_RETRY_ATTEMPTS - 1:
-                if any(is_transient_upstream_error(error) for _, error in attempted_errors[-len(provider_urls):]):
+                retry_urls = [url for url in retry_urls if url not in plan_limited_urls] or retry_urls
+                if any(is_transient_upstream_error(error) for _, error in attempted_errors[-len(retry_urls):]):
                     time.sleep(retry_delay_seconds(attempt))
                 else:
                     time.sleep(min(2.0, retry_delay_seconds(attempt)))
@@ -1383,11 +1446,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(result).encode("utf-8"))
 
     def send_json(self, status, payload):
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        self.wfile.write(body)
 
     def require_admin_token(self):
         if not ADMIN_API_TOKEN:
@@ -1463,6 +1528,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             else:
                 if wants_compact_response(parsed):
                     simulation = compact_simulation_response(simulation)
+                else:
+                    simulation = dedupe_completed_simulation_response(simulation)
                 self.send_json(200, simulation)
             return
         if parsed.path == "/aero-price":

@@ -52,11 +52,11 @@ function progressEvent(startedAt, state, rawRows, newRawRows, reason = "heartbea
 }
 
 function isCompleted(state) {
-  return state.notice.includes("Симуляция дошла до конца") || state.notice.includes("Симуляция дошла до даты конца");
+  return state.notice.includes("Simulation reached the end") || state.notice.includes("Simulation reached the end date");
 }
 
 function isStopped(state) {
-  return state.notice.includes("Симуляция остановлена");
+  return state.notice.includes("Simulation stopped");
 }
 
 function isTransientRpcStop(state) {

@@ -1,11 +1,11 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=1200, initial-scale=1, user-scalable=yes" />
-    <title>WETH/USDC Aerodrome Симулятор прибыли</title>
+    <title>WETH/USDC Aerodrome Profit Simulator</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=table-layout-20260517" />
     <style>
       html, body {
         min-width: 1200px !important;
@@ -17,9 +17,9 @@
     <main class="shell">
       <header class="topbar">
         <div>
-          <h1>WETH/USDC 0.05% — Aerodrome — Симулятор прибыли</h1>
+          <h1>WETH/USDC 0.05% - Aerodrome - Profit Simulator</h1>
         </div>
-        <div class="status" id="status">Загрузка CSV...</div>
+        <div class="status" id="status">Loading CSV...</div>
       </header>
 
       <nav class="projectTabs" aria-label="Project tabs">
@@ -30,15 +30,15 @@
 
       <section class="panel chartPanel appView" id="chartView" data-view="new">
         <div class="panelHead">
-          <div class="filters" aria-label="Фильтр периода">
-            <button class="active" data-range="all">Все</button>
-            <button data-range="2026-02">Фев</button>
-            <button data-range="2026-03">Мар</button>
-            <button data-range="2026-04">Апр</button>
+          <div class="filters" aria-label="Period filter">
+            <button class="active" data-range="all">All</button>
+            <button data-range="2026-02">Feb</button>
+            <button data-range="2026-03">Mar</button>
+            <button data-range="2026-04">Apr</button>
           </div>
-          <div class="rangeNavigator" id="rangeNavigator" aria-label="Окно масштаба">
+          <div class="rangeNavigator" id="rangeNavigator" aria-label="Zoom window">
             <div class="rangeTrack" id="rangeTrack">
-              <div class="rangeWindow" id="rangeWindow" role="slider" aria-label="Текущий диапазон" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+              <div class="rangeWindow" id="rangeWindow" role="slider" aria-label="Current range" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
             </div>
           </div>
         </div>
@@ -59,10 +59,10 @@
         </div>
       </section>
 
-      <section class="panel simulatorPanel appView" id="newSimulationView" data-view="new" aria-label="Симулятор позиции">
+      <section class="panel simulatorPanel appView" id="newSimulationView" data-view="new" aria-label="Position simulator">
         <div class="simControls">
-          <div class="simButtons" aria-label="Управление симуляцией">
-            <button id="runSimulation" class="startButton" type="button" title="Старт симуляции">START</button>
+          <div class="simButtons" aria-label="Simulation controls">
+            <button id="runSimulation" class="startButton" type="button" title="Start simulation">START</button>
             <button id="resetSimulation" class="resetButton" type="button" title="Reset simulation">RESET</button>
           </div>
           <label class="field">
@@ -126,15 +126,15 @@
             </colgroup>
             <thead>
               <tr>
-                <th>Дата, время</th>
-                <th>Событие</th>
-                <th>Стоимость, $</th>
-                <th>Цена WETH</th>
+                <th>Date, time</th>
+                <th>Event</th>
+                <th>Value, $</th>
+                <th>WETH price</th>
                 <th>WETH</th>
                 <th>USDC</th>
                 <th id="aeroTh">AERO, $</th>
                 <th id="lpFeesTh">LP fees, $</th>
-                <th>Достоверность</th>
+                <th>Reliability</th>
               </tr>
             </thead>
             <tbody id="simTableBody"></tbody>
@@ -147,7 +147,7 @@
           <div class="serverJobsHead">
             <h2>Server jobs</h2>
             <div class="serverJobsTools">
-              <span class="refreshDoneCheck" id="refreshDoneCheck" aria-hidden="true">✓</span>
+              <span class="refreshDoneCheck" id="refreshDoneCheck" aria-hidden="true">OK</span>
               <button id="refreshServerJobs" type="button">Refresh</button>
             </div>
           </div>
@@ -155,51 +155,60 @@
         </div>
       </section>
 
-      <section class="panel simulationResultPanel appView" id="simulationResultView" hidden>
-        <div class="resultHeader">
-          <div>
-            <h2 id="resultTitle">Simulation result</h2>
-            <p id="resultSubtitle"></p>
+      <section class="simulationResultPanel appView" id="simulationResultView" hidden>
+        <section class="panel chartPanel resultChartPanel">
+          <div class="panelHead resultHeader">
+            <div>
+              <h2 id="resultTitle">Simulation result</h2>
+              <p id="resultSubtitle"></p>
+            </div>
           </div>
-        </div>
-        <div class="resultSummary" id="resultSummary"></div>
-        <div class="resultLastRow" id="resultLastRow"></div>
-        <div class="resultTableWrap" id="resultTableWrap" hidden>
-          <table class="simTable">
-            <colgroup>
-              <col class="timeCol" />
-              <col class="eventCol" />
-              <col class="valueCol" />
-              <col class="priceCol" />
-              <col class="tokenCol" />
-              <col class="tokenCol" />
-              <col class="aeroCol" />
-              <col class="haircutCol" />
-              <col class="reliabilityCol" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>Дата, время</th>
-                <th>Событие</th>
-                <th>Стоимость, $</th>
-                <th>Цена WETH</th>
-                <th>WETH</th>
-                <th>USDC</th>
-                <th>AERO, $</th>
-                <th>LP fees, $</th>
-                <th>Достоверность</th>
-              </tr>
-            </thead>
-            <tbody id="resultTableBody"></tbody>
-          </table>
-        </div>
-        <div class="resultEmpty" id="resultEmpty" hidden></div>
+          <div class="chartWrap resultChartWrap" id="resultChartWrap" hidden>
+            <canvas id="resultPriceChart" width="1400" height="560"></canvas>
+            <div class="tooltip resultTooltip" id="resultTooltip" hidden></div>
+          </div>
+        </section>
+
+        <section class="panel simulatorPanel resultDetailsPanel">
+          <div class="simControls resultSummary" id="resultSummary"></div>
+          <div class="simNotice resultLastRow" id="resultLastRow"></div>
+          <div class="simTableWrap resultTableWrap" id="resultTableWrap" hidden>
+            <table class="simTable">
+              <colgroup>
+                <col class="timeCol" />
+                <col class="eventCol" />
+                <col class="valueCol" />
+                <col class="priceCol" />
+                <col class="tokenCol" />
+                <col class="tokenCol" />
+                <col class="aeroCol" />
+                <col class="haircutCol" />
+                <col class="reliabilityCol" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Date, time</th>
+                  <th>Event</th>
+                  <th>Value, $</th>
+                  <th>WETH price</th>
+                  <th>WETH</th>
+                  <th>USDC</th>
+                  <th>AERO, $</th>
+                  <th>LP fees, $</th>
+                  <th>Reliability</th>
+                </tr>
+              </thead>
+              <tbody id="resultTableBody"></tbody>
+            </table>
+          </div>
+          <div class="resultEmpty" id="resultEmpty" hidden></div>
+        </section>
       </section>
     </main>
 
-    <script src="./simulation_core.js"></script>
+    <script src="./simulation_core.js?v=minute-axis-20260517"></script>
     <script src="./simulation_engine.js"></script>
-    <script src="./app.js"></script>
+    <script src="./app.js?v=history-fast-20260517"></script>
     <script>
       // Force desktop view - remove any mobile adaptations
       document.documentElement.style.minWidth = '1200px';

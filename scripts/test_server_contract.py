@@ -3,6 +3,7 @@ import gc
 import io
 import json
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -204,6 +205,41 @@ class ServerContractTests(unittest.TestCase):
       self.assertEqual(compact["progress"]["rawRowCount"], 2)
       self.assertEqual(compact["result"]["rawRowCount"], 2)
       self.assertEqual(compact["progress"]["newRawRows"], [{"index": 1}])
+
+    def test_full_simulation_response_dedupes_completed_progress_rows(self):
+      simulation = {
+          "id": "sim-full",
+          "progress": {
+              "rows": 2,
+              "rawRows": [{"index": 0}, {"index": 1}],
+              "latestRawRow": {"index": 1},
+          },
+          "result": {
+              "rawRows": [{"index": 0}, {"index": 1}],
+          },
+      }
+
+      full = self.server.dedupe_completed_simulation_response(simulation)
+
+      self.assertNotIn("rawRows", full["progress"])
+      self.assertEqual(full["progress"]["rawRowCount"], 2)
+      self.assertEqual(full["progress"]["latestRawRow"], {"index": 1})
+      self.assertEqual([row["index"] for row in full["result"]["rawRows"]], [0, 1])
+
+    def test_send_json_includes_content_length_for_download_progress(self):
+      handler = object.__new__(self.server.Handler)
+      headers = {}
+      body = bytearray()
+      handler.send_response = lambda status: headers.__setitem__("status", status)
+      handler.send_header = lambda key, value: headers.__setitem__(key, value)
+      handler.end_headers = lambda: None
+      handler.wfile = types.SimpleNamespace(write=lambda chunk: body.extend(chunk))
+
+      handler.send_json(200, {"ok": True})
+
+      self.assertEqual(headers["status"], 200)
+      self.assertEqual(headers["Content-Length"], str(len(body)))
+      self.assertGreater(len(body), 0)
 
     def test_merge_progress_deduplicates_rows(self):
       self.server.insert_simulation("sim-dedupe", {"start": "2026-02-01 00:00", "end": "2026-02-01 00:02"})

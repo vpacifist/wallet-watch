@@ -94,7 +94,7 @@ The simulator supports two economic models to reflect the difference between sta
 - Table shows AERO column, hides LP fees column.
 
 ### Unstaked LP (LP Trading Fees)
-- Includes direct LP trading fees from feeGrowthInside.
+- Includes the LP-claimable 90% share of trading fees from feeGrowthInside; the remaining 10% is treated as routed to voters.
 - Excludes AERO rewards, as unstaked positions do not receive gauge emissions.
 - Total return = position value + LP fees - rebalance costs.
 - UI shows Position value, LP fees earned, Total.

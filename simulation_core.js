@@ -197,6 +197,11 @@
       return `${String(date.getUTCHours()).padStart(2, "0")}:00`;
     }
 
+    function fmtAxisMinute(value) {
+      const date = new Date(value);
+      return `${String(date.getUTCHours()).padStart(2, "0")}:${String(date.getUTCMinutes()).padStart(2, "0")}`;
+    }
+
     function startOfUtcDay(date) {
       return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
     }
@@ -581,6 +586,7 @@
       parseInputTime,
       fmtAxisTime,
       fmtAxisHour,
+      fmtAxisMinute,
       startOfUtcDay,
       addUtcDays,
       addUtcHours,
