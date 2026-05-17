@@ -393,10 +393,19 @@ async function runSimulation(config, emit = () => { }) {
   vm.runInContext(appSource, sandbox, { filename: "app.js" });
 
   const deadline = Date.now() + 60000;
-  while (Date.now() < deadline && !document.getElementById("status").textContent.startsWith("CSV loaded")) {
+  while (
+    Date.now() < deadline
+    && !(
+      document.getElementById("status").textContent.startsWith("CSV loaded")
+      && sandbox.walletWatchCsvReady === true
+    )
+  ) {
     await sleep(50);
   }
-  if (!document.getElementById("status").textContent.startsWith("CSV loaded")) {
+  if (
+    !document.getElementById("status").textContent.startsWith("CSV loaded")
+    || sandbox.walletWatchCsvReady !== true
+  ) {
     throw new Error("CSV did not load before timeout");
   }
 

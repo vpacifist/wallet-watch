@@ -157,6 +157,7 @@ const MIN_CHART_ZOOM_ROWS = 30;
 const CSV_PROCESSING_GRACE_MS = 2500;
 const MINUTE_AXIS_MAX_MINUTES = 180;
 const RUNTIME_CONFIG = globalThis.SERVER_SIM_CONFIG_CLIENT || {};
+globalThis.walletWatchCsvReady = false;
 const LP_FEE_RATE = Number(RUNTIME_CONFIG.lpFeeRate ?? 0.0005);
 const REBALANCE_MANUAL_FEE_BPS = Number(RUNTIME_CONFIG.rebalanceManualFeeBps ?? 1);
 const REBALANCE_GAS_UNITS = BigInt(RUNTIME_CONFIG.rebalanceGasUnits ?? 1450000);
@@ -4782,6 +4783,7 @@ loadCsvWithProgress(CSV_FILE)
     resetSimulationRows();
     setActiveTimeInput("start");
     updateRange("all");
+    globalThis.walletWatchCsvReady = true;
     loadInitialServerSimulations();
   })
   .catch((error) => {
@@ -4797,4 +4799,5 @@ globalThis.getSimulationDisplayRows = getSimulationDisplayRows;
 globalThis.getSimulationDisplayState = getSimulationDisplayState;
 globalThis.getSimulationDataQuality = getSimulationDataQuality;
 globalThis.getSimulationTiming = getSimulationTiming;
+globalThis.getSimulationStartupState = getSimulationStartupState;
 globalThis.buildCompleteMinuteRows = buildCompleteMinuteRows;
