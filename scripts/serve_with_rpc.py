@@ -280,7 +280,28 @@ def dedupe_completed_simulation_response(simulation):
     return deduped
 
 
-def simulation_row_to_dict(row, compact=False):
+def parse_compact_simulation_json_prefix(text):
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    bulky_keys = ('"latestRawRow"', '"newRawRows"', '"rawRows"', '"tableRows"', '"dataQuality"', '"timing"')
+    positions = [pos for key in bulky_keys if (pos := text.find(key)) >= 0]
+    if not positions:
+        return None
+    prefix = text[:min(positions)].rstrip()
+    if prefix.endswith(","):
+        prefix = prefix[:-1].rstrip()
+    try:
+        return json.loads(f"{prefix}}}")
+    except json.JSONDecodeError:
+        return None
+
+
+def simulation_row_to_dict(row, compact=False, compact_prefix=False):
     if not row:
         return None
     columns = [
@@ -297,7 +318,10 @@ def simulation_row_to_dict(row, compact=False):
     ]
     item = dict(zip(columns, row))
     for key in ("params_json", "progress_json", "result_json"):
-        payload = json.loads(item[key]) if item.get(key) else None
+        if compact_prefix and key in {"progress_json", "result_json"}:
+            payload = parse_compact_simulation_json_prefix(item.get(key))
+        else:
+            payload = json.loads(item[key]) if item.get(key) else None
         if compact and key in {"progress_json", "result_json"}:
             payload = compact_simulation_payload(payload)
         item[key.replace("_json", "")] = payload
@@ -343,7 +367,10 @@ def list_simulations(limit=20):
     with SIM_LOCK, sqlite_connection(SIM_DATA_PATH) as db:
         rows = db.execute(
             """
-            SELECT id, status, params_json, progress_json, result_json, error, pid,
+            SELECT id, status, params_json,
+                   substr(progress_json, 1, 2048) AS progress_json,
+                   substr(result_json, 1, 2048) AS result_json,
+                   error, pid,
                    created_at, updated_at, finished_at
             FROM simulations
             ORDER BY created_at DESC
@@ -351,7 +378,7 @@ def list_simulations(limit=20):
             """,
             (limit,),
         ).fetchall()
-    return [simulation_row_to_dict(row, compact=True) for row in rows]
+    return [simulation_row_to_dict(row, compact=True, compact_prefix=True) for row in rows]
 
 
 def update_simulation(simulation_id, **fields):

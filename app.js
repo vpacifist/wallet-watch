@@ -154,6 +154,7 @@ const PRICE_DECIMAL_FACTOR = 1e12;
 const POINTS_PER_PIXEL = 0.55;
 const DEFAULT_SIM_RANGE_WIDTH = 0.01;
 const MIN_CHART_ZOOM_ROWS = 30;
+const CSV_PROCESSING_GRACE_MS = 2500;
 const MINUTE_AXIS_MAX_MINUTES = 180;
 const RUNTIME_CONFIG = globalThis.SERVER_SIM_CONFIG_CLIENT || {};
 const LP_FEE_RATE = Number(RUNTIME_CONFIG.lpFeeRate ?? 0.0005);
@@ -217,6 +218,9 @@ const serverSimulation = {
   liveViewOpen: true,
   finalResultFetched: false,
   jobsLoadRequestId: 0,
+  jobsLoadPromise: null,
+  jobsLoadedAtMs: 0,
+  jobsLoaded: false,
 };
 const appTabs = {
   active: "new",
@@ -3661,6 +3665,11 @@ async function loadServerJobs(options = {}) {
   if (!SERVER_SIMULATION_MODE || !serverJobsList) return;
   const showFeedback = Boolean(options.feedback);
   const showPlaceholder = appTabs.active === "history" || showFeedback;
+  const hasCachedJobs = serverSimulation.jobsLoaded || serverSimulation.jobs.length > 0;
+  if (showPlaceholder && hasCachedJobs && !showFeedback) {
+    renderServerJobsList(serverSimulation.jobs);
+    if (performance.now() - serverSimulation.jobsLoadedAtMs < 15000) return;
+  }
   const requestId = ++serverSimulation.jobsLoadRequestId;
   const feedbackStartedAt = showFeedback ? performance.now() : 0;
   const loadingStartedAt = performance.now();
@@ -3674,20 +3683,25 @@ async function loadServerJobs(options = {}) {
     }, 120);
   }
   try {
-    const payload = await fetchJsonWithProgress(
-      "/api/simulations?limit=1000",
-      {
-        progressStage: "Requesting past simulations...",
-        downloadStage: "Downloading past simulations...",
-        parseStage: "Parsing past simulations...",
-      },
-      (progress) => {
-        if (requestId !== serverSimulation.jobsLoadRequestId || !showPlaceholder) return;
-        if (progress.loaded || progress.total || String(progress.stage || "").toLowerCase().includes("parsing")) {
-          renderServerJobsLoading(progress);
-        }
-      },
-    );
+    if (!serverSimulation.jobsLoadPromise) {
+      serverSimulation.jobsLoadPromise = fetchJsonWithProgress(
+        "/api/simulations?limit=1000",
+        {
+          progressStage: "Requesting past simulations...",
+          downloadStage: "Downloading past simulations...",
+          parseStage: "Parsing past simulations...",
+        },
+        (progress) => {
+          if (requestId !== serverSimulation.jobsLoadRequestId || !showPlaceholder) return;
+          if (progress.loaded || progress.total || String(progress.stage || "").toLowerCase().includes("parsing")) {
+            renderServerJobsLoading(progress);
+          }
+        },
+      ).finally(() => {
+        serverSimulation.jobsLoadPromise = null;
+      });
+    }
+    const payload = await serverSimulation.jobsLoadPromise;
     if (requestId !== serverSimulation.jobsLoadRequestId) return;
     if (progressTimer) {
       clearInterval(progressTimer);
@@ -3695,6 +3709,8 @@ async function loadServerJobs(options = {}) {
     }
     if (showPlaceholder) renderServerJobsLoading({ stage: "Rendering job list...", percent: 96 });
     serverSimulation.jobs = payload.items || [];
+    serverSimulation.jobsLoaded = true;
+    serverSimulation.jobsLoadedAtMs = performance.now();
     renderServerJobsList(serverSimulation.jobs);
     loaded = true;
   } catch (_) {
@@ -4688,6 +4704,28 @@ function formatCsvBytes(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function nextFrame() {
+  if (typeof requestAnimationFrame === "function") {
+    return new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+  return delay(0);
+}
+
+async function waitForCsvProcessingSlot(stage) {
+  statusEl.textContent = stage;
+  await nextFrame();
+  while (appTabs.active === "history") {
+    statusEl.textContent = `${stage} (paused while viewing past simulations)`;
+    await delay(250);
+  }
+  statusEl.textContent = stage;
+  await nextFrame();
+}
+
 async function loadCsvWithProgress(url) {
   statusEl.textContent = "Loading CSV... 0%";
   const response = await fetch(url);
@@ -4722,17 +4760,23 @@ async function loadCsvWithProgress(url) {
   return new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
 }
 
+loadServerJobs();
+
 loadCsvWithProgress(CSV_FILE)
-  .then((text) => {
-    statusEl.textContent = "CSV downloaded, parsing...";
+  .then(async (text) => {
+    await loadServerJobs();
+    await delay(CSV_PROCESSING_GRACE_MS);
+    await waitForCsvProcessingSlot("CSV downloaded, parsing...");
     const csvRows = parseCsv(text);
-    statusEl.textContent = "CSV parsed, building minute grid...";
+    await waitForCsvProcessingSlot("CSV parsed, checking data quality...");
     state.dataQuality = analyzeDataQuality(csvRows);
     state.dataQuality.source = CSV_FILE;
+    await waitForCsvProcessingSlot("CSV parsed, building minute grid...");
     state.rows = buildCompleteMinuteRows(csvRows);
     state.dataQuality.minuteRowCount = state.rows.length;
     statusEl.textContent = dataQualityStatus(state.dataQuality);
     statusEl.title = dataQualityTitle(state.dataQuality);
+    await waitForCsvProcessingSlot(statusEl.textContent);
     setSimulationStart(0);
     setSimulationEnd(state.rows.length - 1);
     resetSimulationRows();
