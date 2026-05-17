@@ -167,6 +167,7 @@ const MINUTE_AXIS_MAX_MINUTES = 180;
 const RUNTIME_CONFIG = globalThis.SERVER_SIM_CONFIG_CLIENT || {};
 globalThis.walletWatchCsvReady = false;
 const LP_FEE_RATE = Number(RUNTIME_CONFIG.lpFeeRate ?? 0.0005);
+const UNSTAKED_LP_FEE_SHARE = Number(RUNTIME_CONFIG.unstakedLpFeeShare ?? 0.9);
 const REBALANCE_MANUAL_FEE_BPS = Number(RUNTIME_CONFIG.rebalanceManualFeeBps ?? 1);
 const REBALANCE_GAS_UNITS = BigInt(RUNTIME_CONFIG.rebalanceGasUnits ?? 1450000);
 const REBALANCE_L1_DATA_FEE_ETH = Number(RUNTIME_CONFIG.rebalanceL1DataFeeEth ?? 0.000012);
@@ -1056,16 +1057,19 @@ async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
     state.sim.feeGrowthInside0Last = rewardState.feeGrowthInside0X128;
     state.sim.feeGrowthInside1Last = rewardState.feeGrowthInside1X128;
     state.sim.feeDilutionLiquidityLast = activeNow;
+    const claimableWeth = rawToWeth(fee0.raw) * UNSTAKED_LP_FEE_SHARE;
+    const claimableUsdc = rawToUsdc(fee1.raw) * UNSTAKED_LP_FEE_SHARE;
     return {
-      weth: rawToWeth(fee0.raw),
-      usdc: rawToUsdc(fee1.raw),
-      usdcValue: rawToWeth(fee0.raw) * price + rawToUsdc(fee1.raw),
+      weth: claimableWeth,
+      usdc: claimableUsdc,
+      usdcValue: claimableWeth * price + claimableUsdc,
       source: crossedRange ? "feeGrowthInside-subinterval-diluted" : "feeGrowthInside-diluted",
       sourceLabel: "counterfactual-adjusted",
       reliability: baseLiquidity > 0n ? (crossedRange ? 94 : 92) : 76,
       swapCount: logs.length,
       rangeCrossed: crossedRange,
       dilutionShare: Math.max(fee0.dilutionShare, fee1.dilutionShare),
+      claimableShare: UNSTAKED_LP_FEE_SHARE,
     };
   }
   const logs = await getSwapLogs(fromBlock, toBlock);
@@ -1079,8 +1083,8 @@ async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
     const totalLiquidity = activeLiquidity + state.sim.liquidityRaw;
     if (totalLiquidity <= 0n) continue;
     const share = Number(state.sim.liquidityRaw * 1000000n / totalLiquidity) / 1000000;
-    if (swap.amount0 > 0n) weth += rawToWeth(swap.amount0) * LP_FEE_RATE * share;
-    if (swap.amount1 > 0n) usdc += rawToUsdc(swap.amount1) * LP_FEE_RATE * share;
+    if (swap.amount0 > 0n) weth += rawToWeth(swap.amount0) * LP_FEE_RATE * share * UNSTAKED_LP_FEE_SHARE;
+    if (swap.amount1 > 0n) usdc += rawToUsdc(swap.amount1) * LP_FEE_RATE * share * UNSTAKED_LP_FEE_SHARE;
     swapCount += 1;
   }
   return {
@@ -1091,6 +1095,7 @@ async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
     sourceLabel: "estimated",
     reliability: swapCount ? 68 : 92,
     swapCount,
+    claimableShare: UNSTAKED_LP_FEE_SHARE,
   };
   } finally {
     recordSimulationTiming("estimateLpFees", startedAt);
@@ -2478,6 +2483,7 @@ function simulationRowToRaw(row) {
     lpFeesReliability: compactNumber(row.lpFeesReliability, 4),
     lpFeesSwapCount: row.lpFeesSwapCount || 0,
     lpFeesRangeCrossed: Boolean(row.lpFeesRangeCrossed),
+    lpFeesClaimableShare: compactNumber(row.lpFeesClaimableShare ?? UNSTAKED_LP_FEE_SHARE, 4),
     aeroUsdc: compactNumber(row.aeroUsdc, 6),
     aeroTotalUsdc: compactNumber(row.aeroTotalUsdc, 6),
     aeroBaseUsdc: compactNumber(row.aeroBaseUsdc, 6),

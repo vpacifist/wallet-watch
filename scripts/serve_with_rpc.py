@@ -463,6 +463,7 @@ def normalize_simulation_params(payload):
         "aeroImpactHaircutMax": float(payload.get("aeroImpactHaircutMax", os.environ.get("AERO_IMPACT_HAIRCUT_MAX", "0.5"))),
         "serverSimulationPollMs": int(payload.get("serverSimulationPollMs", os.environ.get("SERVER_SIMULATION_POLL_MS", "2500"))),
         "lpFeeRate": float(payload.get("lpFeeRate", os.environ.get("LP_FEE_RATE", "0.0005"))),
+        "unstakedLpFeeShare": float(payload.get("unstakedLpFeeShare", os.environ.get("UNSTAKED_LP_FEE_SHARE", "0.9"))),
         "simPrefetchRows": int(payload.get("simPrefetchRows", os.environ.get("SIM_PREFETCH_ROWS", "45"))),
         "simPrefetchConcurrency": int(payload.get("simPrefetchConcurrency", os.environ.get("SIM_PREFETCH_CONCURRENCY", "1"))),
         "simPrefetchExactCalls": str(payload.get("simPrefetchExactCalls", os.environ.get("SIM_PREFETCH_EXACT_CALLS", ""))).lower() in {"1", "true", "yes", "on"},
