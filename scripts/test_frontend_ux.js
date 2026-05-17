@@ -5,6 +5,7 @@ const path = require("path");
 const ROOT = path.resolve(__dirname, "..");
 const app = fs.readFileSync(path.join(ROOT, "app.js"), "utf8");
 const html = fs.readFileSync(path.join(ROOT, "index.html"), "utf8");
+const core = fs.readFileSync(path.join(ROOT, "simulation_core.js"), "utf8");
 const engine = fs.readFileSync(path.join(ROOT, "simulation_engine.js"), "utf8");
 const runtime = fs.readFileSync(path.join(ROOT, "scripts", "simulation_runtime.js"), "utf8");
 const styles = fs.readFileSync(path.join(ROOT, "styles.css"), "utf8");
@@ -85,6 +86,18 @@ function testSimulationTimingInstrumentation() {
   assert.match(runtime, /getSimulationDisplayState/);
 }
 
+function testSubhourTimeAxisLabels() {
+  assert.match(app, /fmtAxisMinute/);
+  assert.match(app, /const MIN_CHART_ZOOM_ROWS = 30/);
+  assert.match(app, /const MINUTE_AXIS_MAX_MINUTES = 180/);
+  assert.match(app, /function minuteTickStep\(visibleMinutes, plotWidth\)/);
+  assert.match(app, /const showMinuteScale = visibleMinutes > 0 && visibleMinutes <= MINUTE_AXIS_MAX_MINUTES/);
+  assert.match(app, /ticks\.minuteTicks\.forEach/);
+  assert.match(app, /MIN_CHART_ZOOM_ROWS \/ rows\.length/);
+  assert.match(app, /MIN_CHART_ZOOM_ROWS \/ rowCount/);
+  assert.match(core, /function fmtAxisMinute\(value\)/);
+}
+
 
 function testSimulationModes() {
   // UI mode controls in app.js
@@ -152,5 +165,6 @@ testEarlyRangeRendering();
 testSseDelayedStartHandling();
 testBlockByNumberCacheLifecycle();
 testSimulationTimingInstrumentation();
+testSubhourTimeAxisLabels();
 testSimulationModes();
 testServerObservationModes();

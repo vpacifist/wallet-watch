@@ -153,6 +153,8 @@ const AERODROME_TICK_SPACING = 100;
 const PRICE_DECIMAL_FACTOR = 1e12;
 const POINTS_PER_PIXEL = 0.55;
 const DEFAULT_SIM_RANGE_WIDTH = 0.01;
+const MIN_CHART_ZOOM_ROWS = 30;
+const MINUTE_AXIS_MAX_MINUTES = 180;
 const RUNTIME_CONFIG = globalThis.SERVER_SIM_CONFIG_CLIENT || {};
 const LP_FEE_RATE = Number(RUNTIME_CONFIG.lpFeeRate ?? 0.0005);
 const REBALANCE_MANUAL_FEE_BPS = Number(RUNTIME_CONFIG.rebalanceManualFeeBps ?? 1);
@@ -239,6 +241,7 @@ const {
   encodeInt24,
   encodeUint256,
   fmtAxisHour,
+  fmtAxisMinute,
   fmtAxisTime,
   fmtDeposit,
   fmtInputTime,
@@ -1137,7 +1140,7 @@ function zoomAt(ratio, direction) {
   const currentEnd = state.zoomEnd;
   const currentSize = currentEnd - currentStart;
   const factor = direction < 0 ? 0.75 : 1.35;
-  const minSize = Math.min(1, 120 / rows.length);
+  const minSize = Math.min(1, MIN_CHART_ZOOM_ROWS / rows.length);
   const nextSize = Math.min(1, Math.max(minSize, currentSize * factor));
   const anchor = currentStart + ratio * currentSize;
   let nextStart = anchor - ratio * nextSize;
@@ -1350,19 +1353,49 @@ function drawResultRangeSegments(ctx, { segments, min, max, xForTime, yFor, pad,
   ctx.restore();
 }
 
+function minuteTickStep(visibleMinutes, plotWidth) {
+  const maxLabels = Math.max(2, Math.floor(plotWidth / 72));
+  const targetMinutes = visibleMinutes / maxLabels;
+  return [1, 2, 5, 10, 15, 30].find((step) => step >= targetMinutes) || 30;
+}
+
+function startOfUtcMinuteStep(timestamp, stepMinutes) {
+  const stepMs = stepMinutes * 60 * 1000;
+  return Math.ceil(timestamp / stepMs) * stepMs;
+}
+
 function drawChartTimeGrid(ctx, { firstTime, lastTime, visibleDays, xForTime, pad, width, height }) {
+  const plotWidth = width - pad.left - pad.right;
+  const visibleMinutes = (lastTime - firstTime) / (60 * 1000);
+  const showMinuteScale = visibleMinutes > 0 && visibleMinutes <= MINUTE_AXIS_MAX_MINUTES;
   const ticks = {
     dayTicks: [],
     weekTicks: [],
     middayTicks: [],
     labeledHourTicks: [],
     allHourTicks: [],
+    minuteTicks: [],
   };
 
   ctx.save();
   ctx.beginPath();
   ctx.rect(pad.left, pad.top, width - pad.left - pad.right, height - pad.top - pad.bottom);
   ctx.clip();
+
+  if (showMinuteScale) {
+    const minuteStep = minuteTickStep(visibleMinutes, plotWidth);
+    for (let timestamp = startOfUtcMinuteStep(firstTime, minuteStep); timestamp <= lastTime; timestamp += minuteStep * 60 * 1000) {
+      ticks.minuteTicks.push(timestamp);
+      const minutes = new Date(timestamp).getUTCMinutes();
+      const x = xForTime(timestamp);
+      ctx.strokeStyle = minutes === 0 ? "rgba(23, 32, 51, 0.2)" : minutes % 15 === 0 ? "rgba(242, 95, 92, 0.14)" : "rgba(23, 32, 51, 0.07)";
+      ctx.lineWidth = minutes === 0 ? 1.1 : minutes % 15 === 0 ? 0.9 : 0.7;
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, height - pad.bottom);
+      ctx.stroke();
+    }
+  }
 
   const firstDay = startOfUtcDay(new Date(firstTime));
   for (let timestamp = firstDay; timestamp <= lastTime; timestamp = addUtcDays(timestamp, 1)) {
@@ -1381,7 +1414,7 @@ function drawChartTimeGrid(ctx, { firstTime, lastTime, visibleDays, xForTime, pa
       ctx.stroke();
     }
 
-    if (visibleDays < 1 && timestamp >= firstTime && timestamp <= lastTime) {
+    if (!showMinuteScale && visibleDays < 1 && timestamp >= firstTime && timestamp <= lastTime) {
       ticks.allHourTicks.push(timestamp);
     }
 
@@ -1399,8 +1432,8 @@ function drawChartTimeGrid(ctx, { firstTime, lastTime, visibleDays, xForTime, pa
 
     for (let hour = 1; hour < 24; hour += 1) {
       const hourTick = addUtcHours(timestamp, hour);
-      if (visibleDays < 3 && hourTick >= firstTime && hourTick <= lastTime) {
-        if (visibleDays < 1) ticks.allHourTicks.push(hourTick);
+      if (!showMinuteScale && visibleDays < 3 && hourTick >= firstTime && hourTick <= lastTime) {
+        if (!showMinuteScale && visibleDays < 1) ticks.allHourTicks.push(hourTick);
         if (hour === 6 || hour === 12 || hour === 18) ticks.labeledHourTicks.push(hourTick);
         const x = xForTime(hourTick);
         ctx.strokeStyle = hour === 6 || hour === 12 || hour === 18 ? "rgba(242, 95, 92, 0.14)" : "rgba(23, 32, 51, 0.07)";
@@ -1430,7 +1463,13 @@ function drawChartTimeAxisLabels(ctx, { ticks, visibleDays, xForTime, height }) 
       ctx.fillText(fmtAxisHour(timestamp), xForTime(timestamp), height - 14);
     });
   }
-  if (visibleDays < 1) {
+  if (visibleDays <= MINUTE_AXIS_MAX_MINUTES / (24 * 60)) {
+    ticks.minuteTicks.forEach((timestamp) => {
+      const minutes = new Date(timestamp).getUTCMinutes();
+      ctx.font = minutes === 0 || minutes === 30 ? "600 12px Inter, system-ui, sans-serif" : "12px Inter, system-ui, sans-serif";
+      ctx.fillText(fmtAxisMinute(timestamp), xForTime(timestamp), height - 14);
+    });
+  } else if (visibleDays < 1) {
     ticks.allHourTicks.forEach((timestamp) => {
       const hour = new Date(timestamp).getUTCHours();
       ctx.font = hour === 6 || hour === 12 || hour === 18 ? "600 12px Inter, system-ui, sans-serif" : "12px Inter, system-ui, sans-serif";
@@ -3080,7 +3119,7 @@ function resultZoomAt(ratio, direction, rowCount) {
   const currentEnd = state.resultChart.zoomEnd;
   const currentSize = currentEnd - currentStart;
   const factor = direction < 0 ? 0.75 : 1.35;
-  const minSize = Math.min(1, 120 / rowCount);
+  const minSize = Math.min(1, MIN_CHART_ZOOM_ROWS / rowCount);
   const nextSize = Math.min(1, Math.max(minSize, currentSize * factor));
   const anchor = currentStart + ratio * currentSize;
   let nextStart = anchor - ratio * nextSize;
