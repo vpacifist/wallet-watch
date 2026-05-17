@@ -70,6 +70,7 @@ SSE_MAX_CONNECTIONS_PER_IP = int(os.environ.get("SSE_MAX_CONNECTIONS_PER_IP", "6
 UPSTREAM_RETRY_ATTEMPTS = int(os.environ.get("UPSTREAM_RETRY_ATTEMPTS", "8"))
 UPSTREAM_RETRY_BASE_SECONDS = float(os.environ.get("UPSTREAM_RETRY_BASE_SECONDS", "2"))
 UPSTREAM_RETRY_MAX_SECONDS = float(os.environ.get("UPSTREAM_RETRY_MAX_SECONDS", "20"))
+SIM_PROGRESS_MAX_RAW_ROWS = int(os.environ.get("SIM_PROGRESS_MAX_RAW_ROWS", "500"))
 
 AERO_USDC_POOL = "0xbe00ff35af70e8415d0eb605a286d8a45466a4c1"
 AERO_PRICE_CACHE = {}
@@ -451,7 +452,8 @@ def normalize_simulation_params(payload):
         "rangePct": range_pct,
         "lpMode": lp_mode,
         "timeoutSeconds": timeout_seconds,
-        "progressEverySeconds": int(payload.get("progressEverySeconds", 2)),
+        "progressEverySeconds": int(payload.get("progressEverySeconds", os.environ.get("SIM_PROGRESS_EVERY_SECONDS", "10"))),
+        "progressRowBatchSize": int(payload.get("progressRowBatchSize", os.environ.get("SIM_PROGRESS_ROW_BATCH_SIZE", "250"))),
         "rebalanceManualFeeBps": float(payload.get("rebalanceManualFeeBps", os.environ.get("REBALANCE_MANUAL_FEE_BPS", "1"))),
         "rebalanceGasUnits": int(payload.get("rebalanceGasUnits", os.environ.get("REBALANCE_GAS_UNITS", "1450000"))),
         "rebalanceL1DataFeeEth": float(payload.get("rebalanceL1DataFeeEth", os.environ.get("REBALANCE_L1_DATA_FEE_ETH", "0.000012"))),
@@ -473,11 +475,12 @@ def progress_row_key(row):
     return ":".join(str(row.get(key, "")) for key in ("index", "blockNumber", "event"))
 
 
-def merge_simulation_progress(simulation_id, event):
+def merge_simulation_progress(simulation_id, event, persist_all_rows=False):
     current = get_simulation(simulation_id) or {}
     previous = current.get("progress") if isinstance(current.get("progress"), dict) else {}
     merged = dict(event)
     existing_rows = previous.get("rawRows") if isinstance(previous, dict) else []
+    previous_count = int(previous.get("rawRowCount") or previous.get("rows") or 0) if isinstance(previous, dict) else 0
     rows_by_key = {}
     if isinstance(existing_rows, list):
         for row in existing_rows:
@@ -492,10 +495,18 @@ def merge_simulation_progress(simulation_id, event):
         key=lambda row: row.get("index", 0) if isinstance(row, dict) else 0,
     )
     if raw_rows:
-        merged["rawRows"] = raw_rows
-        merged["rawRowCount"] = len(raw_rows)
+        if persist_all_rows:
+            persisted_rows = raw_rows
+        else:
+            max_rows = max(0, SIM_PROGRESS_MAX_RAW_ROWS)
+            persisted_rows = raw_rows[-max_rows:] if max_rows else []
+        if persisted_rows:
+            merged["rawRows"] = persisted_rows
+        else:
+            merged.pop("rawRows", None)
+        merged["rawRowCount"] = len(persisted_rows)
         merged["latestRawRow"] = event.get("latestRawRow") or raw_rows[-1]
-        merged["rows"] = max(int(event.get("rows") or 0), len(raw_rows))
+        merged["rows"] = max(int(event.get("rows") or 0), previous_count, len(raw_rows))
         if not merged.get("currentTotalReturn"):
             total_return = merged["latestRawRow"].get("totalReturnUsdc") if isinstance(merged["latestRawRow"], dict) else None
             if isinstance(total_return, (int, float)):
@@ -506,7 +517,7 @@ def merge_simulation_progress(simulation_id, event):
 def finalize_simulation_result(simulation_id, event):
     current = get_simulation(simulation_id) or {}
     previous = current.get("progress") if isinstance(current.get("progress"), dict) else {}
-    result = merge_simulation_progress(simulation_id, event)
+    result = merge_simulation_progress(simulation_id, event, persist_all_rows=True)
     if not result.get("currentTotalReturn") and isinstance(previous, dict):
         result["currentTotalReturn"] = previous.get("currentTotalReturn") or ""
     return result
@@ -1045,6 +1056,7 @@ def upstream_post(payload, urls=None, label="RPC"):
         summary += f", ... +{len(payloads) - 8}"
     
     attempted_errors = []
+    plan_limited_urls = set()
     # Try providers one by one first to save limits
     for url in provider_urls:
         success, result = try_one_provider(url, body, summary)
@@ -1053,13 +1065,16 @@ def upstream_post(payload, urls=None, label="RPC"):
             return result
         last_error = result
         attempted_errors.append((url, last_error))
+        if is_plan_limit_error(last_error):
+            plan_limited_urls.add(url)
 
     # If all failed once, use parallelism for retries to find a working one fast.
     # TLS alerts and connection resets from RPC providers are common transient
     # failures during long simulations, so do not let one short outage kill the job.
-    with ThreadPoolExecutor(max_workers=min(len(provider_urls), 8)) as executor:
+    retry_urls = [url for url in provider_urls if url not in plan_limited_urls] or provider_urls
+    with ThreadPoolExecutor(max_workers=min(len(retry_urls), 8)) as executor:
         for attempt in range(max(0, UPSTREAM_RETRY_ATTEMPTS)):
-            futures = {executor.submit(try_one_provider, url, body, summary): url for url in provider_urls}
+            futures = {executor.submit(try_one_provider, url, body, summary): url for url in retry_urls}
             for future in as_completed(futures):
                 url = futures[future]
                 try:
@@ -1074,6 +1089,7 @@ def upstream_post(payload, urls=None, label="RPC"):
                     # Detailed logging for specific error types
                     err_msg = upstream_error_message(last_error)
                     if is_plan_limit_error(last_error):
+                        plan_limited_urls.add(url)
                         print(f"\n!!! PLAN LIMIT DETECTED !!!", file=sys.stderr, flush=True)
                         print(f"Provider: {redact_url(url)}", file=sys.stderr, flush=True)
                         print(f"Methods: [{summary}]", file=sys.stderr, flush=True)
@@ -1087,7 +1103,8 @@ def upstream_post(payload, urls=None, label="RPC"):
                     print(f"[{time.strftime('%H:%M:%S')}] RPC Exception from {redact_url(url)}: {exc}", file=sys.stderr, flush=True)
             
             if attempt < UPSTREAM_RETRY_ATTEMPTS - 1:
-                if any(is_transient_upstream_error(error) for _, error in attempted_errors[-len(provider_urls):]):
+                retry_urls = [url for url in retry_urls if url not in plan_limited_urls] or retry_urls
+                if any(is_transient_upstream_error(error) for _, error in attempted_errors[-len(retry_urls):]):
                     time.sleep(retry_delay_seconds(attempt))
                 else:
                     time.sleep(min(2.0, retry_delay_seconds(attempt)))
