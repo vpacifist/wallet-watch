@@ -138,6 +138,20 @@ async function runCase(testCase) {
   assert.equal(typeof lastRaw.aeroImpactHaircut, "number", `${testCase.name} should expose AERO impact haircut`);
   assert.equal(lastRaw.aeroImpactModel, "counterfactual-conservative-haircut", `${testCase.name} should expose AERO impact model`);
   assert.equal(typeof lastRaw.aeroReliability, "number", `${testCase.name} should expose AERO reliability`);
+  assert.equal(lastRaw.aeroDilutionSource, "gauge-stakedLiquidity", `${testCase.name} should expose AERO dilution source`);
+  assert.equal(lastRaw.aeroDilutionSourceLabel, "counterfactual-adjusted", `${testCase.name} should expose AERO dilution source label`);
+  assert.equal(typeof lastRaw.aeroDilutionReliability, "number", `${testCase.name} should expose AERO dilution reliability`);
+  assert.equal(lastRaw.simulationMode, testCase.lpMode ?? "staked", `${testCase.name} should expose simulation mode`);
+  assert.ok(Array.isArray(lastRaw.includedRewardStreams), `${testCase.name} should expose included reward streams`);
+  assert.ok(Array.isArray(lastRaw.excludedRewardStreams), `${testCase.name} should expose excluded reward streams`);
+  assert.equal(typeof lastRaw.lpFeesClaimable, "boolean", `${testCase.name} should expose LP fee claimability`);
+  assert.equal(typeof lastRaw.aeroClaimable, "boolean", `${testCase.name} should expose AERO claimability`);
+  assert.equal(typeof lastRaw.claimableRewardUsdc, "number", `${testCase.name} should expose mode-specific claimable reward`);
+  assert.equal(typeof lastRaw.excludedRewardUsdc, "number", `${testCase.name} should expose mode-excluded reward stream`);
+  assert.ok(lastRaw.rewardStreams && typeof lastRaw.rewardStreams === "object", `${testCase.name} should expose reward stream metadata`);
+  assert.equal(lastRaw.rewardStreams.aero.claimable, testCase.lpMode !== "unstaked", `${testCase.name} should mark AERO claimability by mode`);
+  assert.equal(lastRaw.rewardStreams.lpFees.claimable, testCase.lpMode === "unstaked", `${testCase.name} should mark LP fee claimability by mode`);
+  assert.equal(typeof lastRaw.rangeCrossedLogsUnavailable, "boolean", `${testCase.name} should expose range-crossing log fallback state`);
   assert.ok(Array.isArray(lastRaw.sourceLabels), `${testCase.name} should expose source labels`);
   assert.ok(lastRaw.sourceLabels.includes("exact-onchain"), `${testCase.name} should include exact source label`);
   assert.equal(typeof lastRaw.csvOnchainDivergenceBps, "number", `${testCase.name} should expose CSV/on-chain divergence`);
@@ -172,7 +186,7 @@ async function main() {
       end: "2026-02-01 00:02",
       rows: 3,
       currentValue: "$9,982.91",
-      currentReward: "$0.78",
+      currentReward: "$0.76",
       lastRow: "2026-02-01 00:02\tprice change\t$9,982.91\t$2,445.43\t4.08227923\t0.00\t$0.04\t$0.07\t96.00%",
       lastEvent: "price change",
       hasRebalance: false,

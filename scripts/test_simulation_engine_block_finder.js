@@ -218,7 +218,7 @@ function makeStepEngine(state, findSwapExitCalls, options = {}) {
       value: capital,
     }),
     tickRangeAroundTick: (tick) => ({ tickLower: tick - 20, tickUpper: tick + 80, anchorTick: tick }),
-    estimateHistoricalSwap: async () => ({ lossUsdc: 0, source: "test", reliability: 100, outputAmount: 0 }),
+    estimateHistoricalSwap: options.estimateHistoricalSwap || (async () => ({ lossUsdc: 0, source: "test", reliability: 100, outputAmount: 0 })),
     rewardStateReliability: () => 100,
     blockTimeReliability: () => 100,
     priceAgreementReliability: () => 100,
@@ -317,6 +317,139 @@ async function testConfirmationUsesExitSideNotJustAnyOutsideClose() {
   assert.equal(findSwapExitCalls.length, 2);
 }
 
+async function testFallbackSwapQuoteMetadataIsExposedOnRebalance() {
+  const state = makeStepState({ closes: [100, 200, 200] });
+  const findSwapExitCalls = [];
+  const engine = makeStepEngine(state, findSwapExitCalls, {
+    estimateHistoricalSwap: async () => ({
+      outputAmount: 9.995,
+      lossUsdc: 0.005,
+      source: "fallback",
+      sourceLabel: "fallback",
+      reliability: 45,
+      failureReason: "historical swap quote failed after 2 attempts: reason=execution reverted",
+      quoteAttempts: 2,
+      fallbackSlippageBps: 5,
+    }),
+  });
+
+  assert.equal(await engine.stepForward({ render: false }), true, "step should complete with fallback swap quote");
+  const rebalance = state.sim.rows.at(-1).rebalance;
+  assert.ok(rebalance, "rebalance row should include metadata");
+  assert.equal(rebalance.swapSource, "fallback");
+  assert.equal(rebalance.swapSourceLabel, "fallback");
+  assert.equal(rebalance.swapIsFallback, true);
+  assert.equal(rebalance.quoteFailureReason, "historical swap quote failed after 2 attempts: reason=execution reverted");
+  assert.equal(rebalance.quoteAttempts, 2);
+  assert.equal(rebalance.fallbackSlippageBps, 5);
+  assert.equal(rebalance.swapLossUsdc, 0.005);
+  assert.equal(rebalance.quoteReliability, 45);
+}
+
+function makeAccountingEngine(state, rewardState) {
+  return WalletWatchSimulationEngine.create({
+    state,
+    performance,
+    findBlockAtOrAfter: async () => ({ number: 2, timestamp: 1060, baseFeePerGas: 1n }),
+    findSwapExit: async () => null,
+    estimateLpFees: async () => ({ weth: 0, usdc: 0, usdcValue: 0, source: "test", reliability: 100, swapCount: 0 }),
+    getBlock: async () => ({ number: 2, timestamp: 1060, baseFeePerGas: 1n }),
+    readRewardInside: async () => rewardState,
+    getAeroPrice: async () => 1,
+    ensureActiveSimulation: () => {},
+    priceForTick: (tick) => tick === 0 ? 90 : 110,
+    priceFromSqrtX96: () => 100,
+    computePositionPlanForRange: () => ({}),
+    tickRangeAroundTick: () => ({}),
+    estimateHistoricalSwap: async () => ({}),
+    rewardStateReliability: () => 100,
+    blockTimeReliability: () => 100,
+    priceAgreementReliability: () => 100,
+    conservativeReliability: () => ({ score: 100, parts: [] }),
+    scoreFromThresholds: () => 100,
+    fmtNumber: String,
+    fmtUsdc: String,
+    reliabilityDetailsText: () => "",
+    AERODROME_TICK_SPACING: 100,
+    REBALANCE_MANUAL_FEE_BPS: 1,
+    REBALANCE_GAS_UNITS: 1n,
+    REBALANCE_L1_DATA_FEE_ETH: 0,
+    REBALANCE_FALLBACK_SLIPPAGE_BPS: 5,
+    AERO_IMPACT_HAIRCUT_MAX: 0,
+    Q128: 2n ** 128n,
+    AERO_DECIMALS: 1n,
+    recordSimulationStepDuration: () => {},
+    recordSimulationTiming: () => {},
+    simulationProgressText: () => "",
+    setSimulationNotice: () => {},
+    renderSimulationTable: () => {},
+    updateSimulationControls: () => {},
+  });
+}
+
+function makeAccountingState() {
+  const state = makeStepState({ closes: [100, 100] });
+  state.rows = [
+    { time: new Date(1000 * 1000).toISOString(), close: 100, open: 100 },
+    { time: new Date(1060 * 1000).toISOString(), close: 100, open: 100 },
+  ];
+  Object.assign(state.sim, {
+    tickLower: 0,
+    tickUpper: 100,
+    liquidityRaw: 100n,
+    liquidityHuman: 1000,
+    rewardLast: (1n << 256n) - 2n * (2n ** 128n),
+    rewardDilutionLiquidityLast: 900n,
+  });
+  return state;
+}
+
+async function testAeroRewardsUseUint256DeltaAndStakedDenominator() {
+  const q128 = 2n ** 128n;
+  const rewardState = {
+    tick: 50,
+    sqrtPriceX96: 0n,
+    rewardInside: 3n * q128,
+    activeLiquidity: 9000n,
+    stakedLiquidity: 900n,
+    rewardReserve: 1n,
+    rewardRate: 1n,
+  };
+  const state = makeAccountingState();
+  const engine = makeAccountingEngine(state, rewardState);
+
+  assert.equal(engine.dilutedAeroRaw(rewardState), 450n, "AERO reward delta should wrap in uint256 and dilute against staked reward liquidity");
+  engine.accrueAeroRewards(rewardState);
+  assert.equal(state.sim.aeroBaseUnharvested, 450, "wrapped AERO reward should accrue");
+  assert.equal(state.sim.rewardLast, rewardState.rewardInside, "reward checkpoint should advance after wrapped delta");
+  assert.equal(state.sim.rewardDilutionLiquidityLast, 900n, "AERO denominator checkpoint should use gauge staked liquidity, not pool active liquidity");
+}
+
+async function testAeroRowsExposeDilutionSemantics() {
+  const q128 = 2n ** 128n;
+  const rewardState = {
+    tick: 50,
+    sqrtPriceX96: 0n,
+    rewardInside: 3n * q128,
+    activeLiquidity: 9000n,
+    stakedLiquidity: 900n,
+    rewardReserve: 1n,
+    rewardRate: 1n,
+  };
+  const state = makeAccountingState();
+  state.sim.rows = [{ index: 0, blockNumber: 1, stateAfter: {} }];
+  const engine = makeAccountingEngine(state, rewardState);
+  const row = await engine.buildSimulationRow(1, "price change");
+
+  assert.equal(row.aeroDilutionSource, "gauge-stakedLiquidity", "AERO dilution should name the reward-liquidity source");
+  assert.equal(row.aeroDilutionSourceLabel, "counterfactual-adjusted", "AERO dilution source label should reflect counterfactual denominator adjustment");
+  assert.equal(row.aeroDilutionReliability, 88, "AERO dilution reliability should be explicit");
+  assert.equal(row.aeroDilutionLiquidityRaw, "900", "AERO dilution should expose the staked denominator input");
+  assert.match(row.aeroDilutionDenominator, /staked reward liquidity/, "AERO dilution denominator should document staked reward semantics");
+  assert.match(row.aeroDilutionAssumption, /point-in-time gauge stakedLiquidity\(\)/, "AERO dilution assumption should name the point-state approximation");
+  assert.match(row.aeroDilutionAssumption, /rewardGrowthGlobal accrues against staked reward liquidity/, "AERO dilution assumption should explain why active liquidity is not used");
+}
+
 async function main() {
   await testMonotonicMinuteTimestampsUseCursorEstimate();
   await testDuplicateTimestampsReturnFirstAllowedDuplicate();
@@ -326,6 +459,9 @@ async function main() {
   await testConfirmationBufferSuppressesBoundaryChurn();
   await testTwoMinuteConfirmationRequiresPreviousCloseOutsideBuffer();
   await testConfirmationUsesExitSideNotJustAnyOutsideClose();
+  await testFallbackSwapQuoteMetadataIsExposedOnRebalance();
+  await testAeroRewardsUseUint256DeltaAndStakedDenominator();
+  await testAeroRowsExposeDilutionSemantics();
 }
 
 main().catch((error) => {

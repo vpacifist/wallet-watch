@@ -45,6 +45,7 @@
     } = deps;
 
     const SEQUENTIAL_FORWARD_SCAN_LIMIT = 4;
+    const UINT256 = 1n << 256n;
     let sequentialBlockCursor = null;
 
     function rememberSequentialBlockCursor(block, metadata = null) {
@@ -262,13 +263,6 @@
       return rewardState.tick >= state.sim.tickLower && rewardState.tick < state.sim.tickUpper;
     }
 
-    function averageLiquidity(a, b) {
-      const left = BigInt(a || 0n);
-      const right = BigInt(b || 0n);
-      if (left > 0n && right > 0n) return (left + right) / 2n;
-      return left > 0n ? left : right;
-    }
-
     function activeBaseLiquidity(rewardState) {
       if (isPositionActiveAtTick(rewardState) && rewardState.activeLiquidity > 0n) return rewardState.activeLiquidity;
       return 0n;
@@ -278,6 +272,27 @@
       return activeBaseLiquidity(rewardState) || rewardState.stakedLiquidity;
     }
 
+    function subIn256(left, right) {
+      const value = BigInt(left || 0n) - BigInt(right || 0n);
+      return value >= 0n ? value : value + UINT256;
+    }
+
+    function rewardBaseLiquidity(rewardState) {
+      return BigInt(rewardState?.stakedLiquidity || 0n);
+    }
+
+    function aeroDilutionMetadata(rewardState) {
+      const baseLiquidity = rewardBaseLiquidity(rewardState);
+      return {
+        source: "gauge-stakedLiquidity",
+        sourceLabel: "counterfactual-adjusted",
+        reliability: baseLiquidity > 0n ? 88 : 45,
+        liquidityRaw: baseLiquidity.toString(),
+        denominator: "gauge staked reward liquidity plus simulated position liquidity",
+        assumption: "AERO dilution uses point-in-time gauge stakedLiquidity() because rewardGrowthGlobal accrues against staked reward liquidity, not pool active liquidity.",
+      };
+    }
+
     function impactShare(rewardState) {
       const total = rangeAwareBaseLiquidity(rewardState) + state.sim.liquidityRaw;
       if (total <= 0n) return 0;
@@ -285,9 +300,10 @@
     }
 
     function dilutedAeroRaw(rewardState) {
-      if (rewardState.rewardInside <= state.sim.rewardLast || state.sim.liquidityRaw <= 0n) return 0n;
-      const growthDelta = rewardState.rewardInside - state.sim.rewardLast;
-      const baseLiquidity = averageLiquidity(state.sim.rewardDilutionLiquidityLast, activeBaseLiquidity(rewardState) || rewardState.stakedLiquidity);
+      if (state.sim.liquidityRaw <= 0n) return 0n;
+      const growthDelta = subIn256(rewardState.rewardInside, state.sim.rewardLast);
+      if (growthDelta <= 0n) return 0n;
+      const baseLiquidity = rewardBaseLiquidity(rewardState);
       const totalLiquidity = baseLiquidity + state.sim.liquidityRaw;
       if (totalLiquidity <= 0n) return 0n;
       return state.sim.liquidityRaw * growthDelta * baseLiquidity / totalLiquidity / Q128;
@@ -303,8 +319,8 @@
         state.sim.aeroHaircutUnharvested += baseAero - conservativeAero;
         state.sim.aeroUnharvested += conservativeAero;
       }
-      if (rewardState.rewardInside > state.sim.rewardLast) state.sim.rewardLast = rewardState.rewardInside;
-      state.sim.rewardDilutionLiquidityLast = activeBaseLiquidity(rewardState) || rewardState.stakedLiquidity;
+      state.sim.rewardLast = rewardState.rewardInside;
+      state.sim.rewardDilutionLiquidityLast = rewardBaseLiquidity(rewardState);
       return state.sim.aeroUnharvested;
     }
 
@@ -438,6 +454,7 @@
         .finally(() => recordSimulationTiming("buildSimulationRow.getAeroPrice", aeroStartedAt));
       const [rewardState, aeroPrice] = await Promise.all([rewardPromise, aeroPricePromise]);
       ensureActiveSimulation(runToken);
+      const aeroDilution = aeroDilutionMetadata(rewardState);
       const previousAeroAmounts = {
         conservative: state.sim.aeroUnharvested,
         base: state.sim.aeroBaseUnharvested,
@@ -503,6 +520,12 @@
         aeroSource: "gauge-rewardInside-reconstructed",
         aeroSourceLabel: "counterfactual-adjusted",
         aeroReliability: state.sim.aeroPriceReliability,
+        aeroDilutionSource: aeroDilution.source,
+        aeroDilutionSourceLabel: aeroDilution.sourceLabel,
+        aeroDilutionReliability: aeroDilution.reliability,
+        aeroDilutionLiquidityRaw: aeroDilution.liquidityRaw,
+        aeroDilutionDenominator: aeroDilution.denominator,
+        aeroDilutionAssumption: aeroDilution.assumption,
         lpFeesWeth: lpFeeEvent.weth,
         lpFeesUsdc: lpFeeEvent.usdc,
         lpFeesUsdcValue: lpFeeEvent.usdcValue,
@@ -512,6 +535,7 @@
         lpFeesReliability: lpFeeEstimate.reliability,
         lpFeesSwapCount: lpFeeEstimate.swapCount,
         lpFeesRangeCrossed: Boolean(lpFeeEstimate.rangeCrossed),
+        lpFeesRangeCrossedLogsUnavailable: Boolean(lpFeeEstimate.rangeCrossedLogsUnavailable),
         lpFeesClaimableShare: lpFeeEstimate.claimableShare ?? 1,
         reliability: reliability.score,
         reliabilityDetails: reliabilityDetailsText(reliability.parts),
@@ -544,6 +568,7 @@
       const [rewardState, aeroPrice] = await Promise.all([oldRewardPromise, oldAeroPricePromise]);
       rewardState.rangeCrossed = true;
       ensureActiveSimulation(runToken);
+      const aeroDilution = aeroDilutionMetadata(rewardState);
       const previousAeroAmounts = {
         conservative: state.sim.aeroUnharvested,
         base: state.sim.aeroBaseUnharvested,
@@ -613,7 +638,7 @@
       state.sim.feeGrowthInside0Last = nextRewardState.feeGrowthInside0X128 || state.sim.feeGrowthInside0Last || 0n;
       state.sim.feeGrowthInside1Last = nextRewardState.feeGrowthInside1X128 || state.sim.feeGrowthInside1Last || 0n;
       state.sim.feeDilutionLiquidityLast = activeBaseLiquidity(nextRewardState);
-      state.sim.rewardDilutionLiquidityLast = activeBaseLiquidity(nextRewardState) || nextRewardState.stakedLiquidity;
+      state.sim.rewardDilutionLiquidityLast = rewardBaseLiquidity(nextRewardState);
       state.sim.aeroUnharvested = 0;
       state.sim.aeroBaseUnharvested = 0;
       state.sim.aeroHaircutUnharvested = 0;
@@ -649,6 +674,12 @@
         aeroSource: "gauge-rewardInside-reconstructed",
         aeroSourceLabel: "counterfactual-adjusted",
         aeroReliability: state.sim.aeroPriceReliability,
+        aeroDilutionSource: aeroDilution.source,
+        aeroDilutionSourceLabel: aeroDilution.sourceLabel,
+        aeroDilutionReliability: aeroDilution.reliability,
+        aeroDilutionLiquidityRaw: aeroDilution.liquidityRaw,
+        aeroDilutionDenominator: aeroDilution.denominator,
+        aeroDilutionAssumption: aeroDilution.assumption,
         lpFeesWeth: lpFeeEvent.weth,
         lpFeesUsdc: lpFeeEvent.usdc,
         lpFeesUsdcValue: lpFeeEvent.usdcValue,
@@ -658,8 +689,8 @@
         lpFeesReliability: lpFeeEstimate.reliability,
         lpFeesSwapCount: lpFeeEstimate.swapCount,
         lpFeesRangeCrossed: Boolean(lpFeeEstimate.rangeCrossed),
+        lpFeesRangeCrossedLogsUnavailable: Boolean(lpFeeEstimate.rangeCrossedLogsUnavailable),
         lpFeesClaimableShare: lpFeeEstimate.claimableShare ?? 1,
-        reliability: reliability.score,
         reliability: reliability.score,
         reliabilityDetails: reliabilityDetailsText(reliability.parts),
         impactDetails,

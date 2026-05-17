@@ -1018,10 +1018,12 @@ async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
   }
   if (rewardState.feeGrowthInside0X128 !== undefined && rewardState.feeGrowthInside1X128 !== undefined) {
     let logs = [];
+    let rangeCrossedLogsUnavailable = false;
     if (rewardState.rangeCrossed) {
       try {
         logs = await getSwapLogs(fromBlock, toBlock);
       } catch (_) {
+        rangeCrossedLogsUnavailable = true;
         logs = [];
       }
     }
@@ -1064,10 +1066,11 @@ async function estimateLpFees(fromBlock, toBlock, rewardState, price) {
       usdc: claimableUsdc,
       usdcValue: claimableWeth * price + claimableUsdc,
       source: crossedRange ? "feeGrowthInside-subinterval-diluted" : "feeGrowthInside-diluted",
-      sourceLabel: "counterfactual-adjusted",
-      reliability: baseLiquidity > 0n ? (crossedRange ? 94 : 92) : 76,
+      sourceLabel: rangeCrossedLogsUnavailable ? "fallback" : "counterfactual-adjusted",
+      reliability: rangeCrossedLogsUnavailable ? 72 : (baseLiquidity > 0n ? (crossedRange ? 94 : 92) : 76),
       swapCount: logs.length,
-      rangeCrossed: crossedRange,
+      rangeCrossed: crossedRange || Boolean(rewardState.rangeCrossed),
+      rangeCrossedLogsUnavailable,
       dilutionShare: Math.max(fee0.dilutionShare, fee1.dilutionShare),
       claimableShare: UNSTAKED_LP_FEE_SHARE,
     };
@@ -1131,10 +1134,46 @@ async function quoteAerodromeSwap(tokenIn, tokenOut, amountInRaw, blockNumber) {
     `selector=${SELECTORS.quoteExactInputSingle}`,
     `calldata=${data}`,
   ].join(" ");
-  throw new Error(`historical swap quote failed after 2 attempts: ${context}`);
+  const error = new Error(`historical swap quote failed after 2 attempts: ${context}`);
+  error.quoteAttempts = 2;
+  error.quoteFailureReason = failureReason || "quoter eth_call failed";
+  throw error;
   } finally {
     recordSimulationTiming("quoteAerodromeSwap", startedAt);
   }
+}
+
+function fallbackHistoricalSwapQuote(swap, price, error) {
+  const parsedAttempts = Number(error?.quoteAttempts || error?.attempts || 2);
+  const quoteAttempts = Number.isFinite(parsedAttempts) ? parsedAttempts : 2;
+  const failureReason = error?.quoteFailureReason || error?.message || "quoter eth_call failed";
+  const slippage = Math.max(0, REBALANCE_FALLBACK_SLIPPAGE_BPS) / 10000;
+  if (swap.direction === "WETH_TO_USDC") {
+    const grossUsdc = swap.amount * price;
+    const lossUsdc = grossUsdc * slippage;
+    return {
+      outputAmount: Math.max(0, grossUsdc - lossUsdc),
+      lossUsdc,
+      source: "fallback",
+      sourceLabel: "fallback",
+      reliability: 45,
+      quoteAttempts,
+      failureReason,
+      fallbackSlippageBps: REBALANCE_FALLBACK_SLIPPAGE_BPS,
+    };
+  }
+  const lossUsdc = swap.amount * slippage;
+  const netUsdc = Math.max(0, swap.amount - lossUsdc);
+  return {
+    outputAmount: price > 0 ? netUsdc / price : 0,
+    lossUsdc,
+    source: "fallback",
+    sourceLabel: "fallback",
+    reliability: 45,
+    quoteAttempts,
+    failureReason,
+    fallbackSlippageBps: REBALANCE_FALLBACK_SLIPPAGE_BPS,
+  };
 }
 
 async function estimateHistoricalSwap(swap, price, blockNumber) {
@@ -1145,7 +1184,13 @@ async function estimateHistoricalSwap(swap, price, blockNumber) {
   }
   if (swap.direction === "WETH_TO_USDC") {
     const amountInRaw = rawWeth(swap.amount);
-    const quote = await quoteAerodromeSwap(WETH_ADDRESS, USDC_ADDRESS, amountInRaw, blockNumber);
+    let quote;
+    try {
+      quote = await quoteAerodromeSwap(WETH_ADDRESS, USDC_ADDRESS, amountInRaw, blockNumber);
+    } catch (error) {
+      if (!error?.quoteAttempts) throw error;
+      return fallbackHistoricalSwapQuote(swap, price, error);
+    }
     const outputAmount = rawToUsdc(quote.amountOutRaw);
     return {
       outputAmount,
@@ -1157,7 +1202,13 @@ async function estimateHistoricalSwap(swap, price, blockNumber) {
     };
   }
   const amountInRaw = rawUsdc(swap.amount);
-  const quote = await quoteAerodromeSwap(USDC_ADDRESS, WETH_ADDRESS, amountInRaw, blockNumber);
+  let quote;
+  try {
+    quote = await quoteAerodromeSwap(USDC_ADDRESS, WETH_ADDRESS, amountInRaw, blockNumber);
+  } catch (error) {
+    if (!error?.quoteAttempts) throw error;
+    return fallbackHistoricalSwapQuote(swap, price, error);
+  }
   const outputAmount = rawToWeth(quote.amountOutRaw);
   return {
     outputAmount,
@@ -2434,6 +2485,7 @@ function resetSimulationRows() {
 function simulationRowTitle(row) {
   const details = [
     row.reliabilityDetails ? `reliability: ${row.reliabilityDetails}` : "",
+    isRangeCrossedLogsUnavailable(row) ? "range-crossing swap logs unavailable; endpoint feeGrowthInside used" : "",
     row.impactDetails || "",
   ].filter(Boolean).join("; ");
   if (!row.rebalance) return details;
@@ -2450,12 +2502,66 @@ function compactNumber(value, digits = 8) {
   return Number(number.toFixed(digits));
 }
 
+function rewardStreamMetadata(row, simulationMode) {
+  const isStaked = simulationMode === "staked";
+  const lpFeesEventUsdc = compactNumber(row.lpFeesUsdcValue, 6);
+  const lpFeesTotalUsdc = compactNumber(row.lpFeesTotalUsdc, 6);
+  const aeroEventUsdc = compactNumber(row.aeroUsdc, 6);
+  const aeroTotalUsdc = compactNumber(row.aeroTotalUsdc, 6);
+  return {
+    claimableRewardUsdc: isStaked ? aeroTotalUsdc : lpFeesTotalUsdc,
+    excludedRewardUsdc: isStaked ? lpFeesTotalUsdc : aeroTotalUsdc,
+    rewardStreams: {
+      lpFees: {
+        included: !isStaked,
+        claimable: !isStaked,
+        eventUsdc: lpFeesEventUsdc,
+        totalUsdc: lpFeesTotalUsdc,
+        source: row.lpFeesSource || "",
+        sourceLabel: normalizeSourceLabel(row.lpFeesSourceLabel || "counterfactual-adjusted"),
+        reliability: compactNumber(row.lpFeesReliability, 4),
+        claimableShare: compactNumber(row.lpFeesClaimableShare ?? UNSTAKED_LP_FEE_SHARE, 4),
+      },
+      aero: {
+        included: isStaked,
+        claimable: isStaked,
+        eventUsdc: aeroEventUsdc,
+        totalUsdc: aeroTotalUsdc,
+        baseUsdc: compactNumber(row.aeroBaseUsdc, 6),
+        haircutUsdc: compactNumber(row.aeroHaircutUsdc, 6),
+        source: row.aeroSource || "gauge-rewardInside-reconstructed",
+        sourceLabel: normalizeSourceLabel(row.aeroSourceLabel || "counterfactual-adjusted"),
+        reliability: compactNumber(row.aeroReliability ?? row.reliability, 4),
+      },
+    },
+  };
+}
+
+function isRangeCrossedLogsUnavailable(row) {
+  if (!row) return false;
+  if (row.rangeCrossedLogsUnavailable || row.lpFeesRangeCrossedLogsUnavailable) return true;
+  const sourceLabel = normalizeSourceLabel(row.lpFeesSourceLabel || "");
+  return Boolean(row.lpFeesRangeCrossed && sourceLabel === "fallback" && String(row.lpFeesSource || "").startsWith("feeGrowthInside"));
+}
+
+function claimableRewardLabel(lpMode = state.sim.lpMode) {
+  return lpMode === "staked" ? "Claimable AERO, $" : "Claimable LP fees, $";
+}
+
 function simulationRowToRaw(row) {
   if (!row) return null;
   const marketRow = state.rows[row.index] || {};
   const stateAfter = row.stateAfter || {};
   const tickLower = Number.isFinite(stateAfter.tickLower) ? stateAfter.tickLower : state.sim.tickLower;
   const tickUpper = Number.isFinite(stateAfter.tickUpper) ? stateAfter.tickUpper : state.sim.tickUpper;
+  const simulationMode = row.simulationMode || state.sim.lpMode || "staked";
+  const includedRewardStreams = Array.isArray(row.includedRewardStreams)
+    ? [...row.includedRewardStreams]
+    : (simulationMode === "staked" ? ["aero"] : ["lpFees"]);
+  const excludedRewardStreams = Array.isArray(row.excludedRewardStreams)
+    ? [...row.excludedRewardStreams]
+    : (simulationMode === "staked" ? ["lpFees"] : ["aero"]);
+  const rewardMetadata = rewardStreamMetadata(row, simulationMode);
   const raw = {
     index: row.index,
     time: marketRow.time || "",
@@ -2483,6 +2589,8 @@ function simulationRowToRaw(row) {
     lpFeesReliability: compactNumber(row.lpFeesReliability, 4),
     lpFeesSwapCount: row.lpFeesSwapCount || 0,
     lpFeesRangeCrossed: Boolean(row.lpFeesRangeCrossed),
+    lpFeesRangeCrossedLogsUnavailable: isRangeCrossedLogsUnavailable(row),
+    rangeCrossedLogsUnavailable: isRangeCrossedLogsUnavailable(row),
     lpFeesClaimableShare: compactNumber(row.lpFeesClaimableShare ?? UNSTAKED_LP_FEE_SHARE, 4),
     aeroUsdc: compactNumber(row.aeroUsdc, 6),
     aeroTotalUsdc: compactNumber(row.aeroTotalUsdc, 6),
@@ -2502,6 +2610,21 @@ function simulationRowToRaw(row) {
     aeroSource: row.aeroSource || "gauge-rewardInside-reconstructed",
     aeroSourceLabel: normalizeSourceLabel(row.aeroSourceLabel || "counterfactual-adjusted"),
     aeroReliability: compactNumber(row.aeroReliability ?? row.reliability, 4),
+    aeroDilutionSource: row.aeroDilutionSource || "",
+    aeroDilutionSourceLabel: normalizeSourceLabel(row.aeroDilutionSourceLabel || "counterfactual-adjusted"),
+    aeroDilutionReliability: compactNumber(row.aeroDilutionReliability ?? row.aeroReliability ?? row.reliability, 4),
+    aeroDilutionLiquidityRaw: row.aeroDilutionLiquidityRaw || "",
+    aeroDilutionDenominator: row.aeroDilutionDenominator || "",
+    aeroDilutionAssumption: row.aeroDilutionAssumption || "",
+    simulationMode,
+    includedRewardStreams,
+    excludedRewardStreams,
+    lpFeesClaimable: row.lpFeesClaimable ?? (simulationMode === "unstaked"),
+    aeroClaimable: row.aeroClaimable ?? (simulationMode === "staked"),
+    claimableRewardUsdc: rewardMetadata.claimableRewardUsdc,
+    excludedRewardUsdc: rewardMetadata.excludedRewardUsdc,
+    rewardStreams: rewardMetadata.rewardStreams,
+    totalReturnUsdc: compactNumber(row.totalReturnUsdc, 6),
     priceSourceLabel: "exact-onchain",
     csvPriceSourceLabel: marketRow.missingCandle ? "estimated" : "heuristic",
     csvOnchainDivergenceBps: Number.isFinite(marketRow.open) && Number.isFinite(row.price) && row.price > 0
@@ -2513,6 +2636,7 @@ function simulationRowToRaw(row) {
       normalizeSourceLabel(row.aeroSourceLabel || "counterfactual-adjusted"),
       marketRow.missingCandle ? "estimated" : "heuristic",
       row.rebalance?.swapIsFallback ? "fallback" : null,
+      isRangeCrossedLogsUnavailable(row) ? "fallback" : null,
     ].filter(Boolean))),
     reliability: compactNumber(row.reliability, 4),
   };
@@ -2605,6 +2729,7 @@ function simulationRawRowToCells(row) {
   if (!row || typeof row !== "object") return [];
   const eventParts = [row.missingCandle ? `${row.event} - missing candle` : row.event];
   if (row.rebalance?.swapIsFallback) eventParts.push("swap fallback");
+  if (row.rangeCrossedLogsUnavailable) eventParts.push("range logs unavailable");
   return [
     row.time ? fmtInputTime(row.time) : "",
     eventParts.filter(Boolean).join(" - "),
@@ -2630,7 +2755,7 @@ function renderSimulationTable(scrollToLatest = false) {
       const isStaked = state.sim.lpMode === "staked";
       const rewardValue = isStaked ? last.aeroTotalUsdc ?? last.aeroUsdc : last.lpFeesTotalUsdc ?? 0;
       const totalReturnValue = last.totalReturnUsdc ?? rewardValue;
-      currentRewardLabel.textContent = isStaked ? "AERO, $" : "LP fees, $";
+      currentRewardLabel.textContent = claimableRewardLabel(state.sim.lpMode);
       currentRewardValue.textContent = fmtUsdc(rewardValue);
       currentTotalValue.textContent = fmtUsdc(totalReturnValue);
     }
@@ -2646,7 +2771,11 @@ function renderSimulationTable(scrollToLatest = false) {
   simTableBody.innerHTML = state.sim.rows.map((row) => `
     <tr data-index="${row.index}" class="${row.index === state.sim.activeRowIndex ? "activeRow" : ""}" title="${simulationRowTitle(row)}">
       <td>${fmtInputTime(state.rows[row.index]?.time || "")}</td>
-      <td>${[row.event, row.rebalance?.swapIsFallback ? "swap fallback" : ""].filter(Boolean).join(" - ")}</td>
+      <td>${[
+        row.event,
+        row.rebalance?.swapIsFallback ? "swap fallback" : "",
+        isRangeCrossedLogsUnavailable(row) ? "range logs unavailable" : "",
+      ].filter(Boolean).join(" - ")}</td>
       <td>${fmtUsdc(row.value)}</td>
       <td>${fmtPrice(row.price)}</td>
       <td>${fmtNumber(row.weth, 8)}</td>
@@ -2658,6 +2787,8 @@ function renderSimulationTable(scrollToLatest = false) {
   `).join("");
   const aeroTh = document.getElementById("aeroTh");
   const lpFeesTh = document.getElementById("lpFeesTh");
+  if (aeroTh) aeroTh.textContent = "Claimable AERO, $";
+  if (lpFeesTh) lpFeesTh.textContent = "Claimable LP fees, $";
   if (aeroTh) aeroTh.style.display = state.sim.lpMode === "staked" ? "" : "none";
   if (lpFeesTh) lpFeesTh.style.display = state.sim.lpMode === "unstaked" ? "" : "none";
   simTableBody.querySelectorAll("tr").forEach((row) => {
@@ -2678,7 +2809,7 @@ function renderSimulationTable(scrollToLatest = false) {
     const isStaked = state.sim.lpMode === "staked";
     const rewardValue = isStaked ? last.aeroTotalUsdc ?? last.aeroUsdc : last.lpFeesTotalUsdc ?? 0;
     const totalReturnValue = last.totalReturnUsdc ?? rewardValue;
-    const rewardLabel = isStaked ? "AERO, $" : "LP fees, $";
+    const rewardLabel = claimableRewardLabel(state.sim.lpMode);
     currentRewardLabel.textContent = rewardLabel;
     currentRewardValue.textContent = fmtUsdc(rewardValue);
     currentTotalValue.textContent = fmtUsdc(totalReturnValue);
@@ -3249,6 +3380,7 @@ function simulationWarnings(rawRows = [], dataQuality = null) {
   if (rawRows.some((row) => (row?.csvOnchainDivergenceBps || 0) > 100)) warnings.add("CSV/on-chain price divergence above 100 bps");
   if (rawRows.some((row) => row?.sourceLabels?.includes("estimated"))) warnings.add("estimated fields present");
   if (rawRows.some((row) => row?.sourceLabels?.includes("heuristic"))) warnings.add("heuristic quality fields present");
+  if (rawRows.some((row) => row?.rangeCrossedLogsUnavailable)) warnings.add("range-crossing swap logs unavailable");
   return Array.from(warnings);
 }
 
@@ -3283,6 +3415,8 @@ function renderResultTableRows(tableRows = []) {
     const tr = document.createElement("tr");
     if (typeof rowItem === "object" && rowItem !== null && rowItem.rebalance?.swapIsFallback) {
       tr.title = `swap fallback: ${summarizeFallbackReason(rowItem.rebalance.quoteFailureReason)}`;
+    } else if (typeof rowItem === "object" && rowItem !== null && rowItem.rangeCrossedLogsUnavailable) {
+      tr.title = "range-crossing swap logs unavailable; endpoint feeGrowthInside used";
     }
     const cells = typeof rowItem === "object" && rowItem !== null
       ? simulationRawRowToCells(rowItem)
@@ -3653,7 +3787,7 @@ function renderSimulationResultView(simulation) {
       createResultMetric("Status", simulation.status || "unknown"),
       createResultMetric("Rows", info.rows ? String(info.rows) : ""),
       createResultMetric("Position value", info.currentValue),
-      createResultMetric(isStaked ? "AERO earned" : "LP fees earned", info.currentReward || ""),
+      createResultMetric(isStaked ? "Claimable AERO" : "Claimable LP fees", info.currentReward || ""),
       createResultMetric("Total return", info.currentTotalReturn || ""),
       createResultMetric("Swap fallback", fallback.details, fallback.details),
       createResultMetric("Elapsed", info.elapsed),
@@ -4011,7 +4145,7 @@ function renderServerSimulation(simulation, options = {}) {
   if (info.currentValue) currentPositionValue.textContent = info.currentValue;
   if (info.currentReward) currentRewardValue.textContent = info.currentReward;
   if (info.currentTotalReturn) currentTotalValue.textContent = info.currentTotalReturn;
-  if (currentRewardLabel) currentRewardLabel.textContent = state.sim.lpMode === "staked" ? "AERO, $" : "LP fees, $";
+  if (currentRewardLabel) currentRewardLabel.textContent = claimableRewardLabel(state.sim.lpMode);
   const progressSummary = serverProgressSummary(simulation);
   const totalRows = estimateServerTotalRows(simulation);
   setServerSimulationProgressNotice({

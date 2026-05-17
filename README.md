@@ -58,7 +58,7 @@ Every raw row can expose these labels:
 ### Counterfactual-Adjusted Values
 
 - Simulated liquidity is hypothetical. Fee and reward growth observed on-chain excludes this position, so the engine applies a dilution factor using observed real liquidity versus simulated added liquidity.
-- If the position crosses its range during an interval, fee rows are tagged with range-crossing metadata; endpoint `feeGrowthInside` remains the source of token fee growth and swap logs are used for sub-interval transparency where available.
+- If the position crosses its range during an interval, fee rows are tagged with range-crossing metadata; endpoint `feeGrowthInside` remains the source of token fee growth and swap logs are used for sub-interval transparency where available. If those logs cannot be read, raw rows expose `rangeCrossedLogsUnavailable = true` and a fallback source label.
 - AERO `aeroBase` is the reconstructed reward scenario before impact haircut. `aeroConservative` applies the configurable conservative impact haircut. `aeroImpactHaircut`, `aeroImpactModel`, and `aeroImpactAssumption` are exposed in raw rows.
 
 ### Estimated Costs
@@ -81,6 +81,15 @@ Every raw row can expose these labels:
 - Exact Base L1 data fee cannot be recovered without a real transaction envelope/calldata and final chain fee fields. The configured L1 data fee is an explicit model assumption.
 - If historical `feeGrowthInside` reads fail, LP fees fall back to swap-log estimation and the row exposes the lower-reliability source.
 - Missing CSV candles are filled only to preserve the minute grid. Filled rows are marked `missing-candle`; economics still use on-chain state.
+
+### Claimable / Net Accounting
+
+- `totalReturnUsdc` is mode-specific: staked mode includes position value plus AERO rewards, while unstaked mode includes position value plus the LP-claimable fee stream. Excluded streams may still be present in raw rows for auditability and must be read together with `includedRewardStreams`, `excludedRewardStreams`, `lpFeesClaimable`, and `aeroClaimable`.
+- Raw rows also expose `claimableRewardUsdc`, `excludedRewardUsdc`, and `rewardStreams` metadata. `rewardStreams.lpFees` and `rewardStreams.aero` each mark whether the stream is included/claimable in the selected mode and carry event/total USDC values plus source labels.
+- Unstaked LP fees are modeled as the claimable 90% share of reconstructed or estimated pool fees; the remaining 10% is treated as routed away from the LP.
+- Rebalance capital is based on position value after swap, gas, L1 data fee, and automation/manual fee assumptions. Accrued fees and rewards are accounted as earned return streams, not automatically reinvested into the next range.
+- AERO amounts are valued with the historical AERO/USDC pool price and a configurable conservative impact haircut. The haircut is a liquidation/impact scenario assumption, not an on-chain claimability rule.
+- Unsupported or degraded cases should be surfaced by source labels, reliability details, and raw metadata rather than blended into headline totals without provenance.
 
 ## Simulation Modes
 

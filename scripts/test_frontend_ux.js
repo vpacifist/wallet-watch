@@ -125,6 +125,13 @@ function testSimulationModes() {
   assert.match(engine, /lpFeesClaimable/);
   assert.match(engine, /aeroClaimable/);
   assert.match(engine, /totalReturnUsdc/);
+  assert.match(app, /claimableRewardUsdc/);
+  assert.match(app, /excludedRewardUsdc/);
+  assert.match(app, /rewardStreams/);
+  assert.match(app, /rangeCrossedLogsUnavailable/);
+  assert.match(app, /range-crossing swap logs unavailable/);
+  assert.match(app, /Claimable AERO/);
+  assert.match(app, /Claimable LP fees/);
 }
 
 function testServerObservationModes() {
