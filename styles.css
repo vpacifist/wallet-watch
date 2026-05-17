@@ -1216,26 +1216,26 @@ canvas {
 }
 
 .simTable .timeCol {
-  width: 150px;
+  width: 13.25%;
 }
 
 .simTable .eventCol {
-  width: 175px;
+  width: 15.47%;
 }
 
 .simTable .valueCol {
-  width: 128px;
+  width: 11.32%;
 }
 
 .simTable .priceCol,
 .simTable .tokenCol,
 .simTable .aeroCol,
 .simTable .haircutCol {
-  width: 112px;
+  width: 9.9%;
 }
 
 .simTable .reliabilityCol {
-  width: 118px;
+  width: 10.46%;
 }
 
 .simTable th,
