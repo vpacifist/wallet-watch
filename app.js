@@ -218,6 +218,8 @@ const serverSimulation = {
   lastSimulation: null,
   uiMode: "live",
   liveViewOpen: true,
+  sseErrorActive: false,
+  sseRetryCount: 0,
   finalResultFetched: false,
   jobsLoadRequestId: 0,
   jobsLoadPromise: null,
@@ -1939,7 +1941,7 @@ function serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows) {
 
 function setServerSimulationProgressNotice({ status, elapsed, processing, rows, eta }) {
   // Do not overwrite critical transport or auth errors with normal progress
-  if (simNotice.classList.contains("simNoticeError") && simNotice.textContent.includes("SSE")) {
+  if (serverSimulation.sseErrorActive && simNotice.classList.contains("simNoticeError") && simNotice.textContent.includes("SSE")) {
     return;
   }
   simNotice.replaceChildren();
@@ -2542,7 +2544,8 @@ function setSimulationNotice(message, isError = false) {
   const nextEstimate = notice.estimate || "";
   if (statusEl.textContent !== nextStatus) statusEl.textContent = nextStatus;
   if (detailsEl.textContent !== nextDetails) detailsEl.textContent = nextDetails;
-  if (estimateEl.textContent !== nextEstimate) estimateEl.textContent = nextEstimate;
+  estimateEl.replaceChildren();
+  if (nextEstimate) estimateEl.textContent = nextEstimate;
 
   // Add "Update Token" button if it's an auth error
   if (notice.isError && (String(notice.status).includes("SSE") || String(notice.details).includes("token") || String(notice.details).includes("authoriz"))) {
@@ -2554,6 +2557,7 @@ function setSimulationNotice(message, isError = false) {
       if (token && typeof localStorage !== "undefined") {
         localStorage.setItem("walletWatchAdminToken", token);
         if (serverSimulation.id) {
+          serverSimulation.sseRetryCount = 0;
           stopServerSimulationEvents();
           watchServerSimulation(serverSimulation.id);
         }
@@ -3856,6 +3860,7 @@ async function pollServerSimulation(id) {
   if (!SERVER_SIMULATION_MODE || !id) return;
   try {
     const simulation = await fetchJson(`/api/simulations/${id}?compact=1`);
+    serverSimulation.sseErrorActive = false;
     renderServerSimulation(simulation);
     if (isServerSimulationTerminal(simulation.status)) {
       stopServerSimulationPolling();
@@ -3904,6 +3909,7 @@ async function watchServerSimulation(id) {
   source.addEventListener("simulation", (event) => {
     try {
       const simulation = JSON.parse(event.data);
+      serverSimulation.sseErrorActive = false;
       serverSimulation.sseRetryCount = 0;
       renderServerSimulation(simulation);
       if (isServerSimulationTerminal(simulation.status)) {
@@ -3932,6 +3938,7 @@ async function watchServerSimulation(id) {
   });
   source.onerror = () => {
     stopServerSimulationEvents();
+    serverSimulation.sseErrorActive = true;
     const delayMs = Math.max(5000, serverSimulation.pollBackoffMs || SERVER_SIMULATION_POLL_MS);
     serverSimulation.pollBackoffMs = Math.min(60000, delayMs * 2);
 

@@ -63,6 +63,15 @@ function testSseDelayedStartHandling() {
   assert.match(app, /Range: calculating\.\.\./);
 }
 
+function testSseErrorRecoveryNotice() {
+  assert.match(app, /sseErrorActive: false/);
+  assert.match(app, /if \(serverSimulation\.sseErrorActive && simNotice\.classList\.contains\("simNoticeError"\) && simNotice\.textContent\.includes\("SSE"\)\) \{/);
+  assert.match(app, /estimateEl\.replaceChildren\(\)/);
+  assert.match(app, /serverSimulation\.sseRetryCount = 0;\s+stopServerSimulationEvents\(\);\s+watchServerSimulation\(serverSimulation\.id\);/);
+  assert.match(app, /serverSimulation\.sseErrorActive = false;\s+renderServerSimulation\(simulation\);/);
+  assert.match(app, /serverSimulation\.sseErrorActive = true;\s+const delayMs = Math\.max/);
+}
+
 function testBlockByNumberCacheLifecycle() {
   assert.match(app, /blockByNumberCache: new Map\(\)/);
   assert.match(app, /state\.sim\.blockByNumberCache\.get\(blockNumber\)/);
@@ -157,7 +166,6 @@ function testServerObservationModes() {
   assert.match(styles, /\.backgroundProgressPanel/);
 }
 
-
 function testResultChartHoverTooltip() {
   assert.match(html, /id="resultTooltip"/);
   assert.match(app, /const resultTooltip = document\.getElementById\("resultTooltip"\)/);
@@ -167,11 +175,14 @@ function testResultChartHoverTooltip() {
   assert.match(app, /placeChartTooltip\(resultTooltip, x, y, width, height\)/);
   assert.match(styles, /\.resultTooltip/);
 }
+
+
 testLocalElapsedTimer();
 testInitializationStages();
 testSkeletonLifecycle();
 testEarlyRangeRendering();
 testSseDelayedStartHandling();
+testSseErrorRecoveryNotice();
 testBlockByNumberCacheLifecycle();
 testSimulationTimingInstrumentation();
 testSubhourTimeAxisLabels();
