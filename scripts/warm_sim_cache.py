@@ -83,13 +83,13 @@ function includesAny(text, needles) {
 
 function isCompletedNotice(notice) {
   return includesAny(notice, [
-    "Симуляция дошла до даты конца",
+    "Simulation reached the end date",
   ]);
 }
 
 function isStoppedNotice(notice) {
   return includesAny(notice, [
-    "Симуляция остановлена",
+    "Simulation stopped",
   ]);
 }
 

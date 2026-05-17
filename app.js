@@ -148,7 +148,7 @@ const resultLastRow = document.getElementById("resultLastRow");
 const resultTableWrap = document.getElementById("resultTableWrap");
 const resultTableBody = document.getElementById("resultTableBody");
 const resultEmpty = document.getElementById("resultEmpty");
-const MONTHS_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const AERODROME_TICK_SPACING = 100;
 const PRICE_DECIMAL_FACTOR = 1e12;
 const POINTS_PER_PIXEL = 0.55;
@@ -717,7 +717,7 @@ async function getAeroPrice(blockNumber) {
       getAeroUsdcTokenOrder(blockNumber),
     ]);
     const price = aeroUsdcPriceFromSqrtX96(slot.sqrtPriceX96, tokenOrder);
-    if (!Number.isFinite(price) || price <= 0) throw new Error("Не удалось получить on-chain цену AERO");
+    if (!Number.isFinite(price) || price <= 0) throw new Error("Failed to fetch on-chain AERO price");
     const reliability = 96;
     state.sim.aeroPriceCache.set(blockNumber, { price, reliability });
     state.sim.aeroPriceReliability = reliability;
@@ -988,7 +988,7 @@ function simRangePrices() {
 function simRangeText() {
   if (!state.sim.initialRangeReady && !state.sim.rangeStepTicks) return "Range: calculating...";
   const prices = simRangePrices();
-  return `Диапазон ${fmtPercent(state.sim.rangeWidth * 100)}%: ${fmtPrice(prices.lower)} — ${fmtPrice(prices.upper)} (ticks ${Math.abs(state.sim.tickLower)} — ${Math.abs(state.sim.tickUpper)})`;
+  return `Range ${fmtPercent(state.sim.rangeWidth * 100)}%: ${fmtPrice(prices.lower)} - ${fmtPrice(prices.upper)} (ticks ${Math.abs(state.sim.tickLower)} - ${Math.abs(state.sim.tickUpper)})`;
 }
 
 function chartSimulationRows() {
@@ -1029,7 +1029,7 @@ function simulationChartTooltip(row, marketRow) {
       lines.push(`execution ${fmtPrice(executionPrice)}`);
       lines.push(`candle close ${fmtPrice(marketClose)}`);
     }
-    lines.push(`range ${rb.oldTickLower}..${rb.oldTickUpper} → ${rb.newTickLower}..${rb.newTickUpper}`);
+    lines.push(`range ${rb.oldTickLower}..${rb.oldTickUpper} -> ${rb.newTickLower}..${rb.newTickUpper}`);
     lines.push(`trigger ${fmtPrice(priceForTick(rb.oldTickLower))}..${fmtPrice(priceForTick(rb.oldTickUpper))}`);
     if (Number.isFinite(confirmationBufferBps)) lines.push(`buffer ${fmtNumber(confirmationBufferBps, 2)} bps`);
     if (Number.isFinite(Number(rb.confirmationMinutes))) lines.push(`confirm ${Number(rb.confirmationMinutes)} min`);
@@ -1607,42 +1607,42 @@ function analyzeDataQuality(rows) {
 }
 
 function dataQualityStatus(quality) {
-  if (!quality || !quality.rowCount) return "CSV загружен";
-  return `CSV загружен, ${quality.rowCount.toLocaleString("en-US")} строк, пропущено ${(quality.missingMinutes || 0).toLocaleString("en-US")} мин`;
+  if (!quality || !quality.rowCount) return "CSV loaded";
+  return `CSV loaded, ${quality.rowCount.toLocaleString("en-US")} rows, ${(quality.missingMinutes || 0).toLocaleString("en-US")} min missing`;
 }
 
 function dataQualityTitle(quality) {
   if (!quality || !quality.rowCount) return "";
   const details = [];
-  if (quality.source) details.push(`Источник: ${quality.source}.`);
-  if (quality.firstTime && quality.lastTime) details.push(`Период: ${fmtInputTime(quality.firstTime)} - ${fmtInputTime(quality.lastTime)} UTC.`);
-  if (quality.minuteRowCount) details.push(`Поминутная сетка: ${quality.minuteRowCount.toLocaleString("en-US")} строк.`);
+  if (quality.source) details.push(`Source: ${quality.source}.`);
+  if (quality.firstTime && quality.lastTime) details.push(`Period: ${fmtInputTime(quality.firstTime)} - ${fmtInputTime(quality.lastTime)} UTC.`);
+  if (quality.minuteRowCount) details.push(`Minute grid: ${quality.minuteRowCount.toLocaleString("en-US")} rows.`);
   if (quality.gapCount) {
     details.push(
-      `Найдено ${quality.gapCount.toLocaleString("en-US")} разрывов в CSV.`,
-      `Всего пропущено ${quality.missingMinutes.toLocaleString("en-US")} минут.`,
-      `Максимальный разрыв: ${quality.maxGapMinutes} мин.`,
-      "Симуляция идет по полной минутной сетке; пропущенные свечи помечаются quality flag и считаются по on-chain state.",
+      `Found ${quality.gapCount.toLocaleString("en-US")} CSV gap(s).`,
+      `Total missing: ${quality.missingMinutes.toLocaleString("en-US")} minute(s).`,
+      `Largest gap: ${quality.maxGapMinutes} min.`,
+      "The simulation runs on the full minute grid; missing candles are flagged for quality and calculated from on-chain state.",
     );
   }
-  if (quality.duplicateTimestampCount) details.push(`Дубликаты timestamp: ${quality.duplicateTimestampCount.toLocaleString("en-US")}.`);
-  if (quality.outOfOrderCount) details.push(`Строки не по порядку: ${quality.outOfOrderCount.toLocaleString("en-US")}.`);
-  if (quality.invalidPriceCount) details.push(`Некорректные price-поля: ${quality.invalidPriceCount.toLocaleString("en-US")}.`);
-  if (quality.zeroPriceCount) details.push(`Нулевые или отрицательные price-поля: ${quality.zeroPriceCount.toLocaleString("en-US")}.`);
-  if (quality.emptyVolumeCount) details.push(`Пустой или некорректный volume: ${quality.emptyVolumeCount.toLocaleString("en-US")}.`);
-  return details.length ? details.join(" ") : "Поминутная сетка без обнаруженных проблем.";
+  if (quality.duplicateTimestampCount) details.push(`Duplicate timestamps: ${quality.duplicateTimestampCount.toLocaleString("en-US")}.`);
+  if (quality.outOfOrderCount) details.push(`Out-of-order rows: ${quality.outOfOrderCount.toLocaleString("en-US")}.`);
+  if (quality.invalidPriceCount) details.push(`Invalid price fields: ${quality.invalidPriceCount.toLocaleString("en-US")}.`);
+  if (quality.zeroPriceCount) details.push(`Zero or negative price fields: ${quality.zeroPriceCount.toLocaleString("en-US")}.`);
+  if (quality.emptyVolumeCount) details.push(`Empty or invalid volume: ${quality.emptyVolumeCount.toLocaleString("en-US")}.`);
+  return details.length ? details.join(" ") : "Minute grid has no detected issues.";
 }
 
 function formatDuration(ms) {
-  if (ms <= 0) return "0 с";
+  if (ms <= 0) return "0s";
   const seconds = Math.max(1, Math.round(ms / 1000));
-  if (seconds < 60) return `${seconds} с`;
+  if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   const restSeconds = seconds % 60;
-  if (minutes < 60) return restSeconds ? `${minutes} мин ${restSeconds} с` : `${minutes} мин`;
+  if (minutes < 60) return restSeconds ? `${minutes}m ${restSeconds}s` : `${minutes}m`;
   const hours = Math.floor(minutes / 60);
   const restMinutes = minutes % 60;
-  return restMinutes ? `${hours} ч ${restMinutes} мин` : `${hours} ч`;
+  return restMinutes ? `${hours}h ${restMinutes}m` : `${hours}h`;
 }
 
 function pluralRu(value, one, few, many) {
@@ -1655,7 +1655,7 @@ function pluralRu(value, one, few, many) {
 
 function simulationEstimateText() {
   const samples = state.sim.stepDurations.slice(-60);
-  if (samples.length < 3) return "ETA считается...";
+  if (samples.length < 3) return "Calculating ETA...";
   const averageMs = samples.reduce((sum, value) => sum + value, 0) / samples.length;
   const remainingSteps = Math.max(0, state.sim.endIndex - state.sim.currentIndex);
   const nextEtaMs = averageMs * remainingSteps;
@@ -1671,7 +1671,7 @@ function simulationProgressText() {
   const endTime = state.rows[state.sim.endIndex] ? rowTimestampMs(state.rows[state.sim.endIndex]) : currentTime;
   const doneMinutes = Math.max(0, Math.round((currentTime - startTime) / (60 * 1000)));
   const totalMinutes = Math.max(0, Math.round((endTime - startTime) / (60 * 1000)));
-  return `${done} / ${total} свечей (${doneMinutes} / ${totalMinutes} мин) · ${simulationEstimateText()}`;
+  return `${done} / ${total} candles (${doneMinutes} / ${totalMinutes} min) - ${simulationEstimateText()}`;
 }
 
 function formatCompactDurationSeconds(seconds, { approximate = false } = {}) {
@@ -1719,13 +1719,13 @@ function serverProcessingLabel(simulation) {
   const latest = result.latestRawRow || progress.latestRawRow || serverSimulation.rawRows.at(-1) || null;
   const timestamp = formatProgressTimestamp(latest?.time || latest?.timestamp || "");
   const event = String(latest?.event || "").trim();
-  return [timestamp, event].filter(Boolean).join(" · ");
+  return [timestamp, event].filter(Boolean).join(" - ");
 }
 
 function serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows) {
-  if (!serverSimulation.running || rowsDone <= 0 || totalRows <= rowsDone || elapsedSeconds <= 0) return "—";
+  if (!serverSimulation.running || rowsDone <= 0 || totalRows <= rowsDone || elapsedSeconds <= 0) return "-";
   const remainingSeconds = (elapsedSeconds / rowsDone) * (totalRows - rowsDone);
-  if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return "—";
+  if (!Number.isFinite(remainingSeconds) || remainingSeconds <= 0) return "-";
   return formatCompactDurationSeconds(remainingSeconds, { approximate: true });
 }
 
@@ -1738,10 +1738,10 @@ function setServerSimulationProgressNotice({ status, elapsed, processing, rows, 
   simNotice.classList.add("simProgressNotice");
   const columns = [
     ["Status", status || "unknown"],
-    ["Elapsed", elapsed || "—"],
-    ["Processing", processing || "—"],
-    ["Rows", rows || "—"],
-    ["ETA", eta || "—"],
+    ["Elapsed", elapsed || "-"],
+    ["Processing", processing || "-"],
+    ["Rows", rows || "-"],
+    ["ETA", eta || "-"],
   ];
   for (const [label, value] of columns) {
     const item = document.createElement("div");
@@ -1789,7 +1789,7 @@ function renderStartupNotice(extra = "") {
   setSimulationNotice({
     status: stage,
     details: simRangeText(),
-    estimate: [extra, `Elapsed ${elapsed}`].filter(Boolean).join(" · "),
+    estimate: [extra, `Elapsed ${elapsed}`].filter(Boolean).join(" - "),
   });
 }
 
@@ -1867,10 +1867,10 @@ function setActiveSimulationTime(index) {
   resetSimulationRows();
   if (state.activeTimeInput === "end") {
     setSimulationEnd(index);
-    setSimulationNotice("Конец симуляции выбран по графику.");
+    setSimulationNotice("Simulation end selected from the chart.");
   } else {
     setSimulationStart(index);
-    setSimulationNotice("Старт симуляции выбран по графику.");
+    setSimulationNotice("Simulation start selected from the chart.");
   }
 }
 
@@ -1878,7 +1878,7 @@ function nudgeTimeInput(inputName, deltaMinutes) {
   const input = inputName === "end" ? simEndInput : simStartInput;
   const timestamp = parseInputTime(input.value);
   if (Number.isNaN(timestamp)) {
-    setSimulationNotice(`Не могу разобрать ${inputName === "end" ? "дату конца" : "дату старта"}. Используй формат 2026-02-01 00:00.`);
+    setSimulationNotice(`Cannot parse ${inputName === "end" ? "end date" : "start date"}. Use format 2026-02-01 00:00.`);
     return;
   }
   const index = rowIndexForTimestamp(timestamp + deltaMinutes * 60 * 1000, inputName === "end" ? "atOrBefore" : "atOrAfter");
@@ -1930,17 +1930,17 @@ function updateSimulationControls() {
   if (SERVER_SIMULATION_MODE) {
     if (serverSimulation.running && !serverSimulation.paused) {
       runSimulation.textContent = "PAUSE";
-      runSimulation.title = "Пауза серверной симуляции";
+      runSimulation.title = "Pause server simulation";
       runSimulation.disabled = false;
     } else {
       runSimulation.textContent = serverSimulation.paused ? "RESUME" : "START";
-      runSimulation.title = serverSimulation.paused ? "Продолжить серверную симуляцию" : "Запустить серверную симуляцию";
+      runSimulation.title = serverSimulation.paused ? "Resume server simulation" : "Start server simulation";
       runSimulation.disabled = false;
     }
     if (resetSimulationButton) {
       const hasActiveServerSimulation = Boolean(serverSimulation.id && (serverSimulation.running || serverSimulation.paused));
       resetSimulationButton.textContent = hasActiveServerSimulation ? "STOP" : "RESET";
-      resetSimulationButton.title = hasActiveServerSimulation ? "Остановить серверную симуляцию" : "Reset simulation";
+      resetSimulationButton.title = hasActiveServerSimulation ? "Stop server simulation" : "Reset simulation";
       resetSimulationButton.disabled = false;
     }
     if (stepBack) stepBack.disabled = true;
@@ -1949,17 +1949,17 @@ function updateSimulationControls() {
   }
   if (state.sim.initializing || state.sim.autoRunning) {
     runSimulation.textContent = "PAUSE";
-    runSimulation.title = "Пауза симуляции";
+    runSimulation.title = "Pause simulation";
   } else if (!state.sim.started) {
     runSimulation.textContent = "START";
-    runSimulation.title = "Старт симуляции";
+    runSimulation.title = "Start simulation";
   } else {
     runSimulation.textContent = "RESUME";
-    runSimulation.title = "Продолжить симуляцию";
+    runSimulation.title = "Resume simulation";
   }
   if (resetSimulationButton) {
     resetSimulationButton.textContent = state.sim.started || state.sim.initializing || state.sim.autoRunning ? "STOP" : "RESET";
-    resetSimulationButton.title = state.sim.started || state.sim.initializing || state.sim.autoRunning ? "Остановить симуляцию" : "Reset simulation";
+    resetSimulationButton.title = state.sim.started || state.sim.initializing || state.sim.autoRunning ? "Stop simulation" : "Reset simulation";
     resetSimulationButton.disabled = state.sim.rows.length === 0 && !state.sim.started && !state.sim.initializing;
   }
   if (stepBack) stepBack.disabled = state.sim.initializing || state.sim.autoRunning || state.sim.rows.length <= 1;
@@ -2195,11 +2195,11 @@ function getSimulationStartupState() {
 
 function simulationRawRowToCells(row) {
   if (!row || typeof row !== "object") return [];
-  const eventParts = [row.missingCandle ? `${row.event} · missing candle` : row.event];
+  const eventParts = [row.missingCandle ? `${row.event} - missing candle` : row.event];
   if (row.rebalance?.swapIsFallback) eventParts.push("swap fallback");
   return [
     row.time ? fmtInputTime(row.time) : "",
-    eventParts.filter(Boolean).join(" · "),
+    eventParts.filter(Boolean).join(" - "),
     fmtUsdc(row.value),
     fmtPrice(row.price),
     fmtNumber(row.weth, 8),
@@ -2238,7 +2238,7 @@ function renderSimulationTable(scrollToLatest = false) {
   simTableBody.innerHTML = state.sim.rows.map((row) => `
     <tr data-index="${row.index}" class="${row.index === state.sim.activeRowIndex ? "activeRow" : ""}" title="${simulationRowTitle(row)}">
       <td>${fmtInputTime(state.rows[row.index]?.time || "")}</td>
-      <td>${[row.event, row.rebalance?.swapIsFallback ? "swap fallback" : ""].filter(Boolean).join(" · ")}</td>
+      <td>${[row.event, row.rebalance?.swapIsFallback ? "swap fallback" : ""].filter(Boolean).join(" - ")}</td>
       <td>${fmtUsdc(row.value)}</td>
       <td>${fmtPrice(row.price)}</td>
       <td>${fmtNumber(row.weth, 8)}</td>
@@ -2301,7 +2301,7 @@ function setSimulationNotice(message, isError = false) {
   let notice = typeof message === "string" ? { status: message, details: "", isError } : { ...message };
 
   if (typeof message === "string" && !isError) {
-    if (message.includes("ошибка") || message.includes("Не удалось") || message.includes("Не могу") || message.includes("остановлена") || message.includes("недоступен") || message.includes("должна быть") || message.includes("должен быть")) {
+    if (message.includes("error") || message.includes("Failed") || message.includes("Cannot") || message.includes("stopped") || message.includes("unavailable") || message.includes("must be")) {
       notice.isError = true;
     }
   }
@@ -2309,8 +2309,8 @@ function setSimulationNotice(message, isError = false) {
   // Detect plan limits and upgrade to warning if it's a known RPC restriction
   if (isPlanLimitError(notice.status) || isPlanLimitError(notice.details)) {
     notice.isWarning = true;
-    notice.status = "⚠️ Ограничение RPC плана (Chainstack)";
-    notice.details = "Текущий план не поддерживает Archive/Debug запросы. Код пытается использовать кэш или упрощенные модели, но точность может пострадать или симуляция остановится.";
+    notice.status = "RPC plan limit (Chainstack)";
+    notice.details = "The current plan does not support Archive/Debug requests. The app will try cached data or simplified models, but accuracy may suffer or the simulation may stop.";
   }
 
   let statusEl = simNotice.querySelector(".simNoticeStatus");
@@ -2337,9 +2337,9 @@ function setSimulationNotice(message, isError = false) {
   if (estimateEl.textContent !== nextEstimate) estimateEl.textContent = nextEstimate;
 
   // Add "Update Token" button if it's an auth error
-  if (notice.isError && (String(notice.status).includes("SSE") || String(notice.details).includes("токен") || String(notice.details).includes("авторизац"))) {
+  if (notice.isError && (String(notice.status).includes("SSE") || String(notice.details).includes("token") || String(notice.details).includes("authoriz"))) {
     const btn = document.createElement("button");
-    btn.textContent = "Обновить токен";
+    btn.textContent = "Update token";
     btn.style.cssText = "margin-top:8px;padding:4px 12px;font-size:12px;border:1px solid #ccc;border-radius:4px;background:white;cursor:pointer;";
     btn.onclick = async () => {
       const token = await showTokenPrompt();
@@ -2411,10 +2411,10 @@ function showTokenPrompt() {
     const content = document.createElement('div');
     content.style.cssText = 'background:white;padding:20px;border-radius:5px;max-width:400px;width:90%;';
     content.innerHTML = `
-      <p style="margin:0 0 10px 0;">Введите ADMIN_API_TOKEN для серверной операции:</p>
+      <p style="margin:0 0 10px 0;">Enter ADMIN_API_TOKEN for the server operation:</p>
       <input type="password" id="tokenInput" style="width:100%;padding:8px;margin:0 0 10px 0;border:1px solid #ccc;border-radius:3px;">
       <div style="text-align:right;">
-        <button id="cancelBtn" style="margin-right:10px;padding:8px 16px;border:1px solid #ccc;border-radius:3px;background:#f5f5f5;">Отмена</button>
+        <button id="cancelBtn" style="margin-right:10px;padding:8px 16px;border:1px solid #ccc;border-radius:3px;background:#f5f5f5;">Cancel</button>
         <button id="okBtn" style="padding:8px 16px;border:1px solid #007bff;border-radius:3px;background:#007bff;color:white;">OK</button>
       </div>
     `;
@@ -2544,7 +2544,7 @@ function serverSimulationText(simulation) {
   const latestRawRow = payload.latestRawRow || rawRows.at?.(-1) || null;
   const rows = payload.rows || payload.rawRowCount || progress.rawRowCount || result.rawRowCount || 0;
   const elapsed = payload.elapsedSeconds ? formatDuration(payload.elapsedSeconds * 1000) : "";
-  const notice = (payload.notice || simulation?.error || "").replace(/до даты конца/g, "до конца");
+  const notice = (payload.notice || simulation?.error || "").replace(/to the end date/g, "to the end");
   return {
     rows,
     elapsed,
@@ -2597,8 +2597,8 @@ function serverProgressSummary(simulation) {
     elapsed: formatCompactDurationSeconds(elapsedSeconds),
     processing: serverProcessingLabel(simulation) || (state.sim.initialRangeReady ? simRangeText() : "Range: calculating..."),
     rows: (state.sim.skeletonVisible && !serverSimulation.rawRows.length)
-      ? (totalRows > 0 ? `— / ${totalRows}` : "—")
-      : (totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / —` : "—")),
+      ? (totalRows > 0 ? `- / ${totalRows}` : "-")
+      : (totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / -` : "-")),
     eta: serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows),
   };
 }
@@ -2619,7 +2619,7 @@ function renderBackgroundProgressPanel(summary) {
     const labelEl = document.createElement("span");
     labelEl.textContent = label;
     const valueEl = document.createElement("strong");
-    valueEl.textContent = value || "—";
+    valueEl.textContent = value || "-";
     item.append(labelEl, valueEl);
     backgroundProgressPanel.append(item);
   });
@@ -2635,7 +2635,7 @@ function renderServerObservationMode(summary = null) {
   if (simNotice) simNotice.hidden = backgroundActive;
   if (closeLiveViewButton) closeLiveViewButton.hidden = !(SERVER_SIMULATION_MODE && serverSimulation.id && serverSimulation.running && serverSimulation.liveViewOpen);
   if (serverBackgroundOverlayText && summary) {
-    serverBackgroundOverlayText.textContent = `${summary.status || "running"} · ${summary.rows || "—"} rows · ETA ${summary.eta || "—"}`;
+    serverBackgroundOverlayText.textContent = `${summary.status || "running"} - ${summary.rows || "-"} rows - ETA ${summary.eta || "-"}`;
   }
   if (backgroundActive) {
     if (summary) renderBackgroundProgressPanel(summary);
@@ -2713,7 +2713,7 @@ function serverJobMeta(simulation) {
     info.currentValue || "",
     info.currentReward ? info.currentReward : "",
     created,
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).join(" - ");
 }
 
 function resultTabId(id) {
@@ -2821,11 +2821,11 @@ function swapFallbackSummary(rawRows = []) {
   });
   const reasons = Array.from(reasonCounts.entries())
     .sort((left, right) => right[1] - left[1])
-    .map(([reason, count]) => `${reason} ×${count}`);
+    .map(([reason, count]) => `${reason} x${count}`);
   return {
     label: `${fallbackRows.length} / ${rebalanceRows.length}`,
     reasons,
-    details: reasons.length ? `${fallbackRows.length} / ${rebalanceRows.length} · ${reasons.join("; ")}` : `${fallbackRows.length} / ${rebalanceRows.length}`,
+    details: reasons.length ? `${fallbackRows.length} / ${rebalanceRows.length} - ${reasons.join("; ")}` : `${fallbackRows.length} / ${rebalanceRows.length}`,
   };
 }
 
@@ -3253,7 +3253,7 @@ function renderSimulationResultView(simulation) {
     if (resultSubtitle) resultSubtitle.textContent = [
       "loading detailed result",
       simulation.id ? `id: ${simulation.id}` : "",
-    ].filter(Boolean).join(" В· ");
+    ].filter(Boolean).join(" - ");
     renderSimulationResultLoading(simulation);
     return;
   }
@@ -3270,7 +3270,7 @@ function renderSimulationResultView(simulation) {
       created ? `created: ${created}` : "",
       finished ? `finished: ${finished}` : "",
       `id: ${simulation.id}`,
-    ].filter(Boolean).join(" · ");
+    ].filter(Boolean).join(" - ");
   }
   if (resultSummary) {
     const rawRows = simulation?.result?.rawRows || simulation?.progress?.rawRows || [];
@@ -3637,13 +3637,13 @@ function renderServerSimulation(simulation, options = {}) {
     elapsed: formatCompactDurationSeconds(elapsedSeconds),
     processing: serverProcessingTimestamp(simulation) || (state.sim.initialRangeReady ? simRangeText() : "Range: calculating..."),
     rows: (state.sim.skeletonVisible && !serverSimulation.rawRows.length)
-      ? (totalRows > 0 ? `— / ${totalRows}` : "—")
-      : (totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / —` : "—")),
+      ? (totalRows > 0 ? `- / ${totalRows}` : "-")
+      : (totalRows > 0 ? `${rowsDone} / ${totalRows}` : (rowsDone > 0 ? `${rowsDone} / -` : "-")),
     eta: serverEtaText(simulation, elapsedSeconds, rowsDone, totalRows),
   });
   if (isServerSimulationTerminal(simulation.status) && simulation.status !== "completed" && info.notice) {
     setSimulationNotice({
-      status: `Симуляция остановлена: ${simulation.status}`,
+      status: `Simulation stopped: ${simulation.status}`,
       details: info.notice,
       estimate: "",
       isError: true,
@@ -3686,8 +3686,8 @@ async function pollServerSimulation(id) {
       const retryMs = Math.max(5000, error.retryAfterSeconds ? error.retryAfterSeconds * 1000 : (serverSimulation.pollBackoffMs || SERVER_SIMULATION_POLL_MS) * 2);
       serverSimulation.pollBackoffMs = Math.min(60000, retryMs);
       setSimulationNotice({
-        status: "Сервер ограничил частоту чтения прогресса.",
-        details: `Следующая попытка через ${Math.ceil(retryMs / 1000)}s. Симуляция продолжает считаться на сервере.`,
+        status: "The server rate-limited progress polling.",
+        details: `Next attempt in ${Math.ceil(retryMs / 1000)}s. The simulation continues on the server.`,
         estimate: "",
       });
       serverSimulation.pollTimer = setTimeout(() => pollServerSimulation(id), retryMs);
@@ -3695,7 +3695,7 @@ async function pollServerSimulation(id) {
     }
     serverSimulation.running = false;
     stopServerSimulationPolling();
-    setSimulationNotice(`Не могу прочитать серверную симуляцию: ${error.message}`);
+    setSimulationNotice(`Cannot read server simulation: ${error.message}`);
     updateSimulationControls();
   }
 }
@@ -3754,11 +3754,11 @@ async function watchServerSimulation(id) {
     const delayMs = Math.max(5000, serverSimulation.pollBackoffMs || SERVER_SIMULATION_POLL_MS);
     serverSimulation.pollBackoffMs = Math.min(60000, delayMs * 2);
 
-    let errorMessage = "Ошибка потока событий (SSE). Проверьте соединение или авторизацию.";
+    let errorMessage = "Event stream error (SSE). Check the connection or authorization.";
     if (!adminToken) {
-      errorMessage = "SSE ошибка: отсутствует admin_token. Проверьте авторизацию.";
+      errorMessage = "SSE error: admin_token is missing. Check authorization.";
     } else if (source.readyState === EventSource.CLOSED) {
-      errorMessage = "SSE соединение закрыто. Возможно, неверный токен (401/403) или сервер недоступен.";
+      errorMessage = "SSE connection closed. The token may be invalid (401/403) or the server may be unavailable.";
     }
     setSimulationNotice({ status: "SSE Error", details: errorMessage, isError: true });
 
@@ -3786,7 +3786,7 @@ function pauseServerSimulation() {
   serverSimulation.running = false;
   serverSimulation.paused = true;
   stopSimulationElapsedTimer();
-  setSimulationNotice({ status: "Пауза.", details: "", estimate: "" });
+  setSimulationNotice({ status: "Paused.", details: "", estimate: "" });
   updateSimulationControls();
 }
 
@@ -3913,27 +3913,27 @@ async function startServerSimulation() {
     return;
   }
   if (!serverSimulation.available) {
-    setSimulationNotice("Серверный API недоступен. Запусти приложение через scripts/serve_with_rpc.py.");
+    setSimulationNotice("Server API is unavailable. Start the app with scripts/serve_with_rpc.py.");
     return;
   }
   const inputTimestamp = parseInputTime(simStartInput.value);
   const endTimestamp = parseInputTime(simEndInput.value);
   if (Number.isNaN(inputTimestamp) || Number.isNaN(endTimestamp)) {
-    setSimulationNotice("Не могу разобрать даты. Используй формат 2026-02-01 00:00.");
+    setSimulationNotice("Cannot parse dates. Use format 2026-02-01 00:00.");
     return;
   }
   if (endTimestamp <= inputTimestamp) {
-    setSimulationNotice("Дата конца должна быть позже даты старта.");
+    setSimulationNotice("End date must be later than start date.");
     return;
   }
   const depositUsdc = parseNumericInput(depositInput.value);
   const rangePercent = parseRangePercent(rangePercentInput.value);
   if (!Number.isFinite(depositUsdc) || depositUsdc <= 0) {
-    setSimulationNotice("Сумма депозита должна быть положительным числом.");
+    setSimulationNotice("Deposit amount must be a positive number.");
     return;
   }
   if (!Number.isFinite(rangePercent) || rangePercent <= 0 || rangePercent >= 100) {
-    setSimulationNotice("Диапазон должен быть положительным числом меньше 100%.");
+    setSimulationNotice("Range must be a positive number below 100%.");
     return;
   }
   resetSimulationRows();
@@ -3948,7 +3948,7 @@ async function startServerSimulation() {
     const startIndex = rowIndexForTimestamp(inputTimestamp, "atOrAfter");
     const endIndex = rowIndexForTimestamp(endTimestamp, "atOrBefore");
     if (endIndex <= startIndex) {
-      setSimulationNotice("Дата конца должна быть позже даты старта.");
+      setSimulationNotice("End date must be later than start date.");
       serverSimulation.running = false;
       updateSimulationControls();
       return;
@@ -3979,9 +3979,9 @@ async function startServerSimulation() {
   setServerSimulationProgressNotice({
     status: "starting",
     elapsed: "0s",
-    processing: "—",
-    rows: totalRows > 0 ? `0 / ${totalRows}` : "0 / —",
-    eta: "—",
+    processing: "-",
+    rows: totalRows > 0 ? `0 / ${totalRows}` : "0 / -",
+    eta: "-",
   });
   try {
     const simulation = await fetchJson("/api/simulations", {
@@ -4003,7 +4003,7 @@ async function startServerSimulation() {
     serverSimulation.paused = false;
     stopSimulationElapsedTimer();
     setSimulationSkeletonVisible(false);
-    setSimulationNotice(`Не удалось запустить серверную симуляцию: ${error.message}`, true);
+    setSimulationNotice(`Failed to start server simulation: ${error.message}`, true);
     updateSimulationControls();
   }
 }
@@ -4025,7 +4025,7 @@ async function startSimulation() {
     state.sim.runToken += 1;
     state.sim.autoLoopId += 1;
     updateSimulationControls();
-    setSimulationNotice("Старт симуляции отменен. Нажми START, чтобы начать заново.");
+    setSimulationNotice("Simulation start canceled. Press START to begin again.");
     return;
   }
   if (state.sim.started) {
@@ -4038,7 +4038,7 @@ async function startSimulation() {
       state.sim.autoLoopId += 1;
       runAutoSimulationLoop(state.sim.runToken, state.sim.autoLoopId);
     } else {
-      setSimulationNotice({ status: "Пауза.", details: simulationProgressText(), estimate: "" });
+      setSimulationNotice({ status: "Paused.", details: simulationProgressText(), estimate: "" });
     }
     return;
   }
@@ -4046,29 +4046,29 @@ async function startSimulation() {
   resetSimulationRows();
   const inputTimestamp = parseInputTime(simStartInput.value);
   if (Number.isNaN(inputTimestamp)) {
-    setSimulationNotice("Не могу разобрать дату старта. Используй формат 2026-02-01 00:00.");
+    setSimulationNotice("Cannot parse start date. Use format 2026-02-01 00:00.");
     return;
   }
   const endTimestamp = parseInputTime(simEndInput.value);
   if (Number.isNaN(endTimestamp)) {
-    setSimulationNotice("Не могу разобрать дату конца. Используй формат 2026-04-30 23:59.");
+    setSimulationNotice("Cannot parse end date. Use format 2026-04-30 23:59.");
     return;
   }
   const startIndex = rowIndexForTimestamp(inputTimestamp, "atOrAfter");
   const endIndex = rowIndexForTimestamp(endTimestamp, "atOrBefore");
   if (endIndex <= startIndex) {
-    setSimulationNotice("Дата конца должна быть позже даты старта.");
+    setSimulationNotice("End date must be later than start date.");
     return;
   }
   const startRow = state.rows[startIndex];
   const depositUsdc = parseNumericInput(depositInput.value);
   if (!Number.isFinite(depositUsdc) || depositUsdc <= 0) {
-    setSimulationNotice("Сумма депозита должна быть положительным числом.");
+    setSimulationNotice("Deposit amount must be a positive number.");
     return;
   }
   const rangePercent = parseRangePercent(rangePercentInput.value);
   if (!Number.isFinite(rangePercent) || rangePercent <= 0 || rangePercent >= 100) {
-    setSimulationNotice("Диапазон должен быть положительным числом меньше 100%.");
+    setSimulationNotice("Range must be a positive number below 100%.");
     return;
   }
   state.sim.depositUsdc = depositUsdc;
@@ -4139,14 +4139,14 @@ async function startSimulation() {
     ensureActiveSimulation(runToken);
     setSimulationSkeletonVisible(false);
     stopSimulationElapsedTimer();
-    setSimulationNotice({ status: "Симуляция запущена.", details: simulationProgressText(), estimate: "" });
+    setSimulationNotice({ status: "Simulation started.", details: simulationProgressText(), estimate: "" });
     renderSimulationTable(true);
     state.sim.autoLoopId += 1;
     runAutoSimulationLoop(state.sim.runToken, state.sim.autoLoopId);
   } catch (error) {
     if (runToken !== state.sim.runToken) return;
     resetSimulationRows();
-    console.error(error); setSimulationNotice(`Симуляция остановлена: ${error.stack || error.message}`, true);
+    console.error(error); setSimulationNotice(`Simulation stopped: ${error.stack || error.message}`, true);
   }
 }
 async function stepSimulationForward(options = {}) {
@@ -4159,7 +4159,7 @@ function stepSimulationBack() {
   state.sim.activeRowIndex = state.sim.currentIndex;
   applySimState(state.sim.rows[state.sim.rows.length - 1].stateAfter);
   state.sim.stopped = false;
-  setSimulationNotice({ status: "Шаг назад.", details: simulationProgressText(), estimate: "" });
+  setSimulationNotice({ status: "Stepped back.", details: simulationProgressText(), estimate: "" });
   renderSimulationTable();
 }
 
@@ -4168,13 +4168,13 @@ function resetSimulation() {
   serverSimulation.rawRows = [];
   serverSimulation.finalResultFetched = false;
   if (SERVER_SIMULATION_MODE) setServerUiMode("live");
-  setSimulationNotice("Симуляция сброшена. Нажми START, чтобы начать заново.");
+  setSimulationNotice("Simulation reset. Press START to begin again.");
 }
 
 function resetOrStopSimulation() {
   if (SERVER_SIMULATION_MODE && serverSimulation.id && (serverSimulation.running || serverSimulation.paused)) {
     cancelServerSimulation(serverSimulation.id).catch((error) => {
-      setSimulationNotice(`Не удалось остановить серверную симуляцию: ${error.message}`);
+      setSimulationNotice(`Failed to stop server simulation: ${error.message}`);
     });
     return;
   }
@@ -4465,7 +4465,7 @@ if (resultTabs) {
 simStartInput.addEventListener("change", () => {
   const timestamp = parseInputTime(simStartInput.value);
   if (Number.isNaN(timestamp)) {
-    setSimulationNotice("Не могу разобрать дату старта. Используй формат 2026-02-01 00:00.");
+    setSimulationNotice("Cannot parse start date. Use format 2026-02-01 00:00.");
     return;
   }
   resetSimulationRows();
@@ -4484,7 +4484,7 @@ simStartInput.addEventListener("keydown", (event) => {
 simEndInput.addEventListener("change", () => {
   const timestamp = parseInputTime(simEndInput.value);
   if (Number.isNaN(timestamp)) {
-    setSimulationNotice("Не могу разобрать дату конца. Используй формат 2026-04-30 23:59.");
+    setSimulationNotice("Cannot parse end date. Use format 2026-04-30 23:59.");
     return;
   }
   resetSimulationRows();
@@ -4570,13 +4570,13 @@ function formatCsvBytes(bytes) {
 }
 
 async function loadCsvWithProgress(url) {
-  statusEl.textContent = "Загрузка CSV... 0%";
+  statusEl.textContent = "Loading CSV... 0%";
   const response = await fetch(url);
   if (!response.ok) throw new Error(`CSV load failed: ${response.status}`);
   const total = Number(response.headers?.get?.("content-length") || 0);
   if (!response.body || !response.body.getReader) {
     const text = await response.text();
-    statusEl.textContent = `CSV скачан (${formatCsvBytes(text.length)}), обработка...`;
+    statusEl.textContent = `CSV downloaded (${formatCsvBytes(text.length)}), processing...`;
     return text;
   }
   const reader = response.body.getReader();
@@ -4592,22 +4592,22 @@ async function loadCsvWithProgress(url) {
     if (now - lastUpdate > 100) {
       if (total > 0) {
         const percent = Math.min(100, Math.round((received / total) * 100));
-        statusEl.textContent = `Загрузка CSV... ${percent}% (${formatCsvBytes(received)} из ${formatCsvBytes(total)})`;
+        statusEl.textContent = `Loading CSV... ${percent}% (${formatCsvBytes(received)} of ${formatCsvBytes(total)})`;
       } else {
-        statusEl.textContent = `Загрузка CSV... ${formatCsvBytes(received)}`;
+        statusEl.textContent = `Loading CSV... ${formatCsvBytes(received)}`;
       }
       lastUpdate = now;
     }
   }
-  statusEl.textContent = `CSV скачан (${formatCsvBytes(received)}), обработка...`;
+  statusEl.textContent = `CSV downloaded (${formatCsvBytes(received)}), processing...`;
   return new TextDecoder().decode(await new Blob(chunks).arrayBuffer());
 }
 
 loadCsvWithProgress(CSV_FILE)
   .then((text) => {
-    statusEl.textContent = "CSV скачан, парсинг...";
+    statusEl.textContent = "CSV downloaded, parsing...";
     const csvRows = parseCsv(text);
-    statusEl.textContent = "CSV распарсен, построение минутной сетки...";
+    statusEl.textContent = "CSV parsed, building minute grid...";
     state.dataQuality = analyzeDataQuality(csvRows);
     state.dataQuality.source = CSV_FILE;
     state.rows = buildCompleteMinuteRows(csvRows);
@@ -4622,7 +4622,7 @@ loadCsvWithProgress(CSV_FILE)
     loadInitialServerSimulations();
   })
   .catch((error) => {
-    statusEl.textContent = `CSV не загружен, ${error.message}`;
+    statusEl.textContent = `CSV not loaded, ${error.message}`;
     statusEl.title = error.stack || error.message;
     console.error(error);
   });

@@ -707,7 +707,7 @@
         state.sim.stopped = true;
         state.sim.autoRunning = false;
         if (shouldRender) {
-          setSimulationNotice({ status: "Симуляция дошла до конца.", details: simulationProgressText(), estimate: "" });
+          setSimulationNotice({ status: "Simulation reached the end.", details: simulationProgressText(), estimate: "" });
           updateSimulationControls();
         }
         return false;
@@ -719,7 +719,7 @@
       const stepStartedAt = performance.now();
       const previous = state.sim.rows[state.sim.rows.length - 1];
       const nextTimestamp = Math.floor(new Date(state.rows[nextIndex].time).getTime() / 1000);
-      if (shouldRender) setSimulationNotice({ status: "Считаю следующую свечу...", details: simulationProgressText(), estimate: "" });
+      if (shouldRender) setSimulationNotice({ status: "Calculating next candle...", details: simulationProgressText(), estimate: "" });
 
       try {
         let phaseStartedAt = performance.now();
@@ -759,7 +759,7 @@
           state.sim.rows.push(rebalanceRow);
           state.sim.activeRowIndex = nextIndex;
           state.sim.stopped = false;
-          if (shouldRender) setSimulationNotice({ status: "Rebalance рассчитан.", details: simulationProgressText(), estimate: "" });
+          if (shouldRender) setSimulationNotice({ status: "Rebalance calculated.", details: simulationProgressText(), estimate: "" });
         } else {
           phaseStartedAt = performance.now();
           const simulationRow = await buildSimulationRow(nextIndex, "price change", nextBlock, runToken);
@@ -768,12 +768,12 @@
           state.sim.rows.push(simulationRow);
           state.sim.activeRowIndex = nextIndex;
           recordSimulationStepDuration(stepStartedAt);
-          if (shouldRender) setSimulationNotice({ status: "Свеча рассчитана.", details: simulationProgressText(), estimate: "" });
+          if (shouldRender) setSimulationNotice({ status: "Candle calculated.", details: simulationProgressText(), estimate: "" });
         }
 
         if (exitConfirmed) {
           recordSimulationStepDuration(stepStartedAt);
-          if (shouldRender) setSimulationNotice({ status: "Rebalance рассчитан.", details: simulationProgressText(), estimate: "" });
+          if (shouldRender) setSimulationNotice({ status: "Rebalance calculated.", details: simulationProgressText(), estimate: "" });
         }
         if (shouldRender) renderSimulationTable(true);
         return true;
@@ -781,7 +781,7 @@
         if (runToken !== state.sim.runToken || !state.sim.started) return false;
         state.sim.stopped = true;
         state.sim.autoRunning = false;
-        setSimulationNotice(`Симуляция остановлена: ${error.message}`);
+        setSimulationNotice(`Simulation stopped: ${error.message}`);
         renderSimulationTable();
         return false;
       } finally {
@@ -813,7 +813,7 @@
           }
           let phaseStartedAt = performance.now();
           setSimulationNotice({
-            status: "Симуляция считается...",
+            status: "Simulation is running...",
             details: simulationProgressText(),
             estimate: "",
           });
@@ -830,7 +830,7 @@
         state.sim.autoRunning = false;
         if (state.sim.currentIndex >= state.sim.endIndex) {
           const phaseStartedAt = performance.now();
-          setSimulationNotice({ status: "Симуляция дошла до конца.", details: simulationProgressText(), estimate: "" });
+          setSimulationNotice({ status: "Simulation reached the end.", details: simulationProgressText(), estimate: "" });
           recordSimulationTiming("runAutoLoop.finalNotice", phaseStartedAt);
         }
         const renderStartedAt = performance.now();
