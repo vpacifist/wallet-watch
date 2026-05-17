@@ -1207,6 +1207,137 @@ function resizeCanvas() {
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
 }
 
+function drawSimulationRangeBounds(ctx, {
+  bounds,
+  min,
+  max,
+  yFor,
+  pad,
+  width,
+  height,
+  segmentStartX = pad.left,
+  segmentEndX = width - pad.right,
+  labelSuffix = "",
+}) {
+  const activeBounds = bounds
+    .filter(({ price }) => Number.isFinite(price) && price >= min && price <= max)
+    .map((bound) => ({ ...bound, y: yFor(bound.price) }));
+  const activeBoundsAreTight = activeBounds.length === 2 && Math.abs(activeBounds[0].y - activeBounds[1].y) < 34;
+  activeBounds.forEach(({ label, price, color, y }) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(segmentStartX, y);
+    ctx.lineTo(segmentEndX, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const text = `${label}${labelSuffix} ${fmtPrice(price)}`;
+    const textWidth = ctx.measureText(text).width;
+    const labelX = Math.max(segmentStartX + 4, segmentEndX - textWidth - 8);
+    const preferredLabelY = activeBoundsAreTight && label === "lower" ? y + 16 : y - 6;
+    const labelY = Math.max(pad.top + 13, Math.min(height - pad.bottom - 4, preferredLabelY));
+    ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
+    ctx.fillRect(labelX - 4, labelY - 11, textWidth + 8, 15);
+    ctx.fillStyle = "#f25f5c";
+    ctx.fillText(text, labelX, labelY);
+  });
+}
+
+function drawChartTimeGrid(ctx, { firstTime, lastTime, visibleDays, xForTime, pad, width, height }) {
+  const ticks = {
+    dayTicks: [],
+    weekTicks: [],
+    middayTicks: [],
+    labeledHourTicks: [],
+    allHourTicks: [],
+  };
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.left, pad.top, width - pad.left - pad.right, height - pad.top - pad.bottom);
+  ctx.clip();
+
+  const firstDay = startOfUtcDay(new Date(firstTime));
+  for (let timestamp = firstDay; timestamp <= lastTime; timestamp = addUtcDays(timestamp, 1)) {
+    const date = new Date(timestamp);
+    const isMonth = date.getUTCDate() === 1;
+    const isWeek = date.getUTCDay() === 1;
+    if (timestamp >= firstTime) {
+      ticks.dayTicks.push(timestamp);
+      if (isWeek) ticks.weekTicks.push(timestamp);
+      const x = xForTime(timestamp);
+      ctx.strokeStyle = isMonth ? "rgba(23, 32, 51, 0.24)" : isWeek ? "rgba(23, 32, 51, 0.16)" : "rgba(23, 32, 51, 0.1)";
+      ctx.lineWidth = visibleDays < 7 ? (isMonth ? 2.2 : isWeek ? 1.8 : 1.55) : (isMonth ? 1.5 : isWeek ? 1.1 : 0.75);
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, height - pad.bottom);
+      ctx.stroke();
+    }
+
+    if (visibleDays < 1 && timestamp >= firstTime && timestamp <= lastTime) {
+      ticks.allHourTicks.push(timestamp);
+    }
+
+    const midday = addUtcHours(timestamp, 12);
+    if (visibleDays >= 3 && visibleDays < 7 && midday >= firstTime && midday <= lastTime) {
+      ticks.middayTicks.push(midday);
+      const x = xForTime(midday);
+      ctx.strokeStyle = "rgba(242, 95, 92, 0.18)";
+      ctx.lineWidth = 0.9;
+      ctx.beginPath();
+      ctx.moveTo(x, pad.top);
+      ctx.lineTo(x, height - pad.bottom);
+      ctx.stroke();
+    }
+
+    for (let hour = 1; hour < 24; hour += 1) {
+      const hourTick = addUtcHours(timestamp, hour);
+      if (visibleDays < 3 && hourTick >= firstTime && hourTick <= lastTime) {
+        if (visibleDays < 1) ticks.allHourTicks.push(hourTick);
+        if (hour === 6 || hour === 12 || hour === 18) ticks.labeledHourTicks.push(hourTick);
+        const x = xForTime(hourTick);
+        ctx.strokeStyle = hour === 6 || hour === 12 || hour === 18 ? "rgba(242, 95, 92, 0.14)" : "rgba(23, 32, 51, 0.07)";
+        ctx.lineWidth = 0.75;
+        ctx.beginPath();
+        ctx.moveTo(x, pad.top);
+        ctx.lineTo(x, height - pad.bottom);
+        ctx.stroke();
+      }
+    }
+  }
+
+  ctx.restore();
+  return ticks;
+}
+
+function drawChartTimeAxisLabels(ctx, { ticks, visibleDays, xForTime, height }) {
+  ctx.fillStyle = "#647087";
+  ctx.font = visibleDays < 7 ? "600 12px Inter, system-ui, sans-serif" : "12px Inter, system-ui, sans-serif";
+  const xLabelTicks = visibleDays < 1 ? [] : visibleDays <= 14 ? ticks.dayTicks : ticks.weekTicks;
+  xLabelTicks.forEach((timestamp) => {
+    ctx.fillText(fmtAxisTime(timestamp), xForTime(timestamp), height - 14);
+  });
+  ctx.font = "12px Inter, system-ui, sans-serif";
+  if (visibleDays >= 3 && visibleDays < 7) {
+    ticks.middayTicks.forEach((timestamp) => {
+      ctx.fillText(fmtAxisHour(timestamp), xForTime(timestamp), height - 14);
+    });
+  }
+  if (visibleDays < 1) {
+    ticks.allHourTicks.forEach((timestamp) => {
+      const hour = new Date(timestamp).getUTCHours();
+      ctx.font = hour === 6 || hour === 12 || hour === 18 ? "600 12px Inter, system-ui, sans-serif" : "12px Inter, system-ui, sans-serif";
+      ctx.fillText(fmtAxisHour(timestamp), xForTime(timestamp), height - 14);
+    });
+  } else if (visibleDays < 3) {
+    ticks.labeledHourTicks.forEach((timestamp) => {
+      ctx.fillText(fmtAxisHour(timestamp), xForTime(timestamp), height - 14);
+    });
+  }
+  ctx.font = "12px Inter, system-ui, sans-serif";
+}
+
 function draw() {
   resizeCanvas();
   const width = canvas.clientWidth;
@@ -1262,64 +1393,7 @@ function draw() {
   const xForTime = (timestamp) => pad.left + ((timestamp - firstTime) / Math.max(1, lastTime - firstTime)) * plotW;
   const visibleDays = (lastTime - firstTime) / (24 * 60 * 60 * 1000);
 
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(pad.left, pad.top, plotW, plotH);
-  ctx.clip();
-  const firstDay = startOfUtcDay(new Date(firstTime));
-  const dayTicks = [];
-  const weekTicks = [];
-  const middayTicks = [];
-  const labeledHourTicks = [];
-  const allHourTicks = [];
-  for (let timestamp = firstDay; timestamp <= lastTime; timestamp = addUtcDays(timestamp, 1)) {
-    const date = new Date(timestamp);
-    const isMonth = date.getUTCDate() === 1;
-    const isWeek = date.getUTCDay() === 1;
-    if (timestamp >= firstTime) {
-      dayTicks.push(timestamp);
-      if (isWeek) weekTicks.push(timestamp);
-      const x = xForTime(timestamp);
-      ctx.strokeStyle = isMonth ? "rgba(23, 32, 51, 0.24)" : isWeek ? "rgba(23, 32, 51, 0.16)" : "rgba(23, 32, 51, 0.1)";
-      ctx.lineWidth = visibleDays < 7 ? (isMonth ? 2.2 : isWeek ? 1.8 : 1.55) : (isMonth ? 1.5 : isWeek ? 1.1 : 0.75);
-      ctx.beginPath();
-      ctx.moveTo(x, pad.top);
-      ctx.lineTo(x, height - pad.bottom);
-      ctx.stroke();
-    }
-
-    if (visibleDays < 1 && timestamp >= firstTime && timestamp <= lastTime) {
-      allHourTicks.push(timestamp);
-    }
-
-    const midday = addUtcHours(timestamp, 12);
-    if (visibleDays >= 3 && visibleDays < 7 && midday >= firstTime && midday <= lastTime) {
-      middayTicks.push(midday);
-      const x = xForTime(midday);
-      ctx.strokeStyle = "rgba(242, 95, 92, 0.18)";
-      ctx.lineWidth = 0.9;
-      ctx.beginPath();
-      ctx.moveTo(x, pad.top);
-      ctx.lineTo(x, height - pad.bottom);
-      ctx.stroke();
-    }
-
-    for (let hour = 1; hour < 24; hour += 1) {
-      const hourTick = addUtcHours(timestamp, hour);
-      if (visibleDays < 3 && hourTick >= firstTime && hourTick <= lastTime) {
-        if (visibleDays < 1) allHourTicks.push(hourTick);
-        if (hour === 6 || hour === 12 || hour === 18) labeledHourTicks.push(hourTick);
-        const x = xForTime(hourTick);
-        ctx.strokeStyle = hour === 6 || hour === 12 || hour === 18 ? "rgba(242, 95, 92, 0.14)" : "rgba(23, 32, 51, 0.07)";
-        ctx.lineWidth = 0.75;
-        ctx.beginPath();
-        ctx.moveTo(x, pad.top);
-        ctx.lineTo(x, height - pad.bottom);
-        ctx.stroke();
-      }
-    }
-  }
-  ctx.restore();
+  const timeTicks = drawChartTimeGrid(ctx, { firstTime, lastTime, visibleDays, xForTime, pad, width, height });
 
   ctx.fillStyle = "#647087";
   ctx.font = "12px Inter, system-ui, sans-serif";
@@ -1339,31 +1413,6 @@ function draw() {
       ctx.fillText(fmtPrice(price), width - pad.right + 12, y + 4);
     }
   });
-  const drawRangeBounds = (bounds, segmentStartX = pad.left, segmentEndX = width - pad.right, labelSuffix = "") => {
-    const activeBounds = bounds
-      .filter(({ price }) => price >= min && price <= max)
-      .map((bound) => ({ ...bound, y: yFor(bound.price) }));
-    const activeBoundsAreTight = activeBounds.length === 2 && Math.abs(activeBounds[0].y - activeBounds[1].y) < 34;
-    activeBounds.forEach(({ label, price, color, y }) => {
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([6, 4]);
-      ctx.beginPath();
-      ctx.moveTo(segmentStartX, y);
-      ctx.lineTo(segmentEndX, y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      const text = `${label}${labelSuffix} ${fmtPrice(price)}`;
-      const textWidth = ctx.measureText(text).width;
-      const labelX = Math.max(segmentStartX + 4, segmentEndX - textWidth - 8);
-      const preferredLabelY = activeBoundsAreTight && label === "lower" ? y + 16 : y - 6;
-      const labelY = Math.max(pad.top + 13, Math.min(height - pad.bottom - 4, preferredLabelY));
-      ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
-      ctx.fillRect(labelX - 4, labelY - 11, textWidth + 8, 15);
-      ctx.fillStyle = "#f25f5c";
-      ctx.fillText(text, labelX, labelY);
-    });
-  };
   if (state.sim.started || state.sim.initialRangeReady || chartSimulationRows().length) {
     const activeSimRow = activeChartSimulationRow();
     if (activeSimRow?.rebalance) {
@@ -1371,22 +1420,22 @@ function draw() {
       const markerX = Number.isFinite(timestamp) ? xForTime(timestamp) : null;
       const rb = activeSimRow.rebalance;
       if (Number.isFinite(markerX) && markerX >= pad.left && markerX <= width - pad.right) {
-        drawRangeBounds([
+        drawSimulationRangeBounds(ctx, { bounds: [
           { label: "lower", price: priceForTick(rb.oldTickLower), color: "rgba(242, 95, 92, 0.72)" },
           { label: "upper", price: priceForTick(rb.oldTickUpper), color: "rgba(242, 95, 92, 0.72)" },
-        ], pad.left, markerX, " old");
-        drawRangeBounds([
+        ], min, max, yFor, pad, width, height, segmentStartX: pad.left, segmentEndX: markerX, labelSuffix: " old" });
+        drawSimulationRangeBounds(ctx, { bounds: [
           { label: "lower", price: priceForTick(rb.newTickLower), color: "rgba(242, 95, 92, 0.9)" },
           { label: "upper", price: priceForTick(rb.newTickUpper), color: "rgba(242, 95, 92, 0.9)" },
-        ], markerX, width - pad.right, " new");
+        ], min, max, yFor, pad, width, height, segmentStartX: markerX, segmentEndX: width - pad.right, labelSuffix: " new" });
       }
     } else {
       const tickLower = Number.isFinite(activeSimRow?.tickLower) ? activeSimRow.tickLower : state.sim.tickLower;
       const tickUpper = Number.isFinite(activeSimRow?.tickUpper) ? activeSimRow.tickUpper : state.sim.tickUpper;
-      drawRangeBounds([
+      drawSimulationRangeBounds(ctx, { bounds: [
         { label: "lower", price: priceForTick(tickLower), color: "rgba(242, 95, 92, 0.9)" },
         { label: "upper", price: priceForTick(tickUpper), color: "rgba(242, 95, 92, 0.9)" },
-      ]);
+      ], min, max, yFor, pad, width, height });
     }
   }
   const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
@@ -1423,35 +1472,7 @@ function draw() {
   ctx.stroke();
   ctx.restore();
 
-  ctx.fillStyle = "#647087";
-  ctx.font = visibleDays < 7 ? "600 12px Inter, system-ui, sans-serif" : "12px Inter, system-ui, sans-serif";
-  const xLabelTicks = visibleDays < 1 ? [] : visibleDays <= 14 ? dayTicks : weekTicks;
-  xLabelTicks.forEach((timestamp) => {
-    const label = fmtAxisTime(timestamp);
-    const x = xForTime(timestamp);
-    ctx.fillText(label, x, height - 14);
-  });
-  ctx.font = "12px Inter, system-ui, sans-serif";
-  if (visibleDays >= 3 && visibleDays < 7) {
-    middayTicks.forEach((timestamp) => {
-      const x = xForTime(timestamp);
-      ctx.fillText(fmtAxisHour(timestamp), x, height - 14);
-    });
-  }
-  if (visibleDays < 1) {
-    allHourTicks.forEach((timestamp) => {
-      const hour = new Date(timestamp).getUTCHours();
-      ctx.font = hour === 6 || hour === 12 || hour === 18 ? "600 12px Inter, system-ui, sans-serif" : "12px Inter, system-ui, sans-serif";
-      const x = xForTime(timestamp);
-      ctx.fillText(fmtAxisHour(timestamp), x, height - 14);
-    });
-  } else if (visibleDays < 3) {
-    labeledHourTicks.forEach((timestamp) => {
-      const x = xForTime(timestamp);
-      ctx.fillText(fmtAxisHour(timestamp), x, height - 14);
-    });
-  }
-  ctx.font = "12px Inter, system-ui, sans-serif";
+  drawChartTimeAxisLabels(ctx, { ticks: timeTicks, visibleDays, xForTime, height });
 
   const placeTooltip = (element, x, y) => {
     const tooltipGap = 14;
@@ -3043,34 +3064,7 @@ function drawResultChart(rawRows = [], simulationId = "") {
     ctx.stroke();
   }
 
-  const firstDay = startOfUtcDay(new Date(firstTime));
-  const dayTicks = [];
-  const weekTicks = [];
-  const labeledHourTicks = [];
-  for (let timestamp = firstDay; timestamp <= lastTime; timestamp = addUtcDays(timestamp, 1)) {
-    if (timestamp >= firstTime) {
-      dayTicks.push(timestamp);
-      if (new Date(timestamp).getUTCDay() === 1) weekTicks.push(timestamp);
-      const x = xForTime(timestamp);
-      ctx.strokeStyle = "rgba(23, 32, 51, 0.12)";
-      ctx.beginPath();
-      ctx.moveTo(x, pad.top);
-      ctx.lineTo(x, height - pad.bottom);
-      ctx.stroke();
-    }
-    for (let hour = 6; hour < 24; hour += 6) {
-      const hourTick = addUtcHours(timestamp, hour);
-      if (visibleDays < 3 && hourTick >= firstTime && hourTick <= lastTime) {
-        labeledHourTicks.push(hourTick);
-        const x = xForTime(hourTick);
-        ctx.strokeStyle = "rgba(242, 95, 92, 0.12)";
-        ctx.beginPath();
-        ctx.moveTo(x, pad.top);
-        ctx.lineTo(x, height - pad.bottom);
-        ctx.stroke();
-      }
-    }
-  }
+  const timeTicks = drawChartTimeGrid(ctx, { firstTime, lastTime, visibleDays, xForTime, pad, width, height });
 
   ctx.fillStyle = "#647087";
   ctx.font = "12px Inter, system-ui, sans-serif";
@@ -3080,28 +3074,18 @@ function drawResultChart(rawRows = [], simulationId = "") {
     ctx.fillText(fmtPrice(price), width - pad.right + 12, y + 4);
   }
 
-  const drawRangeBound = (tick, label, color) => {
-    if (!Number.isFinite(Number(tick))) return;
-    const price = priceForTick(Number(tick));
-    if (price < min || price > max) return;
-    const y = yFor(price);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([6, 4]);
-    ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(width - pad.right, y);
-    ctx.stroke();
-    ctx.setLineDash([]);
-    const text = `${label} ${fmtPrice(price)}`;
-    const textWidth = ctx.measureText(text).width;
-    ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-    ctx.fillRect(width - pad.right - textWidth - 12, y - 17, textWidth + 8, 15);
-    ctx.fillStyle = "#f25f5c";
-    ctx.fillText(text, width - pad.right - textWidth - 8, y - 5);
-  };
-  drawRangeBound(lastRawRow.tickLower, "lower", "rgba(242, 95, 92, 0.9)");
-  drawRangeBound(lastRawRow.tickUpper, "upper", "rgba(242, 95, 92, 0.9)");
+  drawSimulationRangeBounds(ctx, {
+    bounds: [
+      { label: "lower", price: Number.isFinite(Number(lastRawRow.tickLower)) ? priceForTick(Number(lastRawRow.tickLower)) : NaN, color: "rgba(242, 95, 92, 0.9)" },
+      { label: "upper", price: Number.isFinite(Number(lastRawRow.tickUpper)) ? priceForTick(Number(lastRawRow.tickUpper)) : NaN, color: "rgba(242, 95, 92, 0.9)" },
+    ],
+    min,
+    max,
+    yFor,
+    pad,
+    width,
+    height,
+  });
 
   const gradient = ctx.createLinearGradient(0, pad.top, 0, height - pad.bottom);
   gradient.addColorStop(0, "rgba(15, 139, 141, 0.18)");
@@ -3175,18 +3159,7 @@ function drawResultChart(rawRows = [], simulationId = "") {
     ctx.fill();
   }
 
-  const xLabelTicks = visibleDays <= 14 ? dayTicks : weekTicks;
-  ctx.fillStyle = "#647087";
-  ctx.font = visibleDays < 7 ? "600 12px Inter, system-ui, sans-serif" : "12px Inter, system-ui, sans-serif";
-  xLabelTicks.forEach((timestamp) => {
-    ctx.fillText(fmtAxisTime(timestamp), xForTime(timestamp), height - 12);
-  });
-  if (visibleDays < 3) {
-    ctx.font = "12px Inter, system-ui, sans-serif";
-    labeledHourTicks.forEach((timestamp) => {
-      ctx.fillText(fmtAxisHour(timestamp), xForTime(timestamp), height - 12);
-    });
-  }
+  drawChartTimeAxisLabels(ctx, { ticks: timeTicks, visibleDays, xForTime, height });
 }
 
 function drawActiveResultChart() {
