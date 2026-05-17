@@ -1244,6 +1244,112 @@ function drawSimulationRangeBounds(ctx, {
   });
 }
 
+function rangeBoundaryLabelsFromRows(rows = []) {
+  const ticksByKey = new Map();
+  rows.forEach((row) => {
+    [
+      ["lower", Number(row?.tickLower)],
+      ["upper", Number(row?.tickUpper)],
+    ].forEach(([label, tick]) => {
+      if (!Number.isFinite(tick)) return;
+      const key = `${label}:${tick}`;
+      if (ticksByKey.has(key)) return;
+      ticksByKey.set(key, {
+        label,
+        tick,
+        price: priceForTick(tick),
+      });
+    });
+  });
+  return Array.from(ticksByKey.values())
+    .filter(({ price }) => Number.isFinite(price))
+    .sort((a, b) => a.price - b.price || a.tick - b.tick || a.label.localeCompare(b.label));
+}
+
+function hideEveryOtherOverlappingLabels(labels, minGap = 15) {
+  let visible = labels.slice();
+  const overlaps = (items) => items.some((item, index) => index > 0 && Math.abs(item.y - items[index - 1].y) < minGap);
+  while (visible.length > 2 && overlaps(visible)) {
+    visible = visible.filter((_, index) => index % 2 === 0);
+  }
+  return new Set(visible.map((label) => label.key));
+}
+
+function drawRangeBoundaryAxis(ctx, { boundaries, min, max, yFor, pad, width, height }) {
+  const active = boundaries
+    .filter(({ price }) => Number.isFinite(price) && price >= min && price <= max)
+    .map((boundary) => ({
+      ...boundary,
+      key: `${boundary.label}:${boundary.tick}`,
+      y: yFor(boundary.price),
+    }));
+  if (!active.length) return;
+  const visibleLabelKeys = hideEveryOtherOverlappingLabels(active.map((boundary) => ({ ...boundary })).sort((a, b) => a.y - b.y));
+  active.forEach((boundary) => {
+    const isUpper = boundary.label === "upper";
+    ctx.strokeStyle = isUpper ? "rgba(242, 95, 92, 0.5)" : "rgba(15, 139, 141, 0.42)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(width - pad.right - 8, boundary.y);
+    ctx.lineTo(width - pad.right, boundary.y);
+    ctx.stroke();
+
+    if (!visibleLabelKeys.has(boundary.key)) return;
+    const text = fmtPrice(boundary.price);
+    const labelY = Math.max(pad.top + 5, Math.min(height - pad.bottom - 4, boundary.y + 4));
+    ctx.fillStyle = isUpper ? "#f25f5c" : "#0f8b8d";
+    ctx.fillText(text, width - pad.right + 12, labelY);
+  });
+}
+
+function resultRangeSegmentsFromRows(rows = []) {
+  const segments = [];
+  let current = null;
+  rows.forEach((row) => {
+    const tickLower = Number(row?.tickLower);
+    const tickUpper = Number(row?.tickUpper);
+    if (!Number.isFinite(row?.timestamp) || !Number.isFinite(tickLower) || !Number.isFinite(tickUpper)) return;
+    if (!current) {
+      current = { start: row.timestamp, end: row.timestamp, tickLower, tickUpper };
+      return;
+    }
+    if (tickLower !== current.tickLower || tickUpper !== current.tickUpper) {
+      current.end = row.timestamp;
+      segments.push(current);
+      current = { start: row.timestamp, end: row.timestamp, tickLower, tickUpper };
+      return;
+    }
+    current.end = row.timestamp;
+  });
+  if (current) segments.push(current);
+  return segments;
+}
+
+function drawResultRangeSegments(ctx, { segments, min, max, xForTime, yFor, pad, width, height }) {
+  if (!segments.length) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(pad.left, pad.top, width - pad.left - pad.right, height - pad.top - pad.bottom);
+  ctx.clip();
+  segments.forEach((segment) => {
+    const x1 = xForTime(segment.start);
+    const x2 = xForTime(segment.end);
+    if (!Number.isFinite(x1) || !Number.isFinite(x2)) return;
+    const startX = Math.max(pad.left, Math.min(x1, x2));
+    const endX = Math.min(width - pad.right, Math.max(x1, x2));
+    if (endX <= startX) return;
+    const lowerPrice = priceForTick(segment.tickLower);
+    const upperPrice = priceForTick(segment.tickUpper);
+    if (!Number.isFinite(lowerPrice) || !Number.isFinite(upperPrice)) return;
+    const topY = Math.max(pad.top, yFor(Math.min(max, upperPrice)));
+    const bottomY = Math.min(height - pad.bottom, yFor(Math.max(min, lowerPrice)));
+    if (bottomY <= topY) return;
+    ctx.fillStyle = "rgba(245, 158, 11, 0.055)";
+    ctx.fillRect(startX, topY, endX - startX, bottomY - topY);
+  });
+  ctx.restore();
+}
+
 function drawChartTimeGrid(ctx, { firstTime, lastTime, visibleDays, xForTime, pad, width, height }) {
   const ticks = {
     dayTicks: [],
@@ -3031,10 +3137,9 @@ function drawResultChart(rawRows = [], simulationId = "") {
   const renderedRows = downsample(visibleRows, Math.max(2, Math.floor(width * POINTS_PER_PIXEL)));
   let min = Math.min(...visibleRows.map((row) => row.close));
   let max = Math.max(...visibleRows.map((row) => row.close));
-  const lastRawRow = rawRows[rawRows.length - 1] || {};
-  [lastRawRow.tickLower, lastRawRow.tickUpper].forEach((tick) => {
-    if (!Number.isFinite(Number(tick))) return;
-    const price = priceForTick(Number(tick));
+  const visibleRangeBoundaries = rangeBoundaryLabelsFromRows(visibleRows);
+  visibleRangeBoundaries.forEach(({ price }) => {
+    if (!Number.isFinite(price)) return;
     min = Math.min(min, price);
     max = Math.max(max, price);
   });
@@ -3054,31 +3159,33 @@ function drawResultChart(rawRows = [], simulationId = "") {
 
   ctx.fillStyle = "rgba(248, 250, 252, 0.74)";
   ctx.fillRect(pad.left, pad.top, plotW, plotH);
-  ctx.strokeStyle = "rgba(23, 32, 51, 0.1)";
-  ctx.lineWidth = 0.8;
-  for (let i = 1; i <= 5; i += 1) {
-    const y = pad.top + (i / 6) * plotH;
-    ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(width - pad.right, y);
-    ctx.stroke();
+  if (!visibleRangeBoundaries.length) {
+    ctx.strokeStyle = "rgba(23, 32, 51, 0.1)";
+    ctx.lineWidth = 0.8;
+    for (let i = 1; i <= 5; i += 1) {
+      const y = pad.top + (i / 6) * plotH;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, y);
+      ctx.lineTo(width - pad.right, y);
+      ctx.stroke();
+    }
   }
 
   const timeTicks = drawChartTimeGrid(ctx, { firstTime, lastTime, visibleDays, xForTime, pad, width, height });
 
-  ctx.fillStyle = "#647087";
   ctx.font = "12px Inter, system-ui, sans-serif";
-  for (let i = 0; i <= 4; i += 1) {
-    const price = min + (span * i) / 4;
-    const y = yFor(price);
-    ctx.fillText(fmtPrice(price), width - pad.right + 12, y + 4);
-  }
-
-  drawSimulationRangeBounds(ctx, {
-    bounds: [
-      { label: "lower", price: Number.isFinite(Number(lastRawRow.tickLower)) ? priceForTick(Number(lastRawRow.tickLower)) : NaN, color: "rgba(242, 95, 92, 0.9)" },
-      { label: "upper", price: Number.isFinite(Number(lastRawRow.tickUpper)) ? priceForTick(Number(lastRawRow.tickUpper)) : NaN, color: "rgba(242, 95, 92, 0.9)" },
-    ],
+  drawResultRangeSegments(ctx, {
+    segments: resultRangeSegmentsFromRows(visibleRows),
+    min,
+    max,
+    xForTime,
+    yFor,
+    pad,
+    width,
+    height,
+  });
+  drawRangeBoundaryAxis(ctx, {
+    boundaries: visibleRangeBoundaries,
     min,
     max,
     yFor,
